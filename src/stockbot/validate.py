@@ -129,11 +129,14 @@ class CheckResult(BaseModel):
     message: str
 
 
-def _check_confidence_cap(verdict: VerdictJSON) -> CheckResult:
+def _check_confidence_cap(verdict: VerdictJSON, brief: Brief) -> CheckResult:
+    # Pipeline hard max is 7; brief.confidence_ceiling can be lower when
+    # financials/annual-report fetches failed (see brief.assemble_brief).
+    cap = min(7, brief.confidence_ceiling)
     return CheckResult(
         name="confidence_cap",
-        passed=verdict.confidence <= 7,
-        message=f"confidence={verdict.confidence}",
+        passed=verdict.confidence <= cap,
+        message=f"confidence={verdict.confidence} (cap={cap})",
     )
 
 
@@ -402,7 +405,7 @@ def validate_report(report_text: str, brief: Brief) -> ValidationResult:
     valuation = compute_valuation(verdict.valuation_inputs)
 
     checks = [
-        _check_confidence_cap(verdict),
+        _check_confidence_cap(verdict, brief),
         _check_buy_gate(verdict),
         _check_ranges_ordered(verdict, valuation),
         _check_buy_zone_discount(verdict, valuation),

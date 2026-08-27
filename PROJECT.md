@@ -223,22 +223,26 @@ cap of 7 injected directly into the Stage 2 prompt.
 
 Both `llm/extract.py`'s `SYSTEM_PROMPT` and `llm/verdict.py`'s master prompt
 are byte-identical on every call regardless of ticker, so both carry
-`cache_control: {"type": "ephemeral"}` (5-min TTL) on the `system` block —
+`cache_control: {"type": "ephemeral", "ttl": "1h"}` on the `system` block —
 passed as `system=[{"type": "text", "text": ..., "cache_control": {...}}]`,
-not a plain string. The clearest payoff is Stage 2's validation-retry path:
-a retry resends the ~4-5k token master prompt within a minute or two of the
-first call, well inside the TTL, at 0.1x instead of full price. Below the
-model's cacheable minimum (1024 tokens for Sonnet 5, 512 for Opus 5) it's a
-silent no-op (`cache_creation_input_tokens: 0`), never an error — so there's
-no downside to leaving the marker on Stage 1's smaller system prompt too.
+not a plain string. The 1h TTL (not the 5-minute default) covers Stage 2's
+validation-retry path and back-to-back analyses that would miss a 5m window.
+Cache *reads* bill at 0.1x base input. Cache *writes* bill at 1.25x (5m TTL)
+or 2.0x (1h TTL) — production uses 1h, so writes are 2x.
 
-`costs.compute_cost_inr` bills `cached_tokens` (reads) at 0.1x and
-`cache_creation_tokens` (writes) at 1.25x the input rate, both additive to
-`input_tokens` — the API's `input_tokens` is the *uncached remainder only*,
-never a superset that cached/created tokens are subtracted from. An earlier
-version of this function subtracted `cached_tokens` from `input_tokens`,
-which was harmless only because caching had never been turned on and
-`cached_tokens` was always 0; fixed before enabling caching for real.
+Below the model's cacheable minimum (1024 tokens for Sonnet 5, 512 for
+Opus 5) it's a silent no-op (`cache_creation_input_tokens: 0`), never an
+error — so there's no downside to leaving the marker on Stage 1's smaller
+system prompt too.
+
+`costs.compute_cost_inr` bills `cached_tokens` (reads) at 0.1x and splits
+`cache_creation_tokens` into 5m (1.25x) vs 1h (2.0x) write premiums, both
+additive to `input_tokens` — the API's `input_tokens` is the *uncached
+remainder only*, never a superset that cached/created tokens are subtracted
+from. An earlier version of this function subtracted `cached_tokens` from
+`input_tokens`, which was harmless only because caching had never been
+turned on and `cached_tokens` was always 0; fixed before enabling caching
+for real.
 
 ## v3 migration: bear-case calibration and valuation_inputs
 
@@ -270,8 +274,8 @@ Anthropic-style write premium), and peak-hours (01:00-04:00 and 06:00-10:00
 UTC, Mon-Fri) that double every rate uniformly — computed from the call's
 own timestamp via `_deepseek_rate_multiplier`, never assumed off-peak.
 Verified against `https://api-docs.deepseek.com/quick_start/pricing/`
-directly, not a third-party aggregator (several returned inconsistent
-numbers for the same model). `ab_test.py` uses this to compare Stage 1
+and Anthropic's pricing page on 2026-08-27 (see `costs.PRICING_VERIFIED_ON`).
+`ab_test.py` uses this to compare Stage 1
 extraction quality (Claude Haiku 4.5 vs DeepSeek V4 Flash) before deciding
 whether to move that stage to the cheaper provider.
 

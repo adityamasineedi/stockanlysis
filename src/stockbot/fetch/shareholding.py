@@ -38,6 +38,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_fixed
 
+from stockbot.config import HTTP_USER_AGENT
 from stockbot.fetch.fundamentals import (
     FundamentalsSchemaError,
     detect_basis,
@@ -46,10 +47,7 @@ from stockbot.fetch.fundamentals import (
 )
 from stockbot.models import Shareholding
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-)
+USER_AGENT = HTTP_USER_AGENT
 NSE_PRIMING_URL = "https://www.nseindia.com/companies-listing/corporate-filings-shareholding-pattern"
 NSE_MASTER_URL = "https://www.nseindia.com/api/corporate-share-holdings-master"
 

@@ -31,13 +31,10 @@ import httpx
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from stockbot.config import SCREENER_CACHE_DIR
+from stockbot.config import HTTP_USER_AGENT, SCREENER_CACHE_DIR
 from stockbot.models import Financials
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-)
+USER_AGENT = HTTP_USER_AGENT
 CACHE_MAX_AGE_HOURS = 24
 MIN_REQUEST_INTERVAL_SECONDS = 1.0
 

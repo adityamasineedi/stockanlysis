@@ -130,6 +130,25 @@ def test_build_user_message_includes_hard_injections():
     assert "Treat them as [FACT]" in message
 
 
+def test_build_user_message_uses_brief_confidence_ceiling():
+    base = _minimal_brief()
+    brief = Brief(
+        ticker=base.ticker,
+        price=base.price,
+        technicals=base.technicals,
+        financials=base.financials,
+        shareholding=base.shareholding,
+        news=base.news,
+        annual_report=base.annual_report,
+        missing=base.missing,
+        token_count=base.token_count,
+        confidence_ceiling=4,
+        generated_at=base.generated_at,
+    )
+    message = build_user_message(brief, ExtractionResult())
+    assert "Confidence is capped at 4/10" in message
+
+
 def test_build_user_message_warns_against_inventing_pledge_when_unconfirmed():
     # Regression test: live testing found the model twice stated a pledge
     # percentage that was never confirmed, even with the generic

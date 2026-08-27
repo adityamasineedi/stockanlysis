@@ -91,7 +91,21 @@ def test_format_verdict_reply_appends_missing_warnings():
 
 def test_format_verdict_reply_no_missing_no_warning_lines():
     text = format_verdict_reply(_analysis())
-    assert "⚠️" not in text
+    assert "MISSING:" not in text
+
+
+def test_format_verdict_reply_includes_disclaimer():
+    text = format_verdict_reply(_analysis())
+    assert "not investment advice" in text.lower()
+
+
+def test_format_verdict_reply_prepends_staleness_banner():
+    text = format_verdict_reply(
+        _analysis(),
+        staleness_banner="Analysis from 2026-08-19 at ₹400.00. Price today: ₹405.00.",
+    )
+    assert text.startswith("Analysis from 2026-08-19")
+    assert "WATCH" in text
 
 
 def test_format_verdict_reply_stays_under_telegram_limit():

@@ -41,13 +41,10 @@ from pathlib import Path
 import httpx
 import pdfplumber
 
-from stockbot.config import ANNUAL_REPORT_CACHE_DIR
+from stockbot.config import ANNUAL_REPORT_CACHE_DIR, HTTP_USER_AGENT
 from stockbot.models import ReportText
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-)
+USER_AGENT = HTTP_USER_AGENT
 NSE_PRIMING_URL = "https://www.nseindia.com/companies-listing/corporate-filings-annual-reports"
 NSE_ANNUAL_REPORTS_URL = "https://www.nseindia.com/api/annual-reports"
 

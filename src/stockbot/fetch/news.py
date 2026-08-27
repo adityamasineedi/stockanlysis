@@ -29,12 +29,10 @@ import httpx
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz
 
+from stockbot.config import HTTP_USER_AGENT
 from stockbot.models import NewsItems, RedFlag
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-)
+USER_AGENT = HTTP_USER_AGENT
 RSS_BASE_URL = "https://news.google.com/rss/search"
 
 GENERAL_NEWS_MONTHS = 12

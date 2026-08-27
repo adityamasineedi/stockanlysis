@@ -1,0 +1,51 @@
+"""Financial strength score (0–100)."""
+
+from __future__ import annotations
+
+from stockbot.portfolio_screener.models import StockMetrics
+from stockbot.portfolio_screener.score_utils import (
+    clamp,
+    linear_score,
+    series_present,
+    weighted_mean,
+)
+
+
+def score_financial_strength(metrics: StockMetrics) -> float:
+    debt_trend_score: float | None = None
+    debt = series_present(metrics.debt_series)
+    if len(debt) >= 2 and debt[0] > 0:
+        ratio = debt[-1] / debt[0]
+        debt_trend_score = linear_score(ratio, bad=2.5, good=0.7, higher_is_better=False)
+    elif metrics.debt is not None and metrics.debt == 0:
+        debt_trend_score = 100.0
+
+    cash_score: float | None = None
+    if metrics.cash is not None and metrics.debt is not None:
+        if metrics.debt <= 0:
+            cash_score = 100.0
+        else:
+            cash_score = linear_score(
+                metrics.cash / max(metrics.debt, 1e-9),
+                bad=0.1,
+                good=1.0,
+            )
+
+    fcf_score = None
+    if metrics.free_cash_flow is not None:
+        fcf_score = 80.0 if metrics.free_cash_flow > 0 else 20.0
+
+    parts = [
+        (linear_score(metrics.debt_equity, bad=2.5, good=0.2, higher_is_better=False), 0.25),
+        (
+            linear_score(metrics.net_debt_ebitda, bad=4.0, good=0.0, higher_is_better=False),
+            0.20,
+        ),
+        (linear_score(metrics.interest_coverage, bad=1.5, good=10.0), 0.20),
+        (linear_score(metrics.current_ratio, bad=0.8, good=2.0), 0.10),
+        (debt_trend_score, 0.10),
+        (cash_score, 0.10),
+        (fcf_score, 0.05),
+    ]
+    score, coverage = weighted_mean(parts)
+    return clamp(score * (0.6 + 0.4 * coverage))

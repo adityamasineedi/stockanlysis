@@ -35,10 +35,7 @@ NSE_EQUITY_CSV_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L
 CACHE_PATH = config.SYMBOLS_DIR / "EQUITY_L.csv"
 CACHE_MAX_AGE_DAYS = 30
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-)
+USER_AGENT = config.HTTP_USER_AGENT
 
 FUZZY_SCORE_CUTOFF = 60.0
 DOMINANT_MARGIN = 15.0

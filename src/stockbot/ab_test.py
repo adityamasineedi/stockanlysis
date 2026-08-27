@@ -21,7 +21,7 @@ DeepSeek speaks the OpenAI wire format: a plain REST POST to its
 on httpx for exactly this shape of call.
 
 Model ID and pricing verified against
-https://api-docs.deepseek.com/quick_start/pricing/ on 2026-08-26 — not a
+https://api-docs.deepseek.com/quick_start/pricing/ on 2026-08-27 — not a
 third-party aggregator. Re-verify before trusting this for a real decision
 if much time has passed; DeepSeek's API has changed pricing structure at
 least twice in recent history.

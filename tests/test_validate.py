@@ -64,6 +64,7 @@ def _brief(
     shareholding: Shareholding | None = "default",
     financials: Financials | None = None,
     missing: list[str] | None = None,
+    confidence_ceiling: int = 10,
 ) -> Brief:
     df = pd.DataFrame({"Close": [100.0]})
     if shareholding == "default":
@@ -78,7 +79,7 @@ def _brief(
         annual_report=ReportText({}, None, None, False, [], "nse_annual_reports", NOW),
         missing=missing or [],
         token_count=0,
-        confidence_ceiling=10,
+        confidence_ceiling=confidence_ceiling,
         generated_at=NOW,
     )
 
@@ -99,6 +100,18 @@ def test_fails_when_confidence_exceeds_cap():
     result = validate_report(_report({"confidence": 8}), _brief())
     assert result.passed is False
     assert any("confidence_cap" in f for f in result.failures)
+
+
+def test_fails_when_confidence_exceeds_brief_ceiling():
+    # Financials-failed briefs set ceiling 4; pipeline must not allow 6–7.
+    result = validate_report(_report({"confidence": 6}), _brief(confidence_ceiling=4))
+    assert result.passed is False
+    assert any("confidence_cap" in f and "cap=4" in f for f in result.failures)
+
+
+def test_passes_when_confidence_at_brief_ceiling():
+    result = validate_report(_report({"confidence": 4}), _brief(confidence_ceiling=4))
+    assert result.passed is True
 
 
 def test_fails_when_buy_verdict_violates_quality_gate():

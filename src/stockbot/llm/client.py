@@ -16,12 +16,64 @@ without going through here first.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from anthropic import Anthropic
+from anthropic import (
+    Anthropic,
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    RateLimitError,
+)
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from stockbot.costs import log_call
 from stockbot.llm.fixtures import save_response_fixture
+
+logger = logging.getLogger(__name__)
+
+MAX_ANTHROPIC_ATTEMPTS = 3
+
+
+def _is_retryable_anthropic_error(exc: BaseException) -> bool:
+    if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError)):
+        return True
+    return isinstance(exc, APIStatusError) and exc.status_code >= 500
+
+
+def _invoke_anthropic(
+    client: Anthropic,
+    *,
+    stream: bool,
+    kwargs: dict[str, Any],
+) -> Any:
+    if stream:
+        with client.messages.stream(**kwargs) as message_stream:
+            return message_stream.get_final_message()
+    return client.messages.parse(**kwargs)
+
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(MAX_ANTHROPIC_ATTEMPTS),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception(_is_retryable_anthropic_error),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+)
+def _invoke_anthropic_with_retries(
+    client: Anthropic,
+    *,
+    stream: bool,
+    kwargs: dict[str, Any],
+) -> Any:
+    return _invoke_anthropic(client, stream=stream, kwargs=kwargs)
 
 
 def call_anthropic_and_log(
@@ -39,7 +91,13 @@ def call_anthropic_and_log(
 ) -> tuple[Any, float]:
     """Returns (response, cost_inr). `response` has the same shape
     regardless of `stream` — .content, .stop_reason, .usage — since
-    stream=True internally calls .get_final_message() before returning."""
+    stream=True internally calls .get_final_message() before returning.
+
+    Transient network / 5xx / rate-limit errors are retried up to
+    MAX_ANTHROPIC_ATTEMPTS times. Fixture save and cost logging run only
+    after a successful response so failed attempts are not billed in our
+    ledger (Anthropic may still bill partial work on their side).
+    """
     kwargs: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
@@ -51,11 +109,7 @@ def call_anthropic_and_log(
     if thinking is not None:
         kwargs["thinking"] = thinking
 
-    if stream:
-        with client.messages.stream(**kwargs) as message_stream:
-            response = message_stream.get_final_message()
-    else:
-        response = client.messages.parse(**kwargs)
+    response = _invoke_anthropic_with_retries(client, stream=stream, kwargs=kwargs)
 
     report_text = "".join(block.text for block in response.content if block.type == "text")
     save_response_fixture(

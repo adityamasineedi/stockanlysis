@@ -57,8 +57,9 @@ def test_get_cached_returns_recent_analysis_when_price_stable(monkeypatch):
 
     result = get_cached("TEST")
     assert result is not None
-    assert result.verdict_json["current_price_abs"] == 400.0  # original price, not refreshed
-    assert result.costs == 39.0
+    assert result.analysis.verdict_json["current_price_abs"] == 400.0  # original price, not refreshed
+    assert result.analysis.costs == 39.0
+    assert result.current_price_abs == 405.0
 
 
 def test_get_cached_preserves_missing_list_across_the_cache(monkeypatch):
@@ -67,7 +68,7 @@ def test_get_cached_preserves_missing_list_across_the_cache(monkeypatch):
 
     result = get_cached("TEST")
     assert result is not None
-    assert result.missing == ["MISSING: shareholding — could not fetch"]
+    assert result.analysis.missing == ["MISSING: shareholding — could not fetch"]
 
 
 def test_get_cached_refuses_when_older_than_max_age(monkeypatch):
@@ -107,6 +108,16 @@ def test_get_cached_is_scoped_to_ticker(monkeypatch):
 
     assert get_cached("BBB") is None
     assert get_cached("AAA") is not None
+
+
+def test_get_cached_refuses_when_original_price_missing_and_live_fetch_fails(monkeypatch):
+    _save(verdict_json={"verdict": "WATCH", "price_date": "2026-08-19", "confidence": 6})
+
+    def _raise(ticker):
+        raise ValueError("network error")
+
+    monkeypatch.setattr(storage_module, "fetch_price_data", _raise)
+    assert get_cached("TEST") is None
 
 
 def test_build_staleness_banner_includes_original_and_current_price():

@@ -12,6 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 DATA_DIR = PROJECT_ROOT / "data"
 SYMBOLS_DIR = DATA_DIR / "symbols"
+PORTFOLIO_DIR = DATA_DIR / "portfolio"
+WATCHLIST_PATH = PORTFOLIO_DIR / "watchlist.txt"
 CACHE_DIR = DATA_DIR / "cache"
 SCREENER_CACHE_DIR = CACHE_DIR / "screener"
 ANNUAL_REPORT_CACHE_DIR = CACHE_DIR / "annual_reports"
@@ -23,6 +25,14 @@ PROMPTS_DIR = PROJECT_ROOT / "prompts"
 MASTER_PROMPT_PATH = PROMPTS_DIR / "master-stock-analysis-prompt-v3.md"
 LOGS_DIR = PROJECT_ROOT / "logs"
 
+# Shared browser UA for NSE / Screener / Google News fetches. Keep near
+# current Chrome stable — ancient versions (e.g. Chrome/120) get blocked
+# more often by WAF cookie gates.
+HTTP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=PROJECT_ROOT / ".env", extra="ignore")
@@ -32,7 +42,13 @@ class Settings(BaseSettings):
     # 17D: DeepSeek A/B test only — not used by the production pipeline.
     deepseek_api_key: str = ""
     monthly_budget_inr: float = 1400.0
-    usd_inr_rate: float = 88.0
+    # Spot USD/INR for LLM cost conversion. Refresh periodically — do not
+    # leave a years-old rate here (was 88 for a long stretch while spot ~95).
+    usd_inr_rate: float = 95.5
+    # Paid analyses only (cache hits bypass the semaphore). Default 1 so two
+    # overlapping runs cannot both pass check_budget() then double-bill past
+    # the monthly cap.
+    max_concurrent_analyses: int = 1
 
 
 settings = Settings()

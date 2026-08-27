@@ -77,18 +77,27 @@ MODEL = "claude-sonnet-5"
 # truncation rather than assuming this is the last raise needed.
 MAX_TOKENS = 32000
 
+PIPELINE_CONFIDENCE_CAP = 7
+
 _JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 
-HARD_INJECTIONS = """
+
+def effective_confidence_cap(brief: Brief) -> int:
+    """Min of the pipeline-wide 7 cap and the brief's data-driven ceiling."""
+    return min(PIPELINE_CONFIDENCE_CAP, brief.confidence_ceiling)
+
+
+def hard_injections(confidence_cap: int) -> str:
+    return f"""
 IMPORTANT — pipeline constraints, read before writing the report:
 
 1. The technical figures below (SMA50, SMA200, RSI14, support/resistance) \
 were computed from real OHLCV data in code. Treat them as [FACT]. Do not \
 recompute, estimate, or second-guess them yourself.
 
-2. Confidence is capped at 7/10 for this pipeline, regardless of your own \
+2. Confidence is capped at {confidence_cap}/10 for this pipeline, regardless of your own \
 assessment of how confident the analysis is. If your assessment would \
-otherwise be higher, cap the number at 7 but still describe your true \
+otherwise be higher, cap the number at {confidence_cap} but still describe your true \
 assessment in the prose.
 
 3. The research described in this prompt's Step 0-1 (annual report, \
@@ -109,19 +118,19 @@ be the SAME as used in the prose above — this is a restatement for the \
 pipeline to parse, never a re-derivation:
 
 ```json
-{
+{{
   "verdict": "BUY|BUY ON CORRECTION|WATCH|SKIP",
   "current_price_abs": <number>,
   "price_date": "<YYYY-MM-DD>",
   "buy_zone_abs": [<low>, <high>],
-  "valuation_inputs": {
+  "valuation_inputs": {{
     "eps_bear": <number>, "eps_base": <number>, "eps_bull": <number>,
     "multiple_bear": [<low>, <high>],
     "multiple_base": [<low>, <high>],
     "multiple_bull": [<low>, <high>]
-  },
+  }},
   "confidence": <integer, 1-10 scale per the master prompt's own CONFIDENCE \
-section, but capped at 7 per constraint #2 above — never write 7 as if it \
+section, but capped at {confidence_cap} per constraint #2 above — never write {confidence_cap} as if it \
 were the scale's maximum>,
   "risk": "LOW|MEDIUM|HIGH",
   "business_quality": <integer 1-10>,
@@ -134,7 +143,7 @@ were the scale's maximum>,
   "biggest_watch": "<string>",
   "missing_data_impact": "<string>",
   "gates_failed": ["<string>", "..."]
-}
+}}
 ```
 
 Note on valuation_inputs: supply an EPS estimate and a P/E multiple RANGE
@@ -142,6 +151,9 @@ for each of bear/base/bull — never a price you multiplied yourself.
 Python computes the resulting fair-value ranges from these.
 """
 
+
+# Back-compat alias for imports/tests that still reference the constant name.
+HARD_INJECTIONS = hard_injections(PIPELINE_CONFIDENCE_CAP)
 
 class VerdictParseError(Exception):
     pass
@@ -302,7 +314,7 @@ def build_user_message(
         [
             "",
             _format_extraction_result(extraction),
-            HARD_INJECTIONS,
+            hard_injections(effective_confidence_cap(brief)),
         ]
     )
     if extra_instruction:

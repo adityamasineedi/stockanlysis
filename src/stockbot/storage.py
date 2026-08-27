@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from stockbot.config import DB_PATH
@@ -33,10 +34,20 @@ from stockbot.models import Analysis, ValidationResult
 PRICE_MOVE_REFUSE_PCT = 0.10
 
 
+@dataclass(frozen=True)
+class CacheHit:
+    """A served cache row plus the live price used to decide it was safe."""
+
+    analysis: Analysis
+    current_price_abs: float
+
+
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS analyses (
@@ -108,7 +119,7 @@ def _row_to_analysis(row: sqlite3.Row) -> Analysis:
     )
 
 
-def get_cached(ticker: str, max_age_days: int = 7) -> Analysis | None:
+def get_cached(ticker: str, max_age_days: int = 7) -> CacheHit | None:
     with _connect() as conn:
         row = conn.execute(
             "SELECT * FROM analyses WHERE ticker = ? ORDER BY created_at DESC LIMIT 1",
@@ -124,15 +135,14 @@ def get_cached(ticker: str, max_age_days: int = 7) -> Analysis | None:
 
     verdict_json = json.loads(row["verdict_json"])
     original_price = verdict_json.get("current_price_abs")
-    if original_price:
-        try:
-            current_price = fetch_price_data(ticker).current_price_abs
-        except Exception:  # noqa: BLE001 - can't verify safety, so refuse below rather than guess
-            return None
-        if abs(current_price - original_price) / original_price > PRICE_MOVE_REFUSE_PCT:
-            return None
+    try:
+        current_price = fetch_price_data(ticker).current_price_abs
+    except Exception:  # noqa: BLE001 - can't verify safety, so refuse below rather than guess
+        return None
+    if original_price and abs(current_price - original_price) / original_price > PRICE_MOVE_REFUSE_PCT:
+        return None
 
-    return _row_to_analysis(row)
+    return CacheHit(analysis=_row_to_analysis(row), current_price_abs=current_price)
 
 
 def build_staleness_banner(analysis: Analysis, current_price_abs: float) -> str:

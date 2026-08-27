@@ -17,11 +17,13 @@ entire job is calling the pipeline.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Literal
 
 from stockbot import storage
 from stockbot.brief import assemble_brief, to_markdown
+from stockbot.config import settings
 from stockbot.costs import check_budget
 from stockbot.fetch.tickers import load_symbol_table, resolve_ticker
 from stockbot.llm.extract import run_stage1
@@ -33,6 +35,7 @@ from stockbot.llm.verdict import (
 )
 from stockbot.models import AmbiguousMatch, Analysis, TickerInfo, ValidationResult
 from stockbot.render import PlaceholderError, render_report
+from stockbot.storage import CacheHit, build_staleness_banner
 from stockbot.validate import format_validation_errors, validate_report
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,10 @@ MAX_TRUNCATION_RETRIES = 2
 # analysis should get near.
 PER_ANALYSIS_COST_CAP_INR = 80.0
 
+# Paid-path concurrency. Cache hits skip this. Recreated when settings change
+# only at process start — config is read once at import of settings.
+_ANALYSIS_SLOTS = threading.BoundedSemaphore(max(1, settings.max_concurrent_analyses))
+
 
 @dataclass(frozen=True)
 class PipelineResult:
@@ -65,12 +72,15 @@ class PipelineResult:
         "budget_exceeded",
         "analysis_cost_exceeded",
         "render_failed",
+        "busy",
     ]
     analysis: Analysis | None = None
     candidates: AmbiguousMatch | None = None
     validation_failures: list[str] | None = None
     spent_inr: float | None = None
     render_error: str | None = None
+    from_cache: bool = False
+    staleness_banner: str | None = None
 
 
 class AnalysisCostExceeded(Exception):
@@ -137,21 +147,7 @@ def _run_stage2_with_validation(
     return report_text, usage, validation
 
 
-def run_full_analysis(query: str, max_cache_age_days: int = 7) -> PipelineResult:
-    symbol_table = load_symbol_table()
-    resolved = resolve_ticker(query, symbol_table)
-
-    if resolved is None:
-        return PipelineResult(status="not_found")
-    if isinstance(resolved, AmbiguousMatch):
-        return PipelineResult(status="ambiguous", candidates=resolved)
-
-    ticker: TickerInfo = resolved
-
-    cached = storage.get_cached(ticker.symbol, max_age_days=max_cache_age_days)
-    if cached is not None:
-        return PipelineResult(status="ok", analysis=cached)
-
+def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     budget_ok, spent = check_budget()
     if not budget_ok:
         return PipelineResult(status="budget_exceeded", spent_inr=spent)
@@ -161,6 +157,12 @@ def run_full_analysis(query: str, max_cache_age_days: int = 7) -> PipelineResult
 
     if stage1_usage["cost_inr"] > PER_ANALYSIS_COST_CAP_INR:
         return PipelineResult(status="analysis_cost_exceeded", spent_inr=stage1_usage["cost_inr"])
+
+    # Re-check monthly budget after Stage 1 so a concurrent sibling process
+    # (or a slow Stage 1) that filled the cap does not proceed into Stage 2.
+    budget_ok, spent = check_budget()
+    if not budget_ok:
+        return PipelineResult(status="budget_exceeded", spent_inr=spent)
 
     try:
         report_text, stage2_usage, validation = _run_stage2_with_validation(
@@ -219,3 +221,60 @@ def run_full_analysis(query: str, max_cache_age_days: int = 7) -> PipelineResult
         missing=brief.missing,
     )
     return PipelineResult(status="ok", analysis=analysis)
+
+
+def run_full_analysis(query: str, max_cache_age_days: int = 7) -> PipelineResult:
+    symbol_table = load_symbol_table()
+    resolved = resolve_ticker(query, symbol_table)
+
+    if resolved is None:
+        return PipelineResult(status="not_found")
+    if isinstance(resolved, AmbiguousMatch):
+        return PipelineResult(status="ambiguous", candidates=resolved)
+
+    ticker: TickerInfo = resolved
+
+    cached: CacheHit | None = storage.get_cached(ticker.symbol, max_age_days=max_cache_age_days)
+    if cached is not None:
+        banner = build_staleness_banner(cached.analysis, cached.current_price_abs)
+        return PipelineResult(
+            status="ok",
+            analysis=cached.analysis,
+            from_cache=True,
+            staleness_banner=banner or None,
+        )
+
+    acquired = _ANALYSIS_SLOTS.acquire(blocking=False)
+    if not acquired:
+        return PipelineResult(status="busy")
+    try:
+        return _run_paid_analysis(ticker)
+    finally:
+        _ANALYSIS_SLOTS.release()
+
+
+def run_portfolio_prescreen_then_analyze(
+    symbols: list[str] | None = None,
+    *,
+    dry_run: bool = False,
+    skip_ai: bool = False,
+    run_deep: bool = False,
+    max_deep: int | None = None,
+):
+    """Pre-screen the portfolio watchlist, then optionally deep-analyze
+    only the 10–18 survivors. See stockbot.portfolio_screener.
+    """
+    from stockbot.portfolio_screener import (
+        ScreenerRunConfig,
+        run_prescreen_then_analyze,
+    )
+
+    return run_prescreen_then_analyze(
+        symbols,
+        config=ScreenerRunConfig(
+            dry_run=dry_run,
+            skip_ai=skip_ai or dry_run,
+            run_deep_analysis=run_deep and not dry_run,
+            max_deep_analyses=max_deep,
+        ),
+    )

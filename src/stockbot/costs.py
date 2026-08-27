@@ -5,21 +5,21 @@ Multi-provider (17D — the DeepSeek A/B test needs its own cost tracking,
 not a bolt-on afterward). Each provider's pricing MODEL is structurally
 different, not just different numbers:
   Anthropic — base input rate; cache READS at 0.1x; cache WRITES (opt-in
-    via cache_control) at 1.25x. No time-of-day variation.
+    via cache_control) at 1.25x (5m TTL) or 2.0x (1h TTL). No time-of-day
+    variation.
   DeepSeek  — separate cache-hit/cache-miss input rates (caching is
     automatic/disk-based, never explicitly written to); no write-premium
     concept at all; peak/off-peak hours DOUBLE every rate uniformly.
-Rates verified against https://api-docs.deepseek.com/quick_start/pricing/
-on 2026-08-26 — not a third-party aggregator, which returned inconsistent
-numbers for the same model.
+Rates re-verified 2026-08-27 against:
+  https://platform.claude.com/docs/en/about-claude/pricing
+  https://api-docs.deepseek.com/quick_start/pricing/
 
 FX rate comes from config.settings.usd_inr_rate — never hardcoded here, so
-it can be updated without touching this module.
+it can be updated without touching this module. Refresh USD_INR_RATE in
+.env when spot drifts (cost estimates are wrong by the same %).
 
-Storage: a small, self-contained `llm_calls` table in the same SQLite
-file Module 11 will later add its `analyses` table to. This module owns
-its own table rather than waiting on Module 11, since it has to exist
-before Stage 1 does.
+Storage: `llm_calls` table in the same SQLite file as `analyses`
+(storage.py). This module owns its own table creation/migrations.
 """
 
 from __future__ import annotations
@@ -29,16 +29,16 @@ from datetime import UTC, datetime
 
 from stockbot.config import DB_PATH, settings
 
+# Last date these USD/MTok tables were checked against the vendor docs above.
+PRICING_VERIFIED_ON = "2026-08-27"
+
 ANTHROPIC_PRICING_USD_PER_MTOK = {
     "claude-sonnet-5": {"input": 2.0, "output": 10.0},
     "claude-opus-5": {"input": 5.0, "output": 25.0},
-    # v3 migration (Stage 1 extraction model). Found live: this was
-    # missing entirely, so the real first Haiku call succeeded and was
-    # billed by Anthropic, then crashed trying to log its own cost here —
-    # log_call is called AFTER save_response_fixture specifically so the
-    # response itself isn't lost even when this kind of bug hits, but the
-    # cost record for that one call is genuinely missing from llm_calls.
+    # v3 migration (Stage 1 extraction model / A-B / screener ranker).
     "claude-haiku-4-5-20251001": {"input": 1.0, "output": 5.0},
+    # Not used in production pipeline; kept so an accidental call still logs.
+    "claude-fable-5": {"input": 10.0, "output": 50.0},
 }
 CACHED_INPUT_DISCOUNT = 0.1
 # Found live: switching both stages to ttl="1h" (see llm/extract.py,
@@ -75,6 +75,8 @@ def _deepseek_rate_multiplier(called_at: datetime) -> float:
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS llm_calls (

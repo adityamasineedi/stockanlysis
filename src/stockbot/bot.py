@@ -18,8 +18,8 @@ without turning the pipeline itself async.
 
 Real timing, measured live: a full run (brief fetch + Stage 1 + Stage 2)
 takes roughly 5-10 minutes end to end, and a Stage 2 validation retry adds
-another 5-8 minutes on top of that — Opus 5's default adaptive thinking
-plus a full 16-section report is genuinely slow to generate, not stuck.
+another 5-8 minutes on top of that — Sonnet's adaptive thinking plus a
+full 16-section report is genuinely slow to generate, not stuck.
 The original "~45s" estimate in ANALYZING_TEMPLATE was never measured
 against a real run and badly undersold this; a restart mid-analysis
 abandons the in-flight background thread with no recovery — the API call
@@ -55,6 +55,10 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 ANALYZING_TEMPLATE = "⏳ Analyzing {company}... (usually 5-15 min — please don't restart the bot)"
+DISCLAIMER = (
+    "<i>Educational research only — not investment advice. "
+    "Do your own due diligence before any trade.</i>"
+)
 
 # Tickers with a run_full_analysis currently in flight, keyed by normalized
 # query text. Prevents a second /analyze for the same query from starting
@@ -68,7 +72,11 @@ def esc(value: object) -> str:
     return html.escape(str(value), quote=False)
 
 
-def format_verdict_reply(analysis: Analysis) -> str:
+def format_verdict_reply(
+    analysis: Analysis,
+    *,
+    staleness_banner: str | None = None,
+) -> str:
     v = analysis.verdict_json
     buy_zone = v.get("buy_zone_abs") or [None, None]
     # fair_value_base_abs is Python-computed (compute_valuation, from the
@@ -76,16 +84,23 @@ def format_verdict_reply(analysis: Analysis) -> str:
     # pipeline.py — not a field the model states directly under v3.
     fair_value = v.get("fair_value_base_abs") or [None, None]
 
-    lines = [
-        f"<b>{esc(v.get('verdict', '?'))}</b> — {esc(analysis.ticker)}",
-        f"Price: ₹{v.get('current_price_abs', '?')} (as of {esc(v.get('price_date', '?'))})",
-        f"Buy Zone: ₹{buy_zone[0]}–₹{buy_zone[1]}",
-        f"Fair Value: ₹{fair_value[0]}–₹{fair_value[1]}",
-        f"Risk: {esc(v.get('risk', '?'))} · Confidence: {v.get('confidence', '?')}/10",
-        f"Holding Period: {esc(v.get('holding_period', '?'))}",
-        "",
-        "<b>Why buy</b>",
-    ]
+    lines: list[str] = []
+    if staleness_banner:
+        lines.append(esc(staleness_banner))
+        lines.append("")
+
+    lines.extend(
+        [
+            f"<b>{esc(v.get('verdict', '?'))}</b> — {esc(analysis.ticker)}",
+            f"Price: ₹{v.get('current_price_abs', '?')} (as of {esc(v.get('price_date', '?'))})",
+            f"Buy Zone: ₹{buy_zone[0]}–₹{buy_zone[1]}",
+            f"Fair Value: ₹{fair_value[0]}–₹{fair_value[1]}",
+            f"Risk: {esc(v.get('risk', '?'))} · Confidence: {v.get('confidence', '?')}/10",
+            f"Holding Period: {esc(v.get('holding_period', '?'))}",
+            "",
+            "<b>Why buy</b>",
+        ]
+    )
     for reason in v.get("reasons_buy") or []:
         lines.append(f"• {esc(reason)}")
     lines.append("")
@@ -97,6 +112,9 @@ def format_verdict_reply(analysis: Analysis) -> str:
 
     for item in analysis.missing:
         lines.append(f"⚠️ {esc(item)}")
+
+    lines.append("")
+    lines.append(DISCLAIMER)
 
     text = "\n".join(lines)
     if len(text) > TELEGRAM_MAX_MESSAGE_LENGTH:
@@ -121,6 +139,13 @@ async def _deliver_result(update: Update, result: PipelineResult, status_message
     if result.status == "ambiguous":
         await status_message.edit_text(
             format_ambiguous_reply(result.candidates), parse_mode=ParseMode.HTML
+        )
+        return
+
+    if result.status == "busy":
+        await status_message.edit_text(
+            "Another analysis is already running. Please wait for it to finish "
+            "(usually 5–15 min), then try again."
         )
         return
 
@@ -156,7 +181,10 @@ async def _deliver_result(update: Update, result: PipelineResult, status_message
         return
 
     analysis = result.analysis
-    await status_message.edit_text(format_verdict_reply(analysis), parse_mode=ParseMode.HTML)
+    await status_message.edit_text(
+        format_verdict_reply(analysis, staleness_banner=result.staleness_banner),
+        parse_mode=ParseMode.HTML,
+    )
     await _send_report_attachment(update, analysis)
 
 
@@ -181,7 +209,7 @@ async def _send_progress_updates(status_message, query: str) -> None:
             minutes += 1
             try:
                 await status_message.edit_text(
-                    f"⏳ Still analyzing {esc(query)}... ({minutes} min elapsed — Opus 5 report "
+                    f"⏳ Still analyzing {esc(query)}... ({minutes} min elapsed — Sonnet report "
                     f"generation typically takes 5-15 min, please don't restart the bot)"
                 )
             except Exception:
@@ -237,7 +265,9 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Send a company name, or use /analyze <company>. I'll fetch, analyze, and reply "
-        "with a verdict plus the full report as a file.\n/spend shows month-to-date cost."
+        "with a verdict plus the full report as a file.\n"
+        "/spend shows month-to-date cost.\n\n"
+        "Educational research only — not investment advice."
     )
 
 

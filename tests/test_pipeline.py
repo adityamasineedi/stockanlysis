@@ -20,6 +20,7 @@ from stockbot.models import (
     ValidationResult,
 )
 from stockbot.pipeline import run_full_analysis
+from stockbot.storage import CacheHit
 
 NOW = datetime.now(UTC)
 TICKER = TickerInfo(symbol="TEST", exchange="NSE", company_name="Test Co Limited", isin=None)
@@ -62,7 +63,8 @@ def _brief() -> Brief:
 def _patch_common(monkeypatch, *, resolve_result=TICKER, cached=None, budget_ok=True, spent=0.0):
     monkeypatch.setattr(pipeline_module, "load_symbol_table", lambda: object())
     monkeypatch.setattr(pipeline_module, "resolve_ticker", lambda query, table: resolve_result)
-    monkeypatch.setattr(pipeline_module.storage, "get_cached", lambda ticker, max_age_days=7: cached)
+    cache_hit = CacheHit(analysis=cached, current_price_abs=405.0) if cached is not None else None
+    monkeypatch.setattr(pipeline_module.storage, "get_cached", lambda ticker, max_age_days=7: cache_hit)
     monkeypatch.setattr(pipeline_module, "check_budget", lambda: (budget_ok, spent))
     monkeypatch.setattr(pipeline_module, "assemble_brief", lambda ticker: _brief())
     monkeypatch.setattr(
@@ -89,8 +91,13 @@ def test_cache_hit_skips_budget_and_llm_entirely(monkeypatch):
     from stockbot.models import Analysis
 
     cached_analysis = Analysis(
-        ticker="TEST", run_date=date(2026, 8, 19), verdict_json={}, report_md="# cached",
-        costs=39.0, validation=ValidationResult(True, []), missing=[],
+        ticker="TEST",
+        run_date=date(2026, 8, 19),
+        verdict_json={"current_price_abs": 400.0, "price_date": "2026-08-19"},
+        report_md="# cached",
+        costs=39.0,
+        validation=ValidationResult(True, []),
+        missing=[],
     )
     _patch_common(monkeypatch, cached=cached_analysis)
 
@@ -103,6 +110,10 @@ def test_cache_hit_skips_budget_and_llm_entirely(monkeypatch):
     result = run_full_analysis("TEST")
     assert result.status == "ok"
     assert result.analysis is cached_analysis
+    assert result.from_cache is True
+    assert result.staleness_banner is not None
+    assert "400.00" in result.staleness_banner
+    assert "405.00" in result.staleness_banner
 
 
 def test_budget_exceeded_short_circuits_before_any_llm_call(monkeypatch):
@@ -230,5 +241,38 @@ def test_per_analysis_cost_cap_stops_after_a_retry_pushes_it_over(monkeypatch):
 
     result = run_full_analysis("TEST")
     assert result.status == "analysis_cost_exceeded"
-    assert calls["count"] == 2
     assert result.spent_inr == pytest.approx(85.0)
+    assert calls["count"] == 2
+
+
+def test_busy_when_concurrency_slot_already_held(monkeypatch):
+    _patch_common(monkeypatch)
+    assert pipeline_module._ANALYSIS_SLOTS.acquire(blocking=False)
+    try:
+        result = run_full_analysis("TEST")
+        assert result.status == "busy"
+    finally:
+        pipeline_module._ANALYSIS_SLOTS.release()
+
+
+def test_budget_rechecked_after_stage1_before_stage2(monkeypatch):
+    _patch_common(monkeypatch)
+    calls = {"n": 0}
+
+    def _budget():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return True, 0.0
+        return False, 1400.0
+
+    monkeypatch.setattr(pipeline_module, "check_budget", _budget)
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("Stage 2 must not run after budget re-check fails")
+
+    monkeypatch.setattr(pipeline_module, "run_stage2", _fail_if_called)
+
+    result = run_full_analysis("TEST")
+    assert result.status == "budget_exceeded"
+    assert result.spent_inr == 1400.0
+    assert calls["n"] == 2
