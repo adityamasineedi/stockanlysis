@@ -1,0 +1,43 @@
+[project]
+name = "stockbot"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "adityamasineedi", email = "masineediaditya526@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=1.0.0",
+    "beautifulsoup4>=4.15.0",
+    "httpx>=0.28.1",
+    "lxml>=6.1.2",
+    "pandas>=3.0.5",
+    "pdfplumber>=0.11.10",
+    "pydantic>=2",
+    "pydantic-settings>=2.15.0",
+    "python-dotenv>=1.2.3",
+    "python-telegram-bot>=22.8",
+    "rapidfuzz>=3.14.5",
+    "tabulate>=0.10.0",
+    "tenacity>=9.1.4",
+    "yfinance>=1.6.0",
+]
+
+[project.scripts]
+stockbot = "stockbot:main"
+stockbot-verify = "stockbot.verify:main"
+stockbot-bot = "stockbot.bot:main"
+stockbot-smoke-test = "stockbot.smoke_test:main"
+stockbot-dry-run = "stockbot.dry_run:main"
+stockbot-ab-test = "stockbot.ab_test:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.4",
+]
