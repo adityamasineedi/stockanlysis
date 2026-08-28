@@ -1082,6 +1082,9 @@ def check_deep_analysis_eligibility(
             "missing_key_trio": missing_key,
             "data_completeness": quant.data_validation.data_completeness_score,
             "data_confidence": quant.data_validation.data_confidence,
+            "quality_score": round(quant.components.business_quality, 1),
+            "growth_score": round(quant.components.growth, 1),
+            "strength_score": round(quant.components.financial_strength, 1),
         }
     )
     return result
