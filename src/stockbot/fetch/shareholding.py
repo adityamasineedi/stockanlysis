@@ -21,8 +21,11 @@ merged from Screener on the same record.
 Promoter pledge: the NSE master JSON links to SEBI XBRL shareholding
 filings. When ``WhetherAnySharesHeldByPromotersAreEncumberedUnderPledged``
 is explicitly false, pledge is set to ``0.0`` (confirmed zero). When the
-flag is true but a reliable % of promoter holding cannot be parsed from
-XBRL yet, pledge stays ``None`` (unconfirmed, not zero).
+flag is true, pledge % of promoter holding is parsed from XBRL using
+promoter-group share counts (``NumberOfSharesEncumberedUnderPledged`` /
+``NumberOfShares`` at ``ShareholdingOfPromoterAndPromoterGroup_ContextI``),
+direct % tags when present, or a prose fallback. If parsing fails, pledge
+stays ``None`` (unconfirmed, not zero).
 """
 
 from __future__ import annotations
@@ -57,13 +60,93 @@ class ShareholdingFetchError(Exception):
 logger = logging.getLogger(__name__)
 
 _PLEDGE_FLAG_TAG = "WhetherAnySharesHeldByPromotersAreEncumberedUnderPledged"
+_PROMOTER_GROUP_CONTEXT = "ShareholdingOfPromoterAndPromoterGroup_ContextI"
+_PLEDGE_SHARES_TAGS = ("NumberOfSharesEncumberedUnderPledged", "NumberOfSharesEncumbered")
+_PROMOTER_SHARES_TAGS = ("NumberOfShares", "NumberOfFullyPaidUpEquityShares")
+_PROSE_PLEDGE_PCT = re.compile(
+    r"(?:representing|constituting|amounting to)\s+(\d+(?:\.\d+)?)\s*%\s+of\s+"
+    r"(?:their|promoter(?:s'|)?)\s+hold",
+    re.IGNORECASE,
+)
 
 
 def _xbrl_tag_value(xml: str, tag: str) -> str | None:
-    match = re.search(rf":{re.escape(tag)}[^>]*>([^<]+)</", xml, flags=re.IGNORECASE)
+    match = re.search(
+        rf":{re.escape(tag)}(?:\s|>|/)[^>]*>([^<]+)</",
+        xml,
+        flags=re.IGNORECASE,
+    )
     if not match:
         return None
     return match.group(1).strip()
+
+
+def _xbrl_context_tag_value(xml: str, tag: str, context_ref: str) -> str | None:
+    match = re.search(
+        rf":{re.escape(tag)}(?:\s|>|/)contextRef=\"{re.escape(context_ref)}\"[^>]*>([^<]+)</",
+        xml,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _xbrl_numeric_context_value(xml: str, tag: str, context_ref: str) -> float | None:
+    raw = _xbrl_context_tag_value(xml, tag, context_ref)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _parse_pledge_pct_from_direct_tags(xml: str) -> float | None:
+    """Prefer % of shares-held tags; skip % of total-company-share tags."""
+    for match in re.finditer(r":([A-Za-z0-9]+)[^>]*>([^<]+)</", xml):
+        tag, raw = match.group(1), match.group(2).strip()
+        if not re.search(r"Pledge|Encumbered", tag, re.I):
+            continue
+        if not re.search(r"Percentage|Percent", tag, re.I):
+            continue
+        if re.search(r"TotalNumberOfShares", tag, re.I):
+            continue
+        if not re.search(r"SharesHeld|Shareholding|Promoter", tag, re.I):
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        if 0 <= value <= 100:
+            return value
+    return None
+
+
+def _parse_pledge_pct_from_share_ratio(xml: str) -> float | None:
+    pledged: float | None = None
+    for tag in _PLEDGE_SHARES_TAGS:
+        pledged = _xbrl_numeric_context_value(xml, tag, _PROMOTER_GROUP_CONTEXT)
+        if pledged is not None:
+            break
+    if pledged is None or pledged < 0:
+        return None
+
+    total: float | None = None
+    for tag in _PROMOTER_SHARES_TAGS:
+        total = _xbrl_numeric_context_value(xml, tag, _PROMOTER_GROUP_CONTEXT)
+        if total is not None and total > 0:
+            break
+    if total is None or total <= 0:
+        return None
+    return pledged / total * 100.0
+
+
+def _parse_pledge_pct_from_prose(xml: str) -> float | None:
+    match = _PROSE_PLEDGE_PCT.search(xml)
+    if not match:
+        return None
+    return float(match.group(1))
 
 
 def parse_pledge_pct_from_nse_xbrl(xml: str) -> float | None:
@@ -75,7 +158,19 @@ def parse_pledge_pct_from_nse_xbrl(xml: str) -> float | None:
         return 0.0
     if raw_flag.lower() != "true":
         return None
-    # Pledge exists — numeric % of promoter holding not reliably parsed yet.
+
+    for parser in (
+        _parse_pledge_pct_from_direct_tags,
+        _parse_pledge_pct_from_share_ratio,
+        _parse_pledge_pct_from_prose,
+    ):
+        pct = parser(xml)
+        if pct is not None:
+            return round(pct, 4)
+
+    logger.info(
+        "NSE XBRL pledge flag true but pledge %% of promoter holding could not be parsed"
+    )
     return None
 
 
