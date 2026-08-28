@@ -201,10 +201,10 @@ def test_sync_live_price_updates_display_and_gates():
         },
     }
     synced = sync_live_price_into_verdict(
-        verdict, live_price_abs=2568.0, live_price_date=date(2026, 8, 28)
+        verdict, live_price_abs=408.54998779296875, live_price_date=date(2026, 8, 28)
     )
     assert synced["analysis_price_abs"] == 2625.0
     assert synced["analysis_price_date"] == "2026-08-26"
-    assert synced["current_price_abs"] == 2568.0
+    assert synced["current_price_abs"] == 408.55
     assert synced["price_date"] == "2026-08-28"
     assert synced["anti_chase_flag"] is False

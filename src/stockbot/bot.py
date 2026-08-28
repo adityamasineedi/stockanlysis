@@ -101,28 +101,37 @@ def _money_pair(pair: object) -> tuple[str, str] | None:
         return None
 
 
+def _format_price_abs(value: object) -> str:
+    """Format a price for Telegram display (2dp, no yfinance float noise)."""
+    if value is None:
+        return "?"
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _resolve_base_fair_value(verdict_json: dict) -> tuple[str, str] | None:
     """Headline FV is always the BASE range — never bear-low–bull-high.
 
     Prefer the Python-merged fair_value_base_abs; if missing (older saved
-    analyses), recompute from valuation_inputs so Telegram never falls back
-    to a wrong span or ₹None.
+    analyses), recompute from valuation_inputs, then legacy fair_value_abs.
     """
     formatted = _money_pair(verdict_json.get("fair_value_base_abs"))
     if formatted is not None:
         return formatted
 
     raw_inputs = verdict_json.get("valuation_inputs")
-    if not isinstance(raw_inputs, dict):
-        return None
-    try:
-        from stockbot.llm.verdict import ValuationInputs, compute_valuation
+    if isinstance(raw_inputs, dict):
+        try:
+            from stockbot.llm.verdict import ValuationInputs, compute_valuation
 
-        valuation = compute_valuation(ValuationInputs.model_validate(raw_inputs))
-        return _money_pair(valuation.fair_value_base_abs)
-    except Exception:
-        logger.exception("Could not recompute fair_value_base_abs for Telegram card")
-        return None
+            valuation = compute_valuation(ValuationInputs.model_validate(raw_inputs))
+            return _money_pair(valuation.fair_value_base_abs)
+        except Exception:
+            logger.exception("Could not recompute fair_value_base_abs for Telegram card")
+
+    return _money_pair(verdict_json.get("fair_value_abs"))
 
 
 _CASH_GAP_BLOCK_MARKERS = (
@@ -221,7 +230,7 @@ def format_verdict_reply(
     lines.extend(
         [
             f"<b>{esc(v.get('verdict', '?'))}</b> — {esc(analysis.ticker)}",
-            f"Price: ₹{v.get('current_price_abs', '?')} (as of {esc(v.get('price_date', '?'))})",
+            f"Price: ₹{_format_price_abs(v.get('current_price_abs'))} (as of {esc(v.get('price_date', '?'))})",
             buy_zone_line,
             f"Fair Value (base): ₹{fair_value[0]}–₹{fair_value[1]}",
             f"Risk: {esc(v.get('risk', '?'))} · Confidence: {v.get('confidence', '?')}/10",

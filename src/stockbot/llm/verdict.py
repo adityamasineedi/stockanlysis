@@ -49,6 +49,11 @@ from stockbot.brief import (
     format_price_section,
     format_shareholding_section,
 )
+from stockbot.brief_enrichment import (
+    format_metadata_json,
+    format_news_summary_json,
+    format_prescan_summary_json,
+)
 from stockbot.config import MASTER_PROMPT_PATH, PROMPTS_DIR, settings
 
 CONSTITUTION_PATH = PROMPTS_DIR / "quality-first-portfolio-constitution-v1.md"
@@ -119,7 +124,21 @@ from context, state "This cannot be determined from the supplied evidence."
 FINANCIALS over EXTRACTION/news for accounting numbers; SHAREHOLDING over \
 news for ownership/pledge. Note conflicts in §6.
 
-5. Quality-First constitution (system prompt): complete five_year_business_test \
+5. Use <metadata> sector/industry and <prescan_summary> issuer_class to choose \
+the sector-appropriate scorecard (bank, defence/EPC, utility, loss-making growth). \
+Use ttm_pe in metadata as a descriptive trailing multiple only — do not invent \
+forward P/E or sector median multiples.
+
+6. You may use <prescan_summary> as a starting point for routing labels \
+(e.g. DEFENCE_WC_REVIEW) and multi-year cash-conversion context, but verify \
+underlying numbers in FINANCIALS. Do not change issuer_class or route unless \
+detailed data clearly contradicts them.
+
+7. Use <news_summary> only to supplement fundamentals (order book headlines, \
+management changes, guidance). Do not treat broker targets or headlines as facts \
+without cross-checking filings/results.
+
+8. Quality-First constitution (system prompt): complete five_year_business_test \
 before any Ideal Buy / Add More zone. If answer is NO or UNCERTAIN, set \
 buy_range_allowed=false, add_range_allowed=false, buy_zone_abs=null, and do \
 not invent buy/add levels. For defence/EPC/project names with extremely weak \
@@ -432,6 +451,14 @@ def build_user_message(
     # "EXPECTED INPUT STRUCTURE" — citation IDs for the model.
     context_parts: list[str] = [
         "<context>",
+        "<metadata>",
+        format_metadata_json(brief.metadata),
+        "</metadata>",
+        "",
+        "<prescan_summary>",
+        format_prescan_summary_json(brief.prescan_summary),
+        "</prescan_summary>",
+        "",
         "<price_and_technicals>",
         format_price_section(brief.price, brief.technicals),
         "</price_and_technicals>",
@@ -443,6 +470,10 @@ def build_user_message(
         "<shareholding>",
         format_shareholding_section(brief.shareholding),
         "</shareholding>",
+        "",
+        "<news_summary>",
+        format_news_summary_json(brief.news_summary),
+        "</news_summary>",
     ]
     pledge_note = _pledge_warning(brief)
     if pledge_note:

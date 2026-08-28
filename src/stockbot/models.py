@@ -106,6 +106,48 @@ class ReportText:
     fetched_at: datetime
 
 
+@dataclass(frozen=True)
+class BriefMetadata:
+    ticker: str
+    company_name: str
+    sector: str | None
+    industry: str | None
+    market_cap_cr: float | None
+    ttm_pe: float | None
+    ttm_pb: float | None
+    price: float
+    price_date: str
+    range_52w_low: float
+    range_52w_high: float
+    rsi_14: float | None
+
+
+@dataclass(frozen=True)
+class PrescanSummary:
+    quant_score: float | None
+    quality_score: float | None
+    growth_score: float | None
+    strength_score: float | None
+    band: str | None
+    issuer_class: str | None
+    route: str | None
+    eligibility_verdict: str | None
+    cash_conversion_status: str | None
+    ocf_pat_current: float | None
+    ocf_pat_3y: float | None
+    data_confidence: str | None
+    major_flags: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class NewsSummaryItem:
+    date: str
+    source: str
+    news_type: str
+    headline: str
+    note: str
+
+
 @dataclass(frozen=True, eq=False)
 class Brief:
     ticker: TickerInfo
@@ -119,6 +161,9 @@ class Brief:
     token_count: int
     confidence_ceiling: int
     generated_at: datetime
+    metadata: BriefMetadata | None = None
+    prescan_summary: PrescanSummary | None = None
+    news_summary: tuple[NewsSummaryItem, ...] = ()
 
 
 @dataclass(frozen=True)

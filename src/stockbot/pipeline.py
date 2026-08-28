@@ -25,7 +25,7 @@ from typing import Literal
 from stockbot import storage
 from stockbot.analysis_routing import (
     Stage2Mode,
-    compute_stage2_routing,
+    analysis_routing_from_brief,
     resolve_stage2_mode,
 )
 from stockbot.brief import assemble_brief, to_markdown
@@ -217,8 +217,8 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     if not budget_ok:
         return PipelineResult(status="budget_exceeded", spent_inr=spent)
 
-    prescan_routing = compute_stage2_routing(ticker)
     brief = assemble_brief(ticker)
+    prescan_routing = analysis_routing_from_brief(brief)
     extraction, stage1_usage = run_stage1(brief)
     stage2_mode = resolve_stage2_mode(ticker, extraction, prescan=prescan_routing)
     logger.info(

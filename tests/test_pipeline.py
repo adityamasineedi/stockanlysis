@@ -88,8 +88,8 @@ def _patch_common(monkeypatch, *, resolve_result=TICKER, cached=None, budget_ok=
 
     monkeypatch.setattr(
         pipeline_module,
-        "compute_stage2_routing",
-        lambda ticker: AnalysisRouting(
+        "analysis_routing_from_brief",
+        lambda brief: AnalysisRouting(
             stage2_mode="FULL",
             eligibility_verdict="AUTO_DEEP_ANALYSIS",
             issuer_class="NON_FINANCIAL",

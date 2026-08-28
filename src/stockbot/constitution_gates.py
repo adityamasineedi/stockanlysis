@@ -197,7 +197,7 @@ def sync_live_price_into_verdict(
         updated["analysis_price_abs"] = updated.get("current_price_abs")
     if updated.get("analysis_price_date") is None:
         updated["analysis_price_date"] = updated.get("price_date")
-    updated["current_price_abs"] = live_price_abs
+    updated["current_price_abs"] = round(float(live_price_abs), 2)
     updated["price_date"] = live_price_date.isoformat()
     updated["price_synced_at"] = datetime.now(UTC).isoformat()
     return refresh_constitution_fields(updated)

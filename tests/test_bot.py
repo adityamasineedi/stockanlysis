@@ -177,6 +177,24 @@ def test_format_verdict_reply_recomputes_base_fv_when_abs_missing():
     assert "₹300.00" not in text  # must not fall through to bear
 
 
+def test_format_verdict_reply_falls_back_to_legacy_fair_value_abs():
+    """BEL-style Aug-2026 cache: fair_value_abs only, no valuation_inputs."""
+    analysis = _analysis()
+    analysis.verdict_json.pop("fair_value_base_abs", None)
+    analysis.verdict_json.pop("valuation_inputs", None)
+    analysis.verdict_json["fair_value_abs"] = [330.0, 380.0]
+    text = format_verdict_reply(analysis)
+    assert "Fair Value (base): ₹330.00–₹380.00" in text
+
+
+def test_format_verdict_reply_rounds_display_price():
+    analysis = _analysis()
+    analysis.verdict_json["current_price_abs"] = 408.54998779296875
+    text = format_verdict_reply(analysis)
+    assert "Price: ₹408.55" in text
+    assert "54998779296875" not in text
+
+
 def test_format_verdict_reply_uses_html_tags_not_markdown():
     text = format_verdict_reply(_analysis())
     assert "<b>" in text

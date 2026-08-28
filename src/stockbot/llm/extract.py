@@ -28,6 +28,7 @@ from anthropic import Anthropic
 from pydantic import BaseModel, Field
 
 from stockbot.brief import cap_red_flags_per_query
+from stockbot.brief_enrichment import format_news_summary_json
 from stockbot.config import settings
 from stockbot.llm.client import call_anthropic_and_log
 from stockbot.models import Brief, RedFlag
@@ -156,7 +157,12 @@ def build_user_message(brief: Brief) -> str:
     else:
         parts.append("MISSING: no annual report sections were extracted.")
 
-    parts.append("\n## News (red-flag search only — general news omitted for Stage 1)")
+    parts.append("\n## News (red-flag search + curated notable headlines)")
+
+    if brief.news_summary:
+        parts.append("### Curated notable headlines (rule-ranked, last 12 months)")
+        parts.append(format_news_summary_json(brief.news_summary))
+
     if brief.news is None:
         parts.append("MISSING: news fetch failed entirely — no items to review.")
     else:

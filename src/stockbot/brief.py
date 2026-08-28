@@ -39,6 +39,7 @@ from stockbot.fetch.fundamentals import fetch_fundamentals
 from stockbot.fetch.news import fetch_news
 from stockbot.fetch.prices import fetch_price_data
 from stockbot.fetch.shareholding import fetch_shareholding
+from stockbot.brief_enrichment import enrich_brief
 from stockbot.models import (
     Brief,
     Financials,
@@ -133,6 +134,7 @@ def assemble_brief(ticker: TickerInfo) -> Brief:
         generated_at=datetime.now(UTC),
     )
 
+    brief = enrich_brief(brief)
     markdown = to_markdown(brief)
     token_count = len(markdown) // CHARS_PER_TOKEN_ESTIMATE
     return dataclasses.replace(brief, token_count=token_count)

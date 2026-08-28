@@ -15,7 +15,8 @@ shell rather than data. Not wired in — same documented gap as Module 1.
 
 Screener (already fetched and cached by Module 3, reused here rather than
 re-fetched — see fetch_screener_page) supplies FII/DII/public % by
-quarter, filling in what NSE's JSON doesn't carry.
+quarter. When NSE succeeds, promoter/pledge come from NSE and FII/DII are
+merged from Screener on the same record.
 
 Promoter pledge: the NSE master JSON links to SEBI XBRL shareholding
 filings. When ``WhetherAnySharesHeldByPromotersAreEncumberedUnderPledged``
@@ -190,17 +191,23 @@ def fetch_screener_shareholding(symbol: str) -> Shareholding | None:
 
 
 def fetch_shareholding(symbol: str) -> Shareholding:
-    """Fallback chain, one source per record — not a merge. NSE first
-    (promoter % only; fii_pct/dii_pct are honestly None, since NSE's
-    endpoint doesn't carry them — not a gap, just what that source has).
-    Screener only if NSE fails entirely, giving promoter/FII/DII/public %
-    together from one consistent source. BSE is not wired in (see module
-    docstring)."""
+    """NSE first for promoter % and pledge; merge Screener FII/DII when available."""
     nse_result = fetch_nse_shareholding(symbol)
+    screener_result = fetch_screener_shareholding(symbol)
+
     if nse_result is not None:
+        if screener_result is not None:
+            return Shareholding(
+                promoter_pct=nse_result.promoter_pct,
+                pledge_pct_of_promoter_holding=nse_result.pledge_pct_of_promoter_holding,
+                fii_pct=screener_result.fii_pct,
+                dii_pct=screener_result.dii_pct,
+                quarter=nse_result.quarter or screener_result.quarter,
+                source="NSE",
+                fetched_at=nse_result.fetched_at,
+            )
         return nse_result
 
-    screener_result = fetch_screener_shareholding(symbol)
     if screener_result is not None:
         return screener_result
 

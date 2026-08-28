@@ -13,7 +13,7 @@ from typing import Literal
 
 from stockbot.config import settings
 from stockbot.llm.extract import ExtractionResult
-from stockbot.models import TickerInfo
+from stockbot.models import Brief, TickerInfo
 from stockbot.portfolio_screener.data_loader import fetch_universe_metrics
 from stockbot.portfolio_screener.issuer_routing import decide_eligibility_route
 from stockbot.portfolio_screener.quant_engine import compute_quant_score
@@ -105,6 +105,25 @@ def resolve_stage2_mode(
     return "FULL"
 
 
+def analysis_routing_from_brief(brief: Brief) -> AnalysisRouting:
+    """Quant routing from brief enrichment — avoids duplicate Screener fetch."""
+    from stockbot.brief_enrichment import stage2_mode_from_prescan
+
+    summary = brief.prescan_summary
+    if summary is None:
+        return _quant_prescan_routing(brief.ticker)
+
+    mode, reasons = stage2_mode_from_prescan(summary)
+    return AnalysisRouting(
+        stage2_mode=mode,
+        eligibility_verdict=summary.eligibility_verdict,
+        issuer_class=summary.issuer_class,
+        data_confidence=summary.data_confidence,
+        quant_red_flags_count=len(summary.major_flags),
+        reasons=reasons,
+    )
+
+
 def compute_stage2_routing(ticker: TickerInfo) -> AnalysisRouting:
-    """Quant-only prescan routing (no LLM). Call before Stage 1."""
+    """Quant-only prescan routing (no LLM). Prefer analysis_routing_from_brief."""
     return _quant_prescan_routing(ticker)

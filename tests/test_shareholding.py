@@ -33,14 +33,16 @@ SCREENER_RESULT = Shareholding(
 )
 
 
-def test_prefers_nse_when_available(monkeypatch):
+def test_merges_screener_fii_dii_when_nse_available(monkeypatch):
     monkeypatch.setattr(shareholding, "fetch_nse_shareholding", lambda symbol: NSE_RESULT)
     monkeypatch.setattr(
         shareholding, "fetch_screener_shareholding", lambda symbol: SCREENER_RESULT
     )
     result = fetch_shareholding("RELIANCE")
     assert result.source == "NSE"
-    assert result.fii_pct is None  # honestly None, not silently backfilled from Screener
+    assert result.promoter_pct == 50.0
+    assert result.fii_pct == 17.0
+    assert result.dii_pct == 21.0
 
 
 def test_falls_back_to_screener_when_nse_fails(monkeypatch):
