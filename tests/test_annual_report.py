@@ -5,6 +5,7 @@ compliance-certificate false positive for "Independent Auditor's Report")
 was verified by hand during development — see the module docstring."""
 
 from stockbot.fetch.annual_report import (
+    BUSINESS_HEADING_PRIORITY,
     HEADING_PRIORITY,
     TOKEN_CAP,
     _build_sections,
@@ -15,6 +16,7 @@ from stockbot.fetch.annual_report import (
     _merge_ranges,
     _normalize_quotes,
     _truncate_to_budget,
+    parse_ar_business_summary,
 )
 
 
@@ -186,3 +188,26 @@ def test_build_sections_no_hits_returns_empty_without_error():
     assert sections == {}
     assert truncated is False
     assert dropped == []
+
+
+def test_build_sections_extracts_business_headings():
+    pages = [
+        "Management Discussion and Analysis\n"
+        "Order book stands at Rs. 20,535 crore with execution over 2 years.\n"
+        "Segment - Shipbuilding: revenue growth remained strong.",
+        "Segment Information\nShipbuilding, Submarines, Refits",
+    ]
+    sections, _, _ = _build_sections(pages)
+    assert any("Management Discussion" in k for k in sections)
+    assert any("Order Book" in k or "Management Discussion" in k for k in sections)
+
+
+def test_parse_ar_business_summary_extracts_order_book_and_segments():
+    sections = {
+        "Order Book": "The consolidated order book as on 31 Mar 2026 was Rs. 20,535 crore.",
+        "Segment Information": "Segment - Shipbuilding: warships and submarines",
+    }
+    summary = parse_ar_business_summary(sections)
+    assert summary is not None
+    assert summary.order_book_cr == 20535.0
+    assert summary.segments

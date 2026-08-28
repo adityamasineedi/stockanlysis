@@ -312,6 +312,12 @@ def _format_annual_report_section(report: ReportText) -> str:
         lines.append(f"#### {heading}")
         lines.append(text)
         lines.append("")
+    if report.business_summary and report.business_summary.order_book_cr is not None:
+        lines.append(
+            f"*Parsed order book (AR): ₹{report.business_summary.order_book_cr:.0f} cr "
+            f"(rule-based, verify in filing)*"
+        )
+        lines.append("")
 
     return "\n".join(lines)
 

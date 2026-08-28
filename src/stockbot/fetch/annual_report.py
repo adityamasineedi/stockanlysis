@@ -42,7 +42,7 @@ import httpx
 import pdfplumber
 
 from stockbot.config import ANNUAL_REPORT_CACHE_DIR, HTTP_USER_AGENT
-from stockbot.models import ReportText
+from stockbot.models import ArBusinessSummary, ReportText
 
 USER_AGENT = HTTP_USER_AGENT
 NSE_PRIMING_URL = "https://www.nseindia.com/companies-listing/corporate-filings-annual-reports"
@@ -67,6 +67,42 @@ HEADING_PRIORITY: list[str] = [
     "Contingent Liabilit",
     "Related Party",
 ]
+
+# Filled after audit sections within the same TOKEN_CAP budget.
+BUSINESS_HEADING_PRIORITY: list[str] = [
+    "Management Discussion",
+    "MD&A",
+    "Business Overview",
+    "Business Review",
+    "Order Book",
+    "Segment Information",
+]
+
+FULL_HEADING_PRIORITY: list[str] = HEADING_PRIORITY + BUSINESS_HEADING_PRIORITY
+BUSINESS_SWING_WINDOW_PAGES = 5
+
+_ORDER_BOOK_AMOUNT_RE = re.compile(
+    r"(?:rs\.?|inr|₹)?\s*([\d,]+(?:\.\d+)?)\s*(crore|cr\.?|lakh|lac|bn|billion)",
+    re.IGNORECASE,
+)
+_HORIZON_YEARS_RE = re.compile(
+    r"(?:execut(?:e|ion|able)|deliver(?:y|able)|visibility)\s*(?:over|within|of)?\s*"
+    r"([\d.]+)\s*(?:years?|yrs?)",
+    re.IGNORECASE,
+)
+_SEGMENT_LINE_RE = re.compile(
+    r"(?:^|\n)\s*(?:\d+\.\s*)?(?:segment|business segment|vertical)\s*[:\-–]\s*"
+    r"([A-Za-z0-9 /&\-]+)",
+    re.IGNORECASE,
+)
+_RISK_LINE_RE = re.compile(
+    r"(?:key\s+)?risk[s]?\s*[:\-–]\s*(.{20,180})",
+    re.IGNORECASE,
+)
+_STRATEGY_LINE_RE = re.compile(
+    r"(?:strategy|strategic\s+(?:priority|focus|initiative))[s]?\s*[:\-–]\s*(.{20,180})",
+    re.IGNORECASE,
+)
 
 
 class AnnualReportError(Exception):
@@ -309,20 +345,122 @@ def _truncate_to_budget(text: str, budget_tokens: int) -> str:
     return truncated + "\n\n[TRUNCATED — exceeds the annual report token budget]"
 
 
-def _build_sections(pages_text: list[str]) -> tuple[dict[str, str], bool, list[str]]:
+def _parse_amount_cr(text: str) -> float | None:
+    match = _ORDER_BOOK_AMOUNT_RE.search(text)
+    if not match:
+        return None
+    try:
+        value = float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    unit = match.group(2).lower()
+    if unit.startswith("lakh") or unit.startswith("lac"):
+        return value / 100.0
+    if unit.startswith("bn") or unit.startswith("billion"):
+        return value * 100.0
+    return value
+
+
+def _extract_order_book_cr(combined_business_text: str) -> float | None:
+    for match in re.finditer(r"order\s*book", combined_business_text, re.IGNORECASE):
+        window = combined_business_text[match.start() : match.start() + 500]
+        amount = _parse_amount_cr(window)
+        if amount is not None:
+            return amount
+    return _parse_amount_cr(combined_business_text)
+
+
+def _extract_horizon_years(text: str) -> float | None:
+    match = _HORIZON_YEARS_RE.search(text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _unique_limited(items: list[str], *, limit: int = 6) -> tuple[str, ...]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in items:
+        cleaned = re.sub(r"\s+", " ", raw).strip(" .;")
+        if len(cleaned) < 8:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+        if len(out) >= limit:
+            break
+    return tuple(out)
+
+
+def parse_ar_business_summary(sections: dict[str, str]) -> ArBusinessSummary | None:
+    """Best-effort structured parse from business AR sections — no LLM."""
+    business_keys = [h for h in BUSINESS_HEADING_PRIORITY if h in sections]
+    if not business_keys:
+        return None
+
+    combined = "\n\n".join(sections[k] for k in business_keys)
+    segments = _unique_limited([m.group(1) for m in _SEGMENT_LINE_RE.finditer(combined)])
+    risks = _unique_limited([m.group(1) for m in _RISK_LINE_RE.finditer(combined)], limit=4)
+    strategy = _unique_limited(
+        [m.group(1) for m in _STRATEGY_LINE_RE.finditer(combined)],
+        limit=4,
+    )
+    order_book_cr = _extract_order_book_cr(combined)
+    horizon = _extract_horizon_years(combined)
+
+    if not any((segments, risks, strategy, order_book_cr, horizon)):
+        return ArBusinessSummary(order_book_cr=order_book_cr)
+
+    return ArBusinessSummary(
+        segments=segments,
+        order_book_cr=order_book_cr,
+        order_book_horizon_years=horizon,
+        key_risks=risks,
+        strategy=strategy,
+    )
+
+
+def format_ar_business_summary_json(summary: ArBusinessSummary | None) -> str:
+    if summary is None:
+        return "null"
+    import json
+
+    payload = {
+        "segments": list(summary.segments),
+        "order_book_cr": summary.order_book_cr,
+        "order_book_horizon_years": summary.order_book_horizon_years,
+        "key_risks": list(summary.key_risks),
+        "strategy": list(summary.strategy),
+    }
+    return json.dumps(payload, indent=2)
+
+
+def _build_sections(
+    pages_text: list[str],
+    *,
+    headings: list[str] | None = None,
+    swing_window: int = SWING_WINDOW_PAGES,
+) -> tuple[dict[str, str], bool, list[str]]:
     total_pages = len(pages_text)
+    heading_list = headings or FULL_HEADING_PRIORITY
     candidate_text: dict[str, str] = {}
-    for heading in HEADING_PRIORITY:
+    for heading in heading_list:
         hits = _find_heading_pages(pages_text, heading)
         if not hits:
             continue
-        ranges = _merge_ranges(hits, SWING_WINDOW_PAGES, total_pages)
+        window = BUSINESS_SWING_WINDOW_PAGES if heading in BUSINESS_HEADING_PRIORITY else swing_window
+        ranges = _merge_ranges(hits, window, total_pages)
         candidate_text[heading] = _extract_ranges_text(pages_text, hits, heading, ranges)
 
     sections: dict[str, str] = {}
     dropped: list[str] = []
     budget = TOKEN_CAP
-    for heading in HEADING_PRIORITY:
+    for heading in heading_list:
         if heading not in candidate_text:
             continue
         text = candidate_text[heading]
@@ -369,6 +507,7 @@ def fetch_annual_report(symbol: str) -> ReportText:
         )
 
     sections, truncated, dropped = _build_sections(pages_text)
+    business_summary = parse_ar_business_summary(sections)
 
     return ReportText(
         sections=sections,
@@ -378,4 +517,5 @@ def fetch_annual_report(symbol: str) -> ReportText:
         dropped_sections=dropped,
         source="nse_annual_reports",
         fetched_at=datetime.now(UTC),
+        business_summary=business_summary,
     )

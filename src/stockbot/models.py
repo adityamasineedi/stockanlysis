@@ -96,6 +96,17 @@ class NewsItems:
 
 
 @dataclass(frozen=True)
+class ArBusinessSummary:
+    """Rule-parsed highlights from MD&A / order-book / segment AR sections."""
+
+    segments: tuple[str, ...] = ()
+    order_book_cr: float | None = None
+    order_book_horizon_years: float | None = None
+    key_risks: tuple[str, ...] = ()
+    strategy: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ReportText:
     sections: dict[str, str]
     report_year: int | None
@@ -104,6 +115,7 @@ class ReportText:
     dropped_sections: list[str]
     source: str
     fetched_at: datetime
+    business_summary: ArBusinessSummary | None = None
 
 
 @dataclass(frozen=True)

@@ -54,6 +54,7 @@ from stockbot.brief_enrichment import (
     format_news_summary_json,
     format_prescan_summary_json,
 )
+from stockbot.fetch.annual_report import format_ar_business_summary_json
 from stockbot.config import MASTER_PROMPT_PATH, PROMPTS_DIR, settings
 
 CONSTITUTION_PATH = PROMPTS_DIR / "quality-first-portfolio-constitution-v1.md"
@@ -138,7 +139,11 @@ detailed data clearly contradicts them.
 management changes, guidance). Do not treat broker targets or headlines as facts \
 without cross-checking filings/results.
 
-8. Quality-First constitution (system prompt): complete five_year_business_test \
+8. Use <ar_business_summary> for filing-sourced order-book / segment / MD&A \
+highlights when present. Prefer these over news for backlog size; mark anything \
+not directly supported in FINANCIALS as [UNVERIFIED] in prose.
+
+9. Quality-First constitution (system prompt): complete five_year_business_test \
 before any Ideal Buy / Add More zone. If answer is NO or UNCERTAIN, set \
 buy_range_allowed=false, add_range_allowed=false, buy_zone_abs=null, and do \
 not invent buy/add levels. For defence/EPC/project names with extremely weak \
@@ -474,6 +479,10 @@ def build_user_message(
         "<news_summary>",
         format_news_summary_json(brief.news_summary),
         "</news_summary>",
+        "",
+        "<ar_business_summary>",
+        format_ar_business_summary_json(brief.annual_report.business_summary),
+        "</ar_business_summary>",
     ]
     pledge_note = _pledge_warning(brief)
     if pledge_note:
