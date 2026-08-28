@@ -84,6 +84,26 @@ def _series_values(row: pd.Series | None) -> list[float | None]:
     return out
 
 
+# yfinance sector/industry mislabels that break issuer routing (e.g. V-Guard → Utilities).
+_TICKER_SECTOR_OVERRIDES: dict[str, tuple[str, str]] = {
+    "VGUARD": ("Consumer Cyclical", "Consumer Electronics"),
+    "SERVOTECH": ("Industrials", "Electrical Equipment & Instruments"),
+}
+
+_KEY_RATIO_FIELDS = frozenset(
+    {"roe", "roce", "debt_equity", "ocf_to_pat", "interest_coverage", "net_debt_ebitda"}
+)
+
+
+def count_derived_key_ratios(metrics: StockMetrics) -> int:
+    """How many gatekeeper ratios were computed/yfinance rather than Screener-fetched."""
+    return sum(
+        1
+        for field in _KEY_RATIO_FIELDS
+        if metrics.metric_sources.get(field) in ("computed", "yfinance")
+    )
+
+
 def _mark_missing(metrics: StockMetrics, field: str, reason: str) -> None:
     metrics.missing[field] = reason
 
@@ -318,12 +338,21 @@ def extract_metrics(
     meta = market_meta if market_meta is not None else {}
     sector = meta.get("sector")
     industry = meta.get("industry")
-    m.sector = str(sector) if sector else "Unknown"
-    m.industry = str(industry) if industry else "Unknown"
-    if sector is None:
-        _mark_missing(m, "sector", "sector unavailable — defaulted to Unknown")
-    if industry is None:
-        _mark_missing(m, "industry", "industry unavailable — defaulted to Unknown")
+    sector_override = _TICKER_SECTOR_OVERRIDES.get(ticker.symbol.upper())
+    if sector_override is not None:
+        m.sector, m.industry = sector_override
+        m.sector_source = "override"
+        m.raw_notes.append(
+            f"Sector/industry override for {ticker.symbol}: {m.sector} / {m.industry}"
+        )
+    else:
+        m.sector = str(sector) if sector else "Unknown"
+        m.industry = str(industry) if industry else "Unknown"
+        m.sector_source = "yfinance" if sector else "unknown"
+        if sector is None:
+            _mark_missing(m, "sector", "sector unavailable — defaulted to Unknown")
+        if industry is None:
+            _mark_missing(m, "industry", "industry unavailable — defaulted to Unknown")
 
     mcap = meta.get("market_cap_cr")
     m.market_cap_cr = float(mcap) if isinstance(mcap, (int, float)) else None
@@ -385,6 +414,7 @@ def extract_metrics(
         return m
 
     m.years_available = financials.years_available
+    m.financials_basis = financials.basis
     pnl = financials.pnl
     bs = financials.balance_sheet
     cf = financials.cash_flow

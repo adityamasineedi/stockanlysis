@@ -27,6 +27,7 @@ from stockbot.portfolio_screener.ai_ranker import (
 )
 from stockbot.portfolio_screener.cost_tracker import ScreenerCostTracker
 from stockbot.portfolio_screener.data_loader import fetch_universe_metrics
+from stockbot.portfolio_screener.metrics import count_derived_key_ratios
 from stockbot.portfolio_screener.issuer_routing import (
     WC_RECONCILIATION_CHECKLIST,
     decide_eligibility_route,
@@ -40,6 +41,19 @@ from stockbot.portfolio_screener.outcome_log import (
 from stockbot.portfolio_screener.portfolio_selector import (
     candidate_band,
     combine_scores,
+)
+from stockbot.portfolio_screener.prescan_display import (
+    BAND_ICONS,
+    BAND_LABELS,
+    CASH_ICONS,
+    CASH_LABELS,
+    ISSUER_ICONS,
+    ISSUER_LABELS,
+    NEXT_ACTION_LABELS,
+    ROUTE_LABELS,
+    VERDICT_ICONS,
+    VERDICT_SUMMARY,
+    format_quality_growth_strength,
 )
 from stockbot.portfolio_screener.quant_engine import compute_quant_score
 from stockbot.portfolio_screener.red_flags import governance_notes
@@ -140,6 +154,9 @@ class EligibilityResult:
     risk_score: float | None = None
     data_confidence: str | None = None
     data_completeness: float | None = None
+    financials_basis: str | None = None
+    sector_source: str | None = None
+    derived_metric_count: int = 0
     key_reason: str = ""
     key_risk: str = ""
     data_concerns: list[str] = field(default_factory=list)
@@ -168,51 +185,14 @@ class EligibilityResult:
         if self.next_research_action == "CHEAP_WC_RECONCILIATION_FIRST":
             return self._telegram_html_cheap_wc()
 
-        icon = {
-            "AUTO_DEEP_ANALYSIS": "✅",
-            "SECTOR_SPECIFIC_REVIEW": "🔎",
-            "HOLDING_MONITOR_ONLY": "👀",
-            "DATA_UNAVAILABLE_RETRY": "📭",
-            "NOT_SUITABLE_FOR_3Y_RESEARCH": "❌",
-        }.get(self.verdict, "📋")
-
-        action_icon = {
-            "AUTO_DEEP_ANALYSIS": "🚀",
-            "SECTOR_SPECIFIC_REVIEW": "🧭",
-            "HOLDING_MONITOR_ONLY": "⏸️",
-            "DATA_UNAVAILABLE_RETRY": "🔄",
-            "NOT_SUITABLE_FOR_3Y_RESEARCH": "🛑",
-        }.get(self.verdict, "➡️")
-
-        plain = {
-            "AUTO_DEEP_ANALYSIS": (
-                "Ready for full 3-year deep research.",
-                "Run /analyze",
-            ),
-            "SECTOR_SPECIFIC_REVIEW": (
-                "Needs sector/thesis review before any buy or add range.",
-                "Run /analyze (sector lens)",
-            ),
-            "HOLDING_MONITOR_ONLY": (
-                "Not eligible for fresh research or new capital right now.",
-                "If you already hold it: monitor only — not a sell signal",
-            ),
-            "DATA_UNAVAILABLE_RETRY": (
-                "Data/fetch incomplete — no quality conclusion yet.",
-                "Retry later / check symbol",
-            ),
-            "NOT_SUITABLE_FOR_3Y_RESEARCH": (
-                "Outside the profitable-compounder 3-year screen.",
-                "No auto /analyze — if already held, not a sell signal",
-            ),
-        }.get(
+        icon = VERDICT_ICONS.get(self.verdict, "📋")
+        meaning, do_next = VERDICT_SUMMARY.get(
             self.verdict,
             (
                 "See details below.",
                 "Run /analyze" if self.suitable_for_deep_analysis else "Skip for now",
             ),
         )
-        meaning, do_next = plain
 
         if (
             self.next_research_action == "FULL_DEEP_ANALYSIS"
@@ -220,146 +200,152 @@ class EligibilityResult:
             and self.issuer_class == "DEFENCE_EPC_PROJECT"
         ):
             meaning = (
-                "Strong quality signals; reported cash conversion needs explanation "
-                "(defence/project WC cycle)."
+                "Strong quality signals, but reported cash conversion needs explanation "
+                "(common in defence / project companies)."
             )
-            do_next = "Run /analyze — buy/add ranges blocked until WC reconciled"
-            action_icon = "🛡️"
+            do_next = "Run /analyze — buy/add ranges stay blocked until cash flow is reconciled"
         elif self.next_research_action == "SECTOR_SCORECARD_FIRST":
-            meaning = "Bank/NBFC/insurer — use sector scorecard, not generic OCF/PAT."
-            do_next = "Run /analyze with bank scorecard lens"
-            action_icon = "🏦"
+            meaning = "Bank, NBFC, or insurer — use a sector scorecard, not generic cash ratios."
+            do_next = "Run /analyze with the bank / financial scorecard lens"
 
-        issuer_icon = {
-            "BANK": "🏦",
-            "NBFC_HFC": "🏦",
-            "INSURER": "🛡️",
-            "RATING_ANALYTICS": "📊",
-            "MARKET_INFRA": "🏛️",
-            "FINTECH_PLATFORM": "💳",
-            "UTILITY": "⚡",
-            "DEFENCE_EPC_PROJECT": "🪖",
-            "AUTO_OEM": "🚗",
-            "CONGLOMERATE": "🏢",
-            "LOSS_MAKING_GROWTH": "🌱",
-            "NON_FINANCIAL": "🏭",
-            "OTHER": "📦",
-        }.get(self.issuer_class or "", "🏷️")
-
-        cash_icon, cash_plain = {
-            "PASS": ("💚", "OK"),
-            "WATCH": ("💛", "Needs check"),
-            "ESCALATED_WATCH": ("🧡", "ESCALATED_WATCH"),
-            "CRITICAL": ("❤️", "Weak"),
-            "NOT_APPLICABLE": ("➖", "N/A (financials)"),
-            "NOT_APPLICABLE_WHILE_LOSS_MAKING": (
-                "🔥",
-                "N/A while loss-making — look at cash burn",
-            ),
-            "DATA_INSUFFICIENT_FOR_TREND": ("❔", "Not enough history"),
-        }.get(
+        issuer_icon = ISSUER_ICONS.get(self.issuer_class or "", "🏷️")
+        issuer_label = ISSUER_LABELS.get(
+            self.issuer_class or "", self.issuer_class or "Unknown"
+        )
+        cash_icon = CASH_ICONS.get(self.cash_conversion_status or "", "💵")
+        cash_label = CASH_LABELS.get(
             self.cash_conversion_status or "",
-            ("💵", self.cash_conversion_status or "n/a"),
+            self.cash_conversion_status or "Unknown",
         )
 
         name = _esc(self.ticker or self.query)
         if self.company_name:
             name = f"{name} — {_esc(self.company_name)}"
 
-        # --- Simple report (top) ---
         lines = [
             f"{icon} <b>{name}</b>",
             "",
-            f"🗣️ <b>Plain-English view:</b> {_esc(meaning)}",
-            f"{action_icon} <b>What happens next:</b> {_esc(do_next)}",
-            f"🏷️ <b>Gate label:</b> <code>{_esc(self.verdict)}</code>",
+            f"🗣️ <b>In plain English</b>\n{_esc(meaning)}",
+            f"➡️ <b>What to do next</b>\n{_esc(do_next)}",
         ]
-        if self.issuer_class:
-            lines.append(
-                f"{issuer_icon} <b>Business type:</b> {_esc(self.issuer_class)}"
-            )
-        if self.cash_conversion_status:
-            lines.append(f"{cash_icon} <b>Cash conversion:</b> {_esc(cash_plain)}")
 
-        # --- Compact details ---
-        lines.extend(["", "📎 <b>Details</b>"])
         if self.final_score is not None:
-            q = f"Q{self.quality_score:.0f}" if self.quality_score is not None else ""
-            g = f"G{self.growth_score:.0f}" if self.growth_score is not None else ""
-            s = (
-                f"S{self.financial_strength_score:.0f}"
-                if self.financial_strength_score is not None
-                else ""
+            lines.extend(["", "📊 <b>Your scores</b>"])
+            score_bits = [f"Overall {self.final_score:.0f}/100"]
+            if self.candidate_band:
+                band_icon = BAND_ICONS.get(self.candidate_band, "📊")
+                band_label = BAND_LABELS.get(
+                    self.candidate_band, self.candidate_band
+                )
+                score_bits.append(f"{band_icon} {band_label}")
+            lines.append(" · ".join(score_bits))
+            qgs = format_quality_growth_strength(
+                quality=self.quality_score,
+                growth=self.growth_score,
+                strength=self.financial_strength_score,
             )
-            comps = " · ".join(x for x in (q, g, s) if x)
-            band_icon = {
-                "STRONG_CANDIDATE": "🏆",
-                "CANDIDATE": "👍",
-                "WATCHLIST": "📌",
-                "REMOVE": "⬇️",
-            }.get(self.candidate_band or "", "📊")
+            if qgs:
+                lines.append(qgs)
             lines.append(
-                f"{band_icon} Score {self.final_score:.0f}"
-                + (f" ({comps})" if comps else "")
-                + (f" · {_esc(self.candidate_band)}" if self.candidate_band else "")
+                "<i>Quality = business quality · Growth = earnings growth · "
+                "Strength = balance sheet</i>"
+            )
+
+        context_bits: list[str] = []
+        if self.cash_conversion_status:
+            context_bits.append(f"{cash_icon} {cash_label}")
+        if self.issuer_class:
+            context_bits.append(f"{issuer_icon} Business type: {issuer_label}")
+        if context_bits:
+            lines.extend(["", "🏷️ <b>Quick checks</b>", " · ".join(_esc(x) for x in context_bits)])
+
+        lines.extend(["", "📎 <b>More detail</b>"])
+        if self.financials_basis:
+            lines.append(
+                f"📊 Financial statements: {_esc(self.financials_basis)} (from Screener.in)"
+            )
+        if self.sector_source == "override":
+            lines.append(
+                "🏷️ Sector label corrected (yfinance had the wrong industry)"
+            )
+        if self.derived_metric_count >= 3:
+            lines.append(
+                "⚠️ <b>Data caution:</b> "
+                f"{self.derived_metric_count} key ratios were calculated from statements "
+                "(not Screener ratio rows) — cross-check Screener.in before trusting the score."
+            )
+        elif self.computed_metric_warnings:
+            lines.append(
+                "⚠️ Some ratios were calculated (verify on Screener.in): "
+                + _esc("; ".join(self.computed_metric_warnings[:3]))
             )
         if self.eligibility_route:
-            lines.append(f"🛣️ Route: {_esc(self.eligibility_route)}")
+            route_label = ROUTE_LABELS.get(
+                self.eligibility_route, self.eligibility_route
+            )
+            lines.append(f"🛣️ Screening path: {_esc(route_label)}")
         if self.next_research_action:
-            next_icon = {
-                "FULL_DEEP_ANALYSIS": "🔬",
-                "CHEAP_WC_RECONCILIATION_FIRST": "🧰",
-                "SECTOR_SCORECARD_FIRST": "🏦",
-                "HOLDING_MONITOR": "👀",
-                "DATA_RETRY": "🔄",
-                "NO_RESEARCH": "🚫",
-            }.get(self.next_research_action, "➡️")
-            lines.append(f"{next_icon} Next: {_esc(self.next_research_action)}")
+            next_label = NEXT_ACTION_LABELS.get(
+                self.next_research_action, self.next_research_action
+            )
+            lines.append(f"🔬 Suggested step: {_esc(next_label)}")
 
         if self.cash_conversion_status == "NOT_APPLICABLE_WHILE_LOSS_MAKING":
             burn_bits: list[str] = []
             if self.ocf_current_abs is not None:
-                burn_bits.append(f"OCF ₹{self.ocf_current_abs:.0f} Cr")
+                burn_bits.append(f"operating cash flow ₹{self.ocf_current_abs:.0f} Cr")
             if self.cfo_3y_sum_abs is not None:
-                burn_bits.append(f"3y OCF ₹{self.cfo_3y_sum_abs:.0f} Cr")
+                burn_bits.append(f"3-year cash flow ₹{self.cfo_3y_sum_abs:.0f} Cr")
             if burn_bits:
-                lines.append("🔥 Cash burn: " + " · ".join(burn_bits))
+                lines.append("🔥 Cash burn snapshot: " + " · ".join(burn_bits))
         elif self.ocf_pat_current is not None or self.ocf_pat_3y_cumulative is not None:
             bits: list[str] = []
             if self.ocf_pat_current is not None:
-                bits.append(f"OCF/PAT {self.ocf_pat_current:.2f}")
+                bits.append(
+                    f"cash profit vs reported profit (latest year): {self.ocf_pat_current:.2f}"
+                )
             if self.ocf_pat_3y_cumulative is not None:
-                bits.append(f"3y cum {self.ocf_pat_3y_cumulative:.2f}")
-            lines.append("💧 Cash ratios: " + " · ".join(bits))
+                bits.append(
+                    f"3-year cumulative cash profit ratio: {self.ocf_pat_3y_cumulative:.2f}"
+                )
+            lines.append("💧 Cash conversion ratios: " + " · ".join(bits))
+            lines.append(
+                "<i>Ratio near 1.0 = cash matches profits; below 0.5 = investigate</i>"
+            )
 
         if self.hard_filter_status and self.hard_filter_status != "PASS":
             reason = "; ".join(self.hard_filter_reasons[:2]) if self.hard_filter_reasons else ""
+            hard_plain = {
+                "HARD_EXCLUDE": "Failed a hard safety filter",
+                "DATA_UNAVAILABLE": "Required data missing",
+                "DATA_INSUFFICIENT": "Not enough history",
+            }.get(self.hard_filter_status, self.hard_filter_status)
             lines.append(
-                f"⛔ Hard filter: {_esc(self.hard_filter_status)}"
+                f"⛔ {_esc(hard_plain)}"
                 + (f" — {_esc(reason)}" if reason else "")
             )
 
         why_routed, why_blocked = self._why_routed_blocked()
         if why_routed:
-            lines.append(f"📌 Why routed: {_esc(why_routed)}")
+            lines.append(f"📌 Why this route: {_esc(why_routed)}")
         if why_blocked:
-            lines.append(f"🧱 Why blocked: {_esc(why_blocked)}")
+            lines.append(f"🧱 What blocks full research: {_esc(why_blocked)}")
         elif self.key_reason and not why_routed:
             why = self.key_reason
             if len(why) > 180:
                 why = why[:177] + "…"
-            lines.append(f"📝 Why: {_esc(why)}")
+            lines.append(f"📝 Key point: {_esc(why)}")
 
-        if self.computed_metric_warnings:
+        if self.computed_metric_warnings and self.derived_metric_count >= 3:
             lines.append(
-                "⚠️ Some ratios computed (verify Screener.in): "
-                + _esc("; ".join(self.computed_metric_warnings[:3]))
+                "🔢 Calculated ratios: "
+                + _esc("; ".join(self.computed_metric_warnings[:5]))
             )
         if self.recheck_note:
             lines.append(f"📅 {_esc(self.recheck_note)}")
         if self.ai_model:
             lines.append(
-                f"🤖 <i>Ranker {_esc(self.ai_provider)}:{_esc(self.ai_model)} · ₹{self.cost_inr:.2f}</i>"
+                f"🤖 <i>AI ranker {_esc(self.ai_provider)}:{_esc(self.ai_model)} · ₹{self.cost_inr:.2f}</i>"
             )
 
         lines.append("")
@@ -402,57 +388,69 @@ class EligibilityResult:
             name = f"{name} — {_esc(self.company_name)}"
 
         meaning = (
-            "Strong quality, growth, and balance-sheet signals, but reported cash "
+            "Strong quality, growth, and balance-sheet scores, but reported cash "
             "conversion is extremely weak. Reconcile working capital, milestone "
-            "billing, and order-book execution before treating it as a three-year "
-            "capital-allocation candidate."
+            "billing, and order-book execution before treating this as a 3-year "
+            "investment candidate."
         )
         do_next = (
-            "Cheap working-capital / order-book check first. No bot-generated buy "
-            "range, averaging range, or profit-review range until the cash-flow "
-            "gap is explained."
+            "Do a working-capital / order-book check first. No buy range or "
+            "add-range analysis until the cash-flow gap is explained."
+        )
+        issuer_label = ISSUER_LABELS.get(
+            self.issuer_class or "DEFENCE_EPC_PROJECT",
+            self.issuer_class or "Defence / project EPC company",
+        )
+        cash_label = CASH_LABELS.get(
+            self.cash_conversion_status or "ESCALATED_WATCH",
+            "Cash flow — elevated watch",
         )
 
         lines = [
             f"🔎 <b>{name}</b>",
             "",
-            f"🗣️ <b>Plain-English view:</b> {_esc(meaning)}",
-            f"🧰 <b>What happens next:</b> {_esc(do_next)}",
-            f"🏷️ <b>Gate label:</b> <code>{_esc(self.verdict)}</code>",
-            f"🪖 <b>Business type:</b> {_esc(self.issuer_class or 'DEFENCE_EPC_PROJECT')}",
-            f"🧡 <b>Cash conversion:</b> {_esc(self.cash_conversion_status or 'ESCALATED_WATCH')}",
-            "",
-            "📎 <b>Details</b>",
+            f"🗣️ <b>In plain English</b>\n{_esc(meaning)}",
+            f"➡️ <b>What to do next</b>\n{_esc(do_next)}",
+            f"🪖 Business type: {_esc(issuer_label)}",
+            f"🧡 {_esc(cash_label)}",
         ]
 
         if self.final_score is not None:
-            score_line = f"Score: {self.final_score:.1f}"
+            lines.extend(["", "📊 <b>Your scores</b>"])
+            score_line = f"Overall {self.final_score:.0f}/100"
             if self.candidate_band:
-                score_line += f" — {_esc(self.candidate_band)}"
+                band_label = BAND_LABELS.get(
+                    self.candidate_band, self.candidate_band
+                )
+                score_line += f" · {band_label}"
             lines.append(score_line)
-        if (
-            self.quality_score is not None
-            or self.growth_score is not None
-            or self.financial_strength_score is not None
-        ):
-            q = f"{self.quality_score:.0f}" if self.quality_score is not None else "?"
-            g = f"{self.growth_score:.0f}" if self.growth_score is not None else "?"
-            s = (
-                f"{self.financial_strength_score:.0f}"
-                if self.financial_strength_score is not None
-                else "?"
-            )
-            lines.append(f"Quality/Growth/Strength: {q} / {g} / {s}")
+        qgs = format_quality_growth_strength(
+            quality=self.quality_score,
+            growth=self.growth_score,
+            strength=self.financial_strength_score,
+        )
+        if qgs:
+            lines.append(qgs)
         if self.eligibility_route:
-            lines.append(f"Route: {_esc(self.eligibility_route)}")
+            route_label = ROUTE_LABELS.get(
+                self.eligibility_route, self.eligibility_route
+            )
+            lines.append(f"🛣️ Screening path: {_esc(route_label)}")
         if self.next_research_action:
-            lines.append(f"Next action: {_esc(self.next_research_action)}")
+            next_label = NEXT_ACTION_LABELS.get(
+                self.next_research_action, self.next_research_action
+            )
+            lines.append(f"🔬 Suggested step: {_esc(next_label)}")
 
         lines.extend(["", "💧 <b>Cash-flow indicators</b>"])
         if self.ocf_pat_current is not None:
-            lines.append(f"• Current OCF/PAT: {self.ocf_pat_current:.2f}")
+            lines.append(
+                f"• Latest-year cash profit vs reported profit: {self.ocf_pat_current:.2f}"
+            )
         if self.ocf_pat_3y_cumulative is not None:
-            lines.append(f"• 3y cumulative OCF/PAT: {self.ocf_pat_3y_cumulative:.2f}")
+            lines.append(
+                f"• 3-year cumulative cash profit ratio: {self.ocf_pat_3y_cumulative:.2f}"
+            )
         if self.cfo_3y_sum_abs is not None or self.pat_3y_sum_abs is not None:
             cfo = (
                 f"₹{self.cfo_3y_sum_abs:.0f} Cr"
@@ -464,17 +462,19 @@ class EligibilityResult:
                 if self.pat_3y_sum_abs is not None
                 else "?"
             )
-            lines.append(f"• 3y totals: CFO {cfo} / PAT {pat}")
+            lines.append(f"• 3-year totals: cash from operations {cfo} / net profit {pat}")
         lines.append(
-            "• Interpretation: "
+            "• What this means: "
             + _esc(
                 self.cash_conversion_interpretation
                 or (
-                    "The result may reflect milestone billing and project "
-                    "working-capital timing, but it is too weak to assume this "
-                    "without a year-by-year CFO-to-PAT reconciliation."
+                    "This may reflect milestone billing and project timing, "
+                    "but the gap is too large to ignore without a year-by-year check."
                 )
             )
+        )
+        lines.append(
+            "<i>Ratio near 1.0 = cash matches profits; near 0 = investigate working capital</i>"
         )
 
         if (
@@ -482,22 +482,22 @@ class EligibilityResult:
             or self.interest_coverage is not None
             or self.net_debt_ebitda is not None
         ):
-            lines.extend(["", "📒 <b>Balance-sheet context</b>"])
+            lines.extend(["", "📒 <b>Balance sheet (context)</b>"])
             if self.debt_equity is not None:
-                lines.append(f"• D/E: {self.debt_equity:.2f}")
+                lines.append(f"• Debt vs equity (D/E): {self.debt_equity:.2f}")
             if self.interest_coverage is not None:
-                lines.append(f"• Interest coverage: {self.interest_coverage:.2f}")
+                lines.append(f"• Interest coverage: {self.interest_coverage:.2f}x")
             if self.net_debt_ebitda is not None:
-                lines.append(f"• Net debt/EBITDA: {self.net_debt_ebitda:.2f}")
+                lines.append(f"• Net debt / EBITDA: {self.net_debt_ebitda:.2f}x")
 
         why_routed, why_blocked = self._why_routed_blocked()
-        lines.extend(["", "🧭 <b>Routing logic</b>"])
+        lines.extend(["", "🧭 <b>Why this special route</b>"])
         if why_routed:
-            lines.append(f"• Why routed: {_esc(why_routed)}")
+            lines.append(f"• Why this route: {_esc(why_routed)}")
         if why_blocked:
-            lines.append(f"• Why blocked: {_esc(why_blocked)}")
+            lines.append(f"• What blocks full research: {_esc(why_blocked)}")
 
-        lines.extend(["", "🧾 <b>Working-capital reconciliation required</b>"])
+        lines.extend(["", "🧾 <b>Working-capital checklist</b>"])
         for i, item in enumerate(WC_RECONCILIATION_CHECKLIST, start=1):
             lines.append(f"{i}. {_esc(item)}")
         lines.append("")
@@ -509,16 +509,16 @@ class EligibilityResult:
             "<code>INCONCLUSIVE</code>."
         )
         lines.append(
-            "Only <code>TEMPORARY_BILLING_CYCLE</code> with supporting evidence "
-            "unlocks full valuation and three-year buy/add-range analysis."
+            "Only a temporary billing-cycle explanation with evidence "
+            "unlocks full valuation and buy/add-range analysis."
         )
 
         lines.extend(["", "⚠️ <b>Data caution</b>"])
         if self.computed_metric_warnings:
             lines.append("• " + _esc("; ".join(self.computed_metric_warnings[:3])))
         lines.append(
-            "• Verify all cash-flow and profitability figures use the same FY "
-            "window and the same statement scope before drawing conclusions."
+            "• Verify cash-flow and profit figures use the same financial year "
+            "and the same consolidated/standalone scope."
         )
 
         lines.append("")
@@ -1045,6 +1045,9 @@ def check_deep_analysis_eligibility(
         risk_score=round(quant.components.risk, 1),
         data_confidence=quant.data_validation.data_confidence,
         data_completeness=quant.data_validation.data_completeness_score,
+        financials_basis=m.financials_basis,
+        sector_source=m.sector_source,
+        derived_metric_count=count_derived_key_ratios(m),
         key_reason=key_reason,
         key_risk=key_risk,
         data_concerns=concerns,
@@ -1083,6 +1086,10 @@ def check_deep_analysis_eligibility(
             "computed_metrics": {
                 k: v for k, v in m.metric_sources.items() if v in ("computed", "yfinance")
             },
+            "metric_sources": dict(m.metric_sources),
+            "financials_basis": m.financials_basis,
+            "sector_source": m.sector_source,
+            "derived_metric_count": count_derived_key_ratios(m),
             "missing_key_trio": missing_key,
             "data_completeness": quant.data_validation.data_completeness_score,
             "data_confidence": quant.data_validation.data_confidence,

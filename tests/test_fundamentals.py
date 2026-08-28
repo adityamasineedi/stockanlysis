@@ -255,3 +255,24 @@ def test_fetch_cash_equivalents_row_uses_consolidated_flag_from_company_info(mon
 
     _, kwargs = fake_client.__enter__.return_value.get.call_args
     assert kwargs["params"]["consolidated"] == "false"
+
+
+def test_http_get_screener_retries_transient_failure(monkeypatch):
+    """One retry on httpx.HTTPError; success on second attempt."""
+    import httpx
+
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.text = "<html></html>"
+    fake_client = MagicMock()
+    fake_client.__enter__.return_value.get.side_effect = [
+        httpx.ConnectError("timeout"),
+        fake_response,
+    ]
+    monkeypatch.setattr(fundamentals.httpx, "Client", MagicMock(return_value=fake_client))
+    monkeypatch.setattr(fundamentals, "_rate_limit", lambda: None)
+
+    response = fundamentals._http_get_screener("https://www.screener.in/company/RELIANCE/consolidated/")
+    assert response is fake_response
+    assert fake_client.__enter__.return_value.get.call_count == 2
+

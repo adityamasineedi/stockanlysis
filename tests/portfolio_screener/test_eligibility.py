@@ -101,15 +101,15 @@ def test_cheap_wc_telegram_card_wording_and_checklist():
     html = result.telegram_html()
     assert "reported cash conversion is extremely weak" in html.lower()
     assert "High quality, but cash conversion is extremely weak" not in html
-    assert "Why routed:" in html
-    assert "Why blocked:" in html
+    assert "Why this route:" in html
+    assert "What blocks full research:" in html
     assert "Three-year CFO/PAT is 0.02" in html
     assert "TEMPORARY_BILLING_CYCLE" in html
     assert "WORKING_CAPITAL_STRESS" in html
-    assert "Working-capital reconciliation required" in html
+    assert "Working-capital checklist" in html
     assert str(len(WC_RECONCILIATION_CHECKLIST))  # checklist present
     for item in WC_RECONCILIATION_CHECKLIST[:2]:
         assert item[:40] in html or "Verify CFO and PAT" in html
     assert "₹132 Cr" in html
     assert "₹7846 Cr" in html or "₹7,846" in html or "7846" in html
-    assert "D/E: 0.05" in html
+    assert "Debt vs equity (D/E): 0.05" in html

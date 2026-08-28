@@ -116,6 +116,8 @@ class StockMetrics:
     asset_turnover: float | None = None
 
     years_available: int = 0
+    financials_basis: str | None = None  # consolidated | standalone (Screener)
+    sector_source: str | None = None  # yfinance | override
     data_timestamp: datetime | None = None
     price_returns: list[float] | None = None  # daily returns for correlation
     missing: dict[str, str] = field(default_factory=dict)

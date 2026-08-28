@@ -587,8 +587,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "Commands:\n"
         "/prescan <symbol> — cheap check: worth deep analysis?\n"
         "/candidates — list analyze-ready names from prescan history\n"
-        "/candidates strong|candidate|watchlist — filter by score band\n"
-        "/candidates quality 65 — Q≥65 and analyze-ready\n"
+        "/candidates strong|candidate|watchlist — filter by score tier\n"
+        "/candidates quality 65 — Quality ≥65 and analyze-ready\n"
         "/analyze <company> — full deep analysis (requires prescan eligibility)\n"
         "/analyze force <symbol> — bypass gate (not recommended)\n"
         "/refresh SYMBOL — clear cached analysis for symbol\n"
@@ -669,7 +669,7 @@ async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 BOT_COMMANDS = [
     BotCommand("prescan", "Cheap check: worth deep analysis?"),
-    BotCommand("candidates", "List prescan picks: strong, watchlist…"),
+    BotCommand("candidates", "Prescan picks with plain-English labels"),
     BotCommand("analyze", "Full deep analysis by name or symbol"),
     BotCommand("refresh", "Clear cache or backfill stored verdicts"),
     BotCommand("help", "Usage instructions"),

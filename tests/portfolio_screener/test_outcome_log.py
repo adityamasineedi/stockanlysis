@@ -114,8 +114,27 @@ def test_format_prescan_telegram_chunks_includes_ticker() -> None:
     chunks = format_prescan_telegram_chunks(rows, title="Strong")
     assert len(chunks) == 1
     assert "HEROMOTOCO" in chunks[0]
-    assert "Q72" in chunks[0]
-    assert "AUTO_DEEP" in chunks[0]
+    assert "Quality 72" in chunks[0]
+    assert "Growth 55" in chunks[0]
+    assert "Strength 88" in chunks[0]
+    assert "Top tier (80+)" in chunks[0]
+    assert "Ready for /analyze" in chunks[0]
+    assert "Cash flow OK" in chunks[0]
+
+
+def test_format_prescan_telegram_chunks_missing_qgs() -> None:
+    rows = [
+        {
+            "ticker": "HEROMOTOCO",
+            "quant_score": 82.0,
+            "candidate_band": "STRONG_CANDIDATE",
+            "cash_conversion_status": "PASS",
+            "verdict": "AUTO_DEEP_ANALYSIS",
+        }
+    ]
+    chunks = format_prescan_telegram_chunks(rows, title="Strong")
+    assert "Quality/Growth/Strength not logged" in chunks[0]
+    assert "re-run /prescan" in chunks[0]
 
 
 def test_build_candidates_messages_empty_log(tmp_path: Path) -> None:

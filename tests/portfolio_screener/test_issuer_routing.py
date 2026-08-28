@@ -147,6 +147,15 @@ def test_loss_making_checked_before_epc_engineering():
     assert classify_issuer(m) == "LOSS_MAKING_GROWTH"
 
 
+def test_classify_vguard_not_utility():
+    m = _base_nonfin(
+        ticker="VGUARD",
+        sector="Utilities",
+        industry="Utilities - Regulated Electric",
+    )
+    assert classify_issuer(m) == "NON_FINANCIAL"
+
+
 def test_classify_bel_defence():
     m = _base_nonfin(
         ticker="BEL",

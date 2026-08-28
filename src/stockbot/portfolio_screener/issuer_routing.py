@@ -143,6 +143,11 @@ _AUTO_OEM_TICKERS = frozenset(
 _AUTO_OEM_KEYS = ("automobile", "auto manufacturer", "commercial vehicle", "motor vehicle")
 _UTILITY_KEYS = ("utilities", "utility", "power", "electric", "gas utilities")
 _DEFENCE_TICKERS = frozenset({"BEL", "HAL", "BHEL", "MAZDOCK", "COCHINSHIP", "GRSE"})
+# Known yfinance sector mislabels — checked before keyword routing.
+_ISSUER_TICKER_OVERRIDES: dict[str, IssuerClass] = {
+    "VGUARD": "NON_FINANCIAL",
+    "SERVOTECH": "NON_FINANCIAL",
+}
 _EPC_STRICT_KEYS = (
     " epc",
     "epc ",
@@ -257,6 +262,8 @@ def _is_defence_business(ticker: str, blob: str) -> bool:
 
 def classify_issuer(metrics: StockMetrics) -> IssuerClass:
     ticker = (metrics.ticker or "").upper()
+    if ticker in _ISSUER_TICKER_OVERRIDES:
+        return _ISSUER_TICKER_OVERRIDES[ticker]
     sector = (metrics.sector or "").lower()
     industry = (metrics.industry or "").lower()
     blob = f"{sector} {industry}"

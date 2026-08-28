@@ -335,39 +335,27 @@ BAND_ALIASES: dict[str, str] = {
     "watch": "WATCHLIST",
 }
 
-_BAND_ICONS: dict[str, str] = {
-    "STRONG_CANDIDATE": "🏆",
-    "CANDIDATE": "👍",
-    "WATCHLIST": "📌",
-    "REMOVE": "⬇️",
-}
-
-_VERDICT_ICONS: dict[str, str] = {
-    "AUTO_DEEP_ANALYSIS": "✅",
-    "SECTOR_SPECIFIC_REVIEW": "🔎",
-    "HOLDING_MONITOR_ONLY": "👀",
-    "NOT_SUITABLE_FOR_3Y_RESEARCH": "❌",
-    "DATA_UNAVAILABLE_RETRY": "📭",
-}
-
-_CASH_ICONS: dict[str, str] = {
-    "PASS": "💚",
-    "WATCH": "💛",
-    "ESCALATED_WATCH": "🧡",
-    "CRITICAL": "❤️",
-    "NOT_APPLICABLE": "➖",
-    "NOT_APPLICABLE_WHILE_LOSS_MAKING": "🔥",
-}
+from stockbot.portfolio_screener.prescan_display import (
+    BAND_ICONS,
+    BAND_LABELS,
+    CASH_ICONS,
+    CASH_LABELS,
+    VERDICT_ICONS,
+    VERDICT_LABELS,
+    format_qgs_from_row,
+)
 
 CANDIDATES_USAGE = (
     "Usage:\n"
-    "/candidates — analyze-ready names (✅/🔎 gate, cash OK)\n"
-    "/candidates strong — score ≥80 (STRONG_CANDIDATE)\n"
-    "/candidates candidate — score 70–79\n"
-    "/candidates watchlist — score 60–69\n"
-    "/candidates quality 65 — Q≥65 and analyze-ready\n"
+    "/candidates — all analyze-ready names from your /prescan history\n"
+    "/candidates strong — top tier (overall score 80+)\n"
+    "/candidates candidate — good picks (score 70–79)\n"
+    "/candidates watchlist — watchlist (score 60–69)\n"
+    "/candidates quality 65 — Quality score ≥65 and analyze-ready\n"
     "/candidates all — every logged prescan (latest per symbol)\n\n"
-    "List builds from /prescan history on this bot."
+    "Each line shows: tier · overall score · Quality/Growth/Strength · "
+    "cash-flow gate · whether /analyze is OK.\n"
+    "Run <code>/prescan SYMBOL</code> first to build the list."
 )
 
 TELEGRAM_PSCAN_CHUNK = 3800
@@ -430,40 +418,44 @@ def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
 
 
 def _format_qgs(row: dict[str, Any]) -> str:
-    parts: list[str] = []
-    for key, letter in (
-        ("quality_score", "Q"),
-        ("growth_score", "G"),
-        ("strength_score", "S"),
-    ):
-        val = row.get(key)
-        if isinstance(val, (int, float)):
-            parts.append(f"{letter}{val:.0f}")
-    return " ".join(parts) if parts else "Q/G/S —"
+    text = format_qgs_from_row(row)
+    if text.startswith("Quality/Growth/Strength not logged"):
+        return text
+    labels = (
+        ("quality_score", "Quality"),
+        ("growth_score", "Growth"),
+        ("strength_score", "Strength"),
+    )
+    present = sum(
+        1 for key, _ in labels if isinstance(row.get(key), (int, float))
+    )
+    if present < 3:
+        return text + " (partial — re-run /prescan for full scores)"
+    return text
 
 
 def _format_prescan_row_html(row: dict[str, Any]) -> str:
     ticker = html_escape(str(row.get("ticker") or "?"))
     band = str(row.get("candidate_band") or "")
-    band_icon = _BAND_ICONS.get(band, "📊")
+    band_icon = BAND_ICONS.get(band, "📊")
+    band_label = html_escape(BAND_LABELS.get(band, "Unranked"))
     qgs = html_escape(_format_qgs(row))
     quant = row.get("quant_score")
     quant_txt = f"{quant:.0f}" if isinstance(quant, (int, float)) else "?"
     cash = str(row.get("cash_conversion_status") or "")
-    cash_icon = _CASH_ICONS.get(cash, "💵")
+    cash_icon = CASH_ICONS.get(cash, "💵")
+    cash_label = html_escape(CASH_LABELS.get(cash, cash or "Cash unknown"))
     verdict = str(row.get("verdict") or "")
-    verdict_icon = _VERDICT_ICONS.get(verdict, "📋")
-    verdict_short = {
-        "AUTO_DEEP_ANALYSIS": "AUTO_DEEP",
-        "SECTOR_SPECIFIC_REVIEW": "SECTOR",
-        "HOLDING_MONITOR_ONLY": "MONITOR",
-        "NOT_SUITABLE_FOR_3Y_RESEARCH": "NOT_SUITABLE",
-        "DATA_UNAVAILABLE_RETRY": "RETRY",
-    }.get(verdict, verdict[:12])
-    return (
-        f"{band_icon} <b>{ticker}</b> · {qgs} · score {quant_txt} · "
-        f"{cash_icon} · {verdict_icon} {html_escape(verdict_short)}"
+    verdict_icon = VERDICT_ICONS.get(verdict, "📋")
+    verdict_label = html_escape(VERDICT_LABELS.get(verdict, verdict or "Unknown route"))
+    headline = (
+        f"{band_icon} <b>{ticker}</b> — {band_label} · Overall {quant_txt}/100"
     )
+    detail = (
+        f"   {qgs}\n"
+        f"   {cash_icon} {cash_label} · {verdict_icon} {verdict_label}"
+    )
+    return f"{headline}\n{detail}"
 
 
 def format_prescan_telegram_chunks(
@@ -482,7 +474,9 @@ def format_prescan_telegram_chunks(
 
     header = (
         f"<b>📋 Prescan list — {html_escape(title)}</b>\n"
-        f"{len(rows)} name(s) · detail: <code>/prescan SYMBOL</code>\n\n"
+        f"{len(rows)} name(s). Full detail: <code>/prescan SYMBOL</code>\n"
+        "<i>Overall</i> = combined score (0–100). "
+        "<i>Quality / Growth / Strength</i> = the three pillar scores.\n\n"
     )
     chunks: list[str] = []
     current = header

@@ -30,6 +30,7 @@ from pathlib import Path
 import httpx
 import pandas as pd
 from bs4 import BeautifulSoup
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from stockbot.config import HTTP_USER_AGENT, SCREENER_CACHE_DIR
 from stockbot.models import Financials
@@ -60,6 +61,21 @@ def _cache_path(symbol: str, basis: str) -> Path:
     return SCREENER_CACHE_DIR / f"{symbol}_{basis}.html"
 
 
+@retry(
+    stop=stop_after_attempt(2),
+    wait=wait_fixed(2),
+    reraise=True,
+    retry=retry_if_exception_type(httpx.HTTPError),
+)
+def _http_get_screener(url: str) -> httpx.Response:
+    """Network fetch with one retry on transient HTTP failures."""
+    _rate_limit()
+    with httpx.Client(
+        timeout=30.0, headers={"User-Agent": USER_AGENT}, follow_redirects=True
+    ) as client:
+        return client.get(url)
+
+
 def fetch_screener_page(symbol: str, basis: str) -> str:
     cache_path = _cache_path(symbol, basis)
     if cache_path.exists():
@@ -68,11 +84,7 @@ def fetch_screener_page(symbol: str, basis: str) -> str:
             return cache_path.read_text(encoding="utf-8")
 
     url = f"https://www.screener.in/company/{symbol}/{basis}/"
-    _rate_limit()
-    with httpx.Client(
-        timeout=20.0, headers={"User-Agent": USER_AGENT}, follow_redirects=True
-    ) as client:
-        response = client.get(url)
+    response = _http_get_screener(url)
     if response.status_code == 404:
         raise FundamentalsSchemaError(f"Screener has no {basis!r} page for {symbol!r} (404)")
     response.raise_for_status()
