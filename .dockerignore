@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+.git
+.pytest_cache
+.venv
+__pycache__
+*.pyc
+logs/
+reports/
+data/cache/
+data/db/
+data/symbols/
+tests/
+.cursor/
+*.md
+!README.md

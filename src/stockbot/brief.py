@@ -55,16 +55,23 @@ from stockbot.models import (
 logger = logging.getLogger(__name__)
 
 FETCH_TIMEOUT_SECONDS = 120
+ANNUAL_REPORT_TIMEOUT_SECONDS = 180
 CHARS_PER_TOKEN_ESTIMATE = 4
 RED_FLAGS_PER_QUERY_LIMIT = 8
 GENERAL_NEWS_DISPLAY_LIMIT = 15
 
 
-def _resolve(future: Future, label: str, missing: list[str]):
+def _resolve(
+    future: Future,
+    label: str,
+    missing: list[str],
+    *,
+    timeout_seconds: int = FETCH_TIMEOUT_SECONDS,
+):
     try:
-        return future.result(timeout=FETCH_TIMEOUT_SECONDS)
+        return future.result(timeout=timeout_seconds)
     except FutureTimeoutError:
-        message = f"MISSING: {label} — timed out after {FETCH_TIMEOUT_SECONDS}s"
+        message = f"MISSING: {label} — timed out after {timeout_seconds}s"
         logger.warning(message)
         missing.append(message)
         return None
@@ -83,14 +90,21 @@ def assemble_brief(ticker: TickerInfo) -> Brief:
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         financials_future = executor.submit(fetch_fundamentals, ticker.symbol)
-        shareholding_future = executor.submit(fetch_shareholding, ticker.symbol)
+        shareholding_future = executor.submit(
+            fetch_shareholding, ticker.symbol, exchange=ticker.exchange
+        )
         news_future = executor.submit(fetch_news, ticker.company_name)
         annual_report_future = executor.submit(fetch_annual_report, ticker.symbol)
 
         financials = _resolve(financials_future, "financials", missing)
         shareholding = _resolve(shareholding_future, "shareholding", missing)
         news = _resolve(news_future, "news", missing)
-        annual_report_result = _resolve(annual_report_future, "annual report", missing)
+        annual_report_result = _resolve(
+            annual_report_future,
+            "annual report",
+            missing,
+            timeout_seconds=ANNUAL_REPORT_TIMEOUT_SECONDS,
+        )
 
     if annual_report_result is None:
         # the future itself failed/timed out — _resolve already recorded why

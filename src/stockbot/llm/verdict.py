@@ -128,7 +128,9 @@ news for ownership/pledge. Note conflicts in §6.
 5. Use <metadata> sector/industry and <prescan_summary> issuer_class to choose \
 the sector-appropriate scorecard (bank, defence/EPC, utility, loss-making growth). \
 Use ttm_pe in metadata as a descriptive trailing multiple only — do not invent \
-forward P/E or sector median multiples.
+forward P/E or sector median multiples. If metadata.street_consensus is present, \
+use it only as an external tension check (price vs mean target) — never as the \
+primary thesis or fair-value anchor.
 
 6. You may use <prescan_summary> as a starting point for routing labels \
 (e.g. DEFENCE_WC_REVIEW) and multi-year cash-conversion context, but verify \
@@ -457,7 +459,7 @@ def build_user_message(
     context_parts: list[str] = [
         "<context>",
         "<metadata>",
-        format_metadata_json(brief.metadata),
+        format_metadata_json(brief.metadata, brief.street_consensus),
         "</metadata>",
         "",
         "<prescan_summary>",

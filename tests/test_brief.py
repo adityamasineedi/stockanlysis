@@ -188,7 +188,9 @@ def test_assemble_brief_degrades_financials_and_caps_confidence(monkeypatch):
     monkeypatch.setattr(
         brief_module,
         "fetch_shareholding",
-        lambda symbol: Shareholding(50.0, None, None, None, "Q1", "NSE", NOW),
+        lambda symbol, exchange="NSE": Shareholding(
+            50.0, None, None, None, "Q1", "NSE", NOW
+        ),
     )
     monkeypatch.setattr(
         brief_module,
@@ -212,7 +214,9 @@ def test_assemble_brief_caps_confidence_when_annual_report_missing(monkeypatch):
     monkeypatch.setattr(
         brief_module,
         "fetch_shareholding",
-        lambda symbol: Shareholding(50.0, None, None, None, "Q1", "NSE", NOW),
+        lambda symbol, exchange="NSE": Shareholding(
+            50.0, None, None, None, "Q1", "NSE", NOW
+        ),
     )
     monkeypatch.setattr(
         brief_module,
@@ -235,7 +239,9 @@ def test_assemble_brief_full_success_has_no_missing_entries(monkeypatch):
     monkeypatch.setattr(
         brief_module,
         "fetch_shareholding",
-        lambda symbol: Shareholding(50.0, None, None, None, "Q1", "NSE", NOW),
+        lambda symbol, exchange="NSE": Shareholding(
+            50.0, None, None, None, "Q1", "NSE", NOW
+        ),
     )
     monkeypatch.setattr(
         brief_module,

@@ -18,6 +18,7 @@ from stockbot.models import (
     PrescanSummary,
     PriceData,
     RedFlag,
+    StreetConsensus,
     Technicals,
     TickerInfo,
 )
@@ -165,6 +166,54 @@ def build_brief_metadata(
     )
 
 
+def _street_consensus_tension(price_vs_target_pct: float | None) -> str:
+    if price_vs_target_pct is None:
+        return "MISSING"
+    if abs(price_vs_target_pct) >= 15.0:
+        return "HIGH"
+    if abs(price_vs_target_pct) >= 8.0:
+        return "MEDIUM"
+    return "NONE"
+
+
+def build_street_consensus(ticker: TickerInfo, price: PriceData) -> StreetConsensus:
+    """yfinance analyst aggregate for tension diagnostics only."""
+    meta = fetch_market_metadata(ticker.symbol)
+    target_mean = meta.get("target_mean_price")
+    target_low = meta.get("target_low_price")
+    target_high = meta.get("target_high_price")
+    analyst_count = meta.get("analyst_count")
+    recommendation = meta.get("recommendation_key")
+
+    target_mean_f = float(target_mean) if target_mean is not None else None
+    price_vs_target: float | None = None
+    if target_mean_f is not None and target_mean_f > 0:
+        price_vs_target = round(
+            (price.current_price_abs - target_mean_f) / target_mean_f * 100.0,
+            2,
+        )
+
+    if analyst_count is None and target_mean_f is None:
+        note = "No yfinance analyst consensus available — do not invent street targets."
+    else:
+        note = (
+            "yfinance aggregate analyst data — unverified third-party estimates; "
+            "use only as a tension check vs your own fair-value work."
+        )
+
+    return StreetConsensus(
+        source="yfinance",
+        analyst_count=int(analyst_count) if analyst_count is not None else None,
+        recommendation_key=str(recommendation) if recommendation else None,
+        target_mean_price=target_mean_f,
+        target_low_price=float(target_low) if target_low is not None else None,
+        target_high_price=float(target_high) if target_high is not None else None,
+        price_vs_target_pct=price_vs_target,
+        tension=_street_consensus_tension(price_vs_target),
+        note=note,
+    )
+
+
 def build_prescan_summary(brief: Brief) -> PrescanSummary | None:
     """Quant-only prescan summary from brief fetch results (no eligibility AI)."""
     market_meta = fetch_market_metadata(brief.ticker.symbol)
@@ -205,6 +254,7 @@ def enrich_brief(brief: Brief) -> Brief:
     metadata = build_brief_metadata(brief.ticker, brief.price, brief.technicals)
     prescan_summary = build_prescan_summary(brief)
     news_summary = build_news_summary(brief.news)
+    street_consensus = build_street_consensus(brief.ticker, brief.price)
     return Brief(
         ticker=brief.ticker,
         price=brief.price,
@@ -220,10 +270,14 @@ def enrich_brief(brief: Brief) -> Brief:
         metadata=metadata,
         prescan_summary=prescan_summary,
         news_summary=news_summary,
+        street_consensus=street_consensus,
     )
 
 
-def format_metadata_json(metadata: BriefMetadata | None) -> str:
+def format_metadata_json(
+    metadata: BriefMetadata | None,
+    street_consensus: StreetConsensus | None = None,
+) -> str:
     if metadata is None:
         return "MISSING: metadata block not built"
     payload = {
@@ -240,8 +294,27 @@ def format_metadata_json(metadata: BriefMetadata | None) -> str:
             "range_52w": [metadata.range_52w_low, metadata.range_52w_high],
             "rsi_14": metadata.rsi_14,
         },
+        "street_consensus": format_street_consensus_payload(street_consensus),
     }
     return json.dumps(payload, indent=2)
+
+
+def format_street_consensus_payload(
+    consensus: StreetConsensus | None,
+) -> dict[str, object]:
+    if consensus is None:
+        return {"tension": "MISSING", "note": "Street consensus block not built"}
+    return {
+        "source": consensus.source,
+        "analyst_count": consensus.analyst_count,
+        "recommendation_key": consensus.recommendation_key,
+        "target_mean_price": consensus.target_mean_price,
+        "target_low_price": consensus.target_low_price,
+        "target_high_price": consensus.target_high_price,
+        "price_vs_target_pct": consensus.price_vs_target_pct,
+        "tension": consensus.tension,
+        "note": consensus.note,
+    }
 
 
 def format_prescan_summary_json(summary: PrescanSummary | None) -> str:

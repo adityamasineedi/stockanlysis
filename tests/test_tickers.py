@@ -43,6 +43,21 @@ def test_exact_symbol_match(table):
     assert result.symbol == "TCS"
 
 
+def test_bse_only_symbol_via_yfinance(monkeypatch, table):
+    monkeypatch.setattr(
+        "stockbot.fetch.tickers._resolve_bse_only_via_yfinance",
+        lambda query: TickerInfo(
+            symbol=query.upper(),
+            exchange="BSE",
+            company_name="BSE Only Co",
+            isin=None,
+        ),
+    )
+    result = resolve_ticker("BSEONLY", table)
+    assert isinstance(result, TickerInfo)
+    assert result.exchange == "BSE"
+
+
 def test_exact_symbol_match_case_insensitive(table):
     result = resolve_ticker("tcs", table)
     assert isinstance(result, TickerInfo)

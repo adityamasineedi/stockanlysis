@@ -201,6 +201,11 @@ def fetch_market_metadata(symbol: str) -> dict[str, float | str | None]:
         "shares_outstanding": None,
         "roe_pct": None,
         "roce_pct": None,
+        "analyst_count": None,
+        "recommendation_key": None,
+        "target_mean_price": None,
+        "target_low_price": None,
+        "target_high_price": None,
     }
     for suffix in (".NS", ".BO"):
         try:
@@ -254,6 +259,28 @@ def fetch_market_metadata(symbol: str) -> dict[str, float | str | None]:
                 meta[meta_key] = val * 100.0 if abs(val) <= 2.0 else val
             except (TypeError, ValueError):
                 pass
+        for yf_key, meta_key in (
+            ("numberOfAnalystOpinions", "analyst_count"),
+            ("recommendationKey", "recommendation_key"),
+            ("targetMeanPrice", "target_mean_price"),
+            ("targetLowPrice", "target_low_price"),
+            ("targetHighPrice", "target_high_price"),
+        ):
+            raw = info.get(yf_key)
+            if raw is None:
+                continue
+            if meta_key == "analyst_count":
+                try:
+                    meta[meta_key] = int(raw)
+                except (TypeError, ValueError):
+                    pass
+            elif meta_key == "recommendation_key":
+                meta[meta_key] = str(raw)
+            else:
+                try:
+                    meta[meta_key] = float(raw)
+                except (TypeError, ValueError):
+                    pass
         if meta["sector"] or meta["market_cap_cr"]:
             break
     return meta

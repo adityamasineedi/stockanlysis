@@ -27,6 +27,13 @@ PRICE_MOVE_REFUSE_PCT = 0.10
 
 
 @dataclass(frozen=True)
+class BackfillResult:
+    rows_scanned: int
+    rows_updated: int
+    rows_skipped: int
+
+
+@dataclass(frozen=True)
 class CacheHit:
     """A served cache row plus the live price used to refresh the card."""
 
@@ -104,6 +111,35 @@ def invalidate_cached_analyses(ticker: str) -> int:
     with _connect() as conn:
         cursor = conn.execute("DELETE FROM analyses WHERE ticker = ?", (ticker.upper(),))
         return int(cursor.rowcount)
+
+
+def update_analysis_verdict(row_id: int, verdict_json: dict) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE analyses SET verdict_json = ? WHERE id = ?",
+            (json.dumps(verdict_json), row_id),
+        )
+
+
+def backfill_cached_verdicts() -> BackfillResult:
+    """Recompute constitution gates and expected_return on all stored analyses."""
+    from stockbot.constitution_gates import refresh_constitution_fields
+
+    with _connect() as conn:
+        rows = conn.execute("SELECT id, verdict_json FROM analyses ORDER BY id").fetchall()
+
+    updated = 0
+    skipped = 0
+    for row in rows:
+        original = json.loads(row["verdict_json"])
+        refreshed = refresh_constitution_fields(original)
+        if json.dumps(original, sort_keys=True) == json.dumps(refreshed, sort_keys=True):
+            skipped += 1
+            continue
+        update_analysis_verdict(int(row["id"]), refreshed)
+        updated += 1
+
+    return BackfillResult(rows_scanned=len(rows), rows_updated=updated, rows_skipped=skipped)
 
 
 def _row_to_analysis(row: sqlite3.Row) -> Analysis:

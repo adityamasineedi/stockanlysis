@@ -135,6 +135,21 @@ class BriefMetadata:
 
 
 @dataclass(frozen=True)
+class StreetConsensus:
+    """yfinance analyst aggregate — tension diagnostic only, not thesis input."""
+
+    source: str
+    analyst_count: int | None
+    recommendation_key: str | None
+    target_mean_price: float | None
+    target_low_price: float | None
+    target_high_price: float | None
+    price_vs_target_pct: float | None
+    tension: str
+    note: str
+
+
+@dataclass(frozen=True)
 class PrescanSummary:
     quant_score: float | None
     quality_score: float | None
@@ -176,6 +191,7 @@ class Brief:
     metadata: BriefMetadata | None = None
     prescan_summary: PrescanSummary | None = None
     news_summary: tuple[NewsSummaryItem, ...] = ()
+    street_consensus: StreetConsensus | None = None
 
 
 @dataclass(frozen=True)

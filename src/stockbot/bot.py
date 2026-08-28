@@ -47,7 +47,13 @@ from telegram.ext import (
     filters,
 )
 
-from stockbot.config import LOGS_DIR, REPORTS_DIR, settings, setup_logging
+from stockbot.config import (
+    LOGS_DIR,
+    REPORTS_DIR,
+    parse_telegram_allowed_chat_ids,
+    settings,
+    setup_logging,
+)
 from stockbot.costs import month_to_date_spend
 from stockbot.constitution_gates import should_anti_chase_from_dict
 from stockbot.expected_return import format_expected_return_telegram
@@ -63,6 +69,7 @@ from stockbot.portfolio_screener.eligibility import (
 )
 from stockbot.portfolio_screener.scoring_config import ScreenerRunConfig
 from stockbot.monitor.health_audit import run_health_audit
+from stockbot.storage import backfill_cached_verdicts, invalidate_cached_analyses
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +93,19 @@ _IN_FLIGHT: set[str] = set()
 
 def esc(value: object) -> str:
     return html.escape(str(value), quote=False)
+
+
+async def _reject_if_unauthorized(update: Update) -> bool:
+    """Return True when the chat is blocked (message already sent)."""
+    allowed = parse_telegram_allowed_chat_ids()
+    if not allowed:
+        return False
+    chat = update.effective_chat
+    if chat is not None and chat.id in allowed:
+        return False
+    if update.message is not None:
+        await update.message.reply_text("This bot is restricted to authorized users only.")
+    return True
 
 
 def _money_pair(pair: object) -> tuple[str, str] | None:
@@ -457,6 +477,8 @@ async def _run_and_reply(update: Update, query: str, *, force: bool = False) -> 
 
 
 async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
     query, force = _parse_analyze_command_args(context.args)
     if not query:
         await update.message.reply_text(
@@ -477,6 +499,8 @@ def _parse_analyze_command_args(args: list[str] | None) -> tuple[str, bool]:
 
 
 async def handle_prescan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
     query = " ".join(context.args) if context.args else ""
     if not query:
         await update.message.reply_text(
@@ -526,6 +550,8 @@ def _parse_force_analyze_plain_text(text: str) -> tuple[str, bool] | None:
 
 
 async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
     text = (update.message.text or "").strip()
     if not text:
         return
@@ -542,11 +568,15 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
     await update.message.reply_text(
         "Commands:\n"
         "/prescan <symbol> — cheap check: worth deep analysis?\n"
         "/analyze <company> — full deep analysis (requires prescan eligibility)\n"
         "/analyze force <symbol> — bypass gate (not recommended)\n"
+        "/refresh SYMBOL — clear cached analysis for symbol\n"
+        "/refresh backfill — recompute gates + expected_return on cached rows\n"
         "/spend — month-to-date cost\n"
         "/health — cost/token/quality audit (no LLM spend)\n\n"
         "Or send: prescan BEL\n\n"
@@ -554,7 +584,37 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
+    args = list(context.args or [])
+    if not args:
+        await update.message.reply_text(
+            "Usage:\n"
+            "/refresh SYMBOL — drop cached analysis for that symbol\n"
+            "/refresh backfill — recompute constitution gates + expected_return "
+            "on all cached analyses (no LLM spend)"
+        )
+        return
+    if args[0].lower() == "backfill":
+        result = await asyncio.to_thread(backfill_cached_verdicts)
+        await update.message.reply_text(
+            f"Backfill complete: {result.rows_updated} updated, "
+            f"{result.rows_skipped} unchanged "
+            f"(scanned {result.rows_scanned} rows)."
+        )
+        return
+    symbol = args[0].upper()
+    deleted = await asyncio.to_thread(invalidate_cached_analyses, symbol)
+    await update.message.reply_text(
+        f"Cleared {deleted} cached row(s) for {esc(symbol)}. "
+        f"Next /analyze will run fresh."
+    )
+
+
 async def handle_spend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
     spent = await asyncio.to_thread(month_to_date_spend)
     await update.message.reply_text(
         f"Month-to-date spend: ₹{spent:.2f} of ₹{settings.monthly_budget_inr:.0f}"
@@ -570,6 +630,8 @@ def _write_health_audit_file(markdown: str):
 
 
 async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
     status = await update.message.reply_text("⏳ Running health audit…")
     try:
         report = await asyncio.to_thread(run_health_audit, days=HEALTH_AUDIT_DAYS)
@@ -592,6 +654,7 @@ async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 BOT_COMMANDS = [
     BotCommand("prescan", "Cheap check: worth deep analysis?"),
     BotCommand("analyze", "Full deep analysis by name or symbol"),
+    BotCommand("refresh", "Clear cache or backfill stored verdicts"),
     BotCommand("help", "Usage instructions"),
     BotCommand("spend", "Month-to-date cost"),
     BotCommand("health", "Cost/token/quality audit"),
@@ -614,6 +677,7 @@ def build_application() -> Application:
     )
     application.add_handler(CommandHandler("prescan", handle_prescan))
     application.add_handler(CommandHandler("analyze", handle_analyze))
+    application.add_handler(CommandHandler("refresh", handle_refresh))
     application.add_handler(CommandHandler("help", handle_help))
     application.add_handler(CommandHandler("spend", handle_spend))
     application.add_handler(CommandHandler("health", handle_health))

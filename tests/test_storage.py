@@ -8,7 +8,14 @@ import pytest
 
 from stockbot import storage as storage_module
 from stockbot.models import PriceData
-from stockbot.storage import build_staleness_banner, get_cached, save_analysis
+from stockbot.storage import (
+    BackfillResult,
+    build_staleness_banner,
+    backfill_cached_verdicts,
+    get_cached,
+    invalidate_cached_analyses,
+    save_analysis,
+)
 
 VERDICT_JSON = {
     "verdict": "WATCH",
@@ -152,3 +159,58 @@ def test_build_staleness_banner_shows_analysis_and_live_price():
     assert "340.00" in banner
     assert "-15.0%" in banner
     assert "fresh after new results" in banner
+
+
+def test_invalidate_cached_analyses_deletes_rows():
+    _save(ticker="AAA")
+    _save(ticker="AAA")
+    deleted = invalidate_cached_analyses("AAA")
+    assert deleted == 2
+    assert get_cached("AAA") is None
+
+
+def test_backfill_cached_verdicts_adds_expected_return(monkeypatch):
+    monkeypatch.setattr(storage_module, "fetch_price_data", lambda ticker: _price(100.0))
+    row_id = save_analysis(
+        ticker="BACK",
+        verdict_json={
+            "verdict": "WATCH",
+            "current_price_abs": 100.0,
+            "analysis_price_abs": 100.0,
+            "price_date": "2026-08-19",
+            "confidence": 5,
+            "risk": "MEDIUM",
+            "business_quality": 6,
+            "financial_health": 6,
+            "management_quality": 6,
+            "earnings_quality": "MEDIUM",
+            "holding_period": "3-5 years",
+            "reasons_buy": ["Solid balance sheet"],
+            "reasons_avoid": ["Valuation"],
+            "biggest_watch": "Margins",
+            "missing_data_impact": "none",
+            "gates_failed": [],
+            "valuation_inputs": {
+                "eps_bear": 8.0,
+                "eps_base": 10.0,
+                "eps_bull": 12.0,
+                "multiple_bear": [8.0, 10.0],
+                "multiple_base": [12.0, 14.0],
+                "multiple_bull": [16.0, 18.0],
+            },
+        },
+        report_md="# report",
+        brief_text="brief",
+        stage1_tokens=1,
+        stage2_tokens=1,
+        cost_inr=1.0,
+        validation_passed=True,
+    )
+    result = backfill_cached_verdicts()
+    assert isinstance(result, BackfillResult)
+    assert result.rows_scanned >= 1
+    assert result.rows_updated >= 1
+    hit = get_cached("BACK", max_age_days=30)
+    assert hit is not None
+    assert hit.analysis.verdict_json.get("expected_return") is not None
+    assert row_id > 0

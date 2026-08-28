@@ -6,10 +6,11 @@ from datetime import UTC, date, datetime
 
 from stockbot.brief_enrichment import (
     build_news_summary,
+    build_street_consensus,
     format_metadata_json,
     stage2_mode_from_prescan,
 )
-from stockbot.models import NewsItems, NewsSummaryItem, PrescanSummary, RedFlag
+from stockbot.models import BriefMetadata, NewsItems, NewsSummaryItem, PrescanSummary, RedFlag, TickerInfo
 
 
 def test_build_news_summary_ranks_order_book_headline():
@@ -101,3 +102,40 @@ def test_format_metadata_json_includes_sector():
     )
     assert '"sector": "Industrials"' in text
     assert '"ttm_pe": 49.0' in text
+    assert '"street_consensus"' in text
+
+
+def test_build_street_consensus_from_yfinance_metadata(monkeypatch):
+    from datetime import UTC, datetime
+
+    from stockbot.models import PriceData
+
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "stockbot.brief_enrichment.fetch_market_metadata",
+        lambda symbol: {
+            "analyst_count": 12,
+            "recommendation_key": "buy",
+            "target_mean_price": 500.0,
+            "target_low_price": 420.0,
+            "target_high_price": 560.0,
+        },
+    )
+    price = PriceData(
+        550.0,
+        date(2026, 8, 28),
+        pd.DataFrame({"Close": [550.0]}),
+        pd.DataFrame({"Close": [550.0]}),
+        600.0,
+        400.0,
+        "yfinance",
+        datetime.now(UTC),
+    )
+    consensus = build_street_consensus(
+        TickerInfo("BEL", "NSE", "BEL", None),
+        price,
+    )
+    assert consensus.target_mean_price == 500.0
+    assert consensus.price_vs_target_pct == 10.0
+    assert consensus.tension == "MEDIUM"

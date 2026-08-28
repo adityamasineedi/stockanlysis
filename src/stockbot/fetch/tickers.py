@@ -6,7 +6,7 @@ links directly to it) and confirmed reachable with a plain GET, no cookie
 priming needed:
     https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv
 
-BSE is NOT wired in. The two BSE sources supplied were checked and neither
+BSE is NOT wired in for a full symbol master. The two BSE sources supplied were checked and neither
 is usable as a full symbol master:
   - downloads1/List_of_companies.csv is BSE's GSM (Graded Surveillance
     Measure) watchlist — ~850 flagged securities, not the ~5,000+ company
@@ -15,8 +15,10 @@ is usable as a full symbol master:
   - corporates/List_Scrips is a client-rendered SPA with no static data or
     discoverable download link in its HTML/JS. A one-off guess at a public
     API endpoint (api.bseindia.com/BseIndiaAPI/api/ListofScrips) failed.
-This is a known, deliberate gap (see PROJECT.md) rather than a silent one:
-resolve_ticker will return None for a company listed only on BSE.
+For BSE-only symbols, resolve_ticker falls back to yfinance (.BO) when the
+query looks like a ticker symbol and Yahoo has a live price. Shareholding
+then uses Screener (FII/DII) without NSE pledge/XBRL. Annual reports remain
+NSE-only until a BSE filing source is verified.
 """
 
 from __future__ import annotations
@@ -70,6 +72,30 @@ COMMON_NAME_ALIASES: dict[str, str] = {
 
 _SUFFIX_RE = re.compile(r"\b(limited|ltd\.?)\b", re.IGNORECASE)
 _PUNCT_RE = re.compile(r"[^\w\s]")
+_SYMBOL_LIKE_RE = re.compile(r"^[A-Z0-9&-]{2,20}$")
+
+
+def _resolve_bse_only_via_yfinance(query: str) -> TickerInfo | None:
+    """Accept BSE-only symbols missing from the NSE EQUITY_L master."""
+    sym = query.strip().upper()
+    if not _SYMBOL_LIKE_RE.fullmatch(sym):
+        return None
+    try:
+        import yfinance as yf
+
+        info = yf.Ticker(f"{sym}.BO").info or {}
+    except Exception:
+        return None
+    price = info.get("regularMarketPrice") or info.get("currentPrice")
+    if not price:
+        return None
+    name = info.get("longName") or info.get("shortName") or sym
+    return TickerInfo(
+        symbol=sym,
+        exchange="BSE",
+        company_name=str(name),
+        isin=None,
+    )
 
 
 def normalize_company_name(name: str) -> str:
@@ -207,6 +233,10 @@ def resolve_ticker(
     if not exact_symbol.empty:
         return _row_to_ticker_info(exact_symbol.iloc[0])
 
+    bse_only = _resolve_bse_only_via_yfinance(query)
+    if bse_only is not None:
+        return bse_only
+
     alias_symbol = COMMON_NAME_ALIASES.get(query.lower())
     if alias_symbol:
         aliased = table[table["symbol"] == alias_symbol]
@@ -243,6 +273,9 @@ def resolve_ticker(
             merged[symbol] = (row, score)
 
     if not merged:
+        bse_only = _resolve_bse_only_via_yfinance(query)
+        if bse_only is not None:
+            return bse_only
         return None
 
     candidates = _dedup_cross_exchange(list(merged.values()))

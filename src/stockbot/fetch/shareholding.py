@@ -16,7 +16,8 @@ shell rather than data. Not wired in — same documented gap as Module 1.
 Screener (already fetched and cached by Module 3, reused here rather than
 re-fetched — see fetch_screener_page) supplies FII/DII/public % by
 quarter. When NSE succeeds, promoter/pledge come from NSE and FII/DII are
-merged from Screener on the same record.
+merged from Screener on the same record. BSE-only tickers (exchange=BSE)
+skip the NSE call and rely on Screener for promoter/FII/DII without pledge.
 
 Promoter pledge: the NSE master JSON links to SEBI XBRL shareholding
 filings. When ``WhetherAnySharesHeldByPromotersAreEncumberedUnderPledged``
@@ -285,9 +286,9 @@ def fetch_screener_shareholding(symbol: str) -> Shareholding | None:
     return None
 
 
-def fetch_shareholding(symbol: str) -> Shareholding:
+def fetch_shareholding(symbol: str, *, exchange: str = "NSE") -> Shareholding:
     """NSE first for promoter % and pledge; merge Screener FII/DII when available."""
-    nse_result = fetch_nse_shareholding(symbol)
+    nse_result = None if exchange == "BSE" else fetch_nse_shareholding(symbol)
     screener_result = fetch_screener_shareholding(symbol)
 
     if nse_result is not None:

@@ -56,9 +56,31 @@ class Settings(BaseSettings):
     force_stage2_full: bool = False
     # Block /analyze unless prescan eligibility passes (AUTO_DEEP or SECTOR_REVIEW).
     require_prescan_for_analyze: bool = True
+    # Comma-separated Telegram chat IDs allowed to use the bot. Empty = allow all
+    # (private single-user bots). Set to your numeric chat id to block strangers.
+    telegram_allowed_chat_ids: str = ""
 
 
 settings = Settings()
+
+
+def parse_telegram_allowed_chat_ids(raw: str | None = None) -> frozenset[int]:
+    """Parse TELEGRAM_ALLOWED_CHAT_IDS — empty set means no restriction."""
+    text = (raw if raw is not None else settings.telegram_allowed_chat_ids).strip()
+    if not text:
+        return frozenset()
+    ids: set[int] = set()
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.add(int(part))
+        except ValueError:
+            logging.getLogger(__name__).warning(
+                "Ignoring invalid TELEGRAM_ALLOWED_CHAT_IDS entry: %r", part
+            )
+    return frozenset(ids)
 
 
 def setup_logging() -> None:

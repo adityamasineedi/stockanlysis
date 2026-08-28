@@ -33,6 +33,7 @@ real wrinkles found while testing, in the order they'd bite:
 
 from __future__ import annotations
 
+import logging
 import re
 import zipfile
 from datetime import UTC, datetime
@@ -40,6 +41,7 @@ from pathlib import Path
 
 import httpx
 import pdfplumber
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from stockbot.config import ANNUAL_REPORT_CACHE_DIR, HTTP_USER_AGENT
 from stockbot.models import ArBusinessSummary, ReportText
@@ -47,6 +49,9 @@ from stockbot.models import ArBusinessSummary, ReportText
 USER_AGENT = HTTP_USER_AGENT
 NSE_PRIMING_URL = "https://www.nseindia.com/companies-listing/corporate-filings-annual-reports"
 NSE_ANNUAL_REPORTS_URL = "https://www.nseindia.com/api/annual-reports"
+
+DISCOVERY_TIMEOUT_SECONDS = 30.0
+DOWNLOAD_TIMEOUT_SECONDS = 90.0
 
 MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50MB cap
 SWING_WINDOW_PAGES = 3
@@ -109,9 +114,31 @@ class AnnualReportError(Exception):
     pass
 
 
+logger = logging.getLogger(__name__)
+
+
+def _empty_report(
+    *,
+    source_url: str | None = None,
+    report_year: int | None = None,
+) -> ReportText:
+    return ReportText(
+        sections={},
+        report_year=report_year,
+        source_url=source_url,
+        truncated=False,
+        dropped_sections=[],
+        source="nse_annual_reports",
+        fetched_at=datetime.now(UTC),
+    )
+
+
+@retry(stop=stop_after_attempt(2), wait=wait_fixed(2), reraise=True)
 def find_latest_annual_report(symbol: str) -> dict | None:
     with httpx.Client(
-        timeout=30.0, headers={"User-Agent": USER_AGENT}, follow_redirects=True
+        timeout=DISCOVERY_TIMEOUT_SECONDS,
+        headers={"User-Agent": USER_AGENT},
+        follow_redirects=True,
     ) as client:
         client.get(NSE_PRIMING_URL)  # sets the cookies the API call below requires
         response = client.get(
@@ -143,13 +170,16 @@ def _cache_path(symbol: str, record: dict, suffix: str) -> Path:
     return ANNUAL_REPORT_CACHE_DIR / f"{symbol}_{from_yr}_{to_yr}{suffix}"
 
 
+@retry(stop=stop_after_attempt(2), wait=wait_fixed(2), reraise=True)
 def _download(url: str, dest: Path) -> None:
     if dest.exists():
         return
 
     ANNUAL_REPORT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     with httpx.Client(
-        timeout=60.0, headers={"User-Agent": USER_AGENT}, follow_redirects=True
+        timeout=DOWNLOAD_TIMEOUT_SECONDS,
+        headers={"User-Agent": USER_AGENT},
+        follow_redirects=True,
     ) as client, client.stream("GET", url) as response:
         response.raise_for_status()
         downloaded = 0
@@ -480,42 +510,37 @@ def _build_sections(
 
 
 def fetch_annual_report(symbol: str) -> ReportText:
-    record = find_latest_annual_report(symbol)
-    if record is None:
+    record: dict | None = None
+    try:
+        record = find_latest_annual_report(symbol)
+        if record is None:
+            return _empty_report()
+
+        pdf_path = _resolve_pdf_path(symbol, record)
+        pages_text = _extract_pages(pdf_path)
+        report_year = int(record["toYr"]) if str(record.get("toYr", "")).isdigit() else None
+        source_url = record["fileName"]
+
+        if _is_scanned(pages_text):
+            return _empty_report(source_url=source_url, report_year=report_year)
+
+        sections, truncated, dropped = _build_sections(pages_text)
+        business_summary = parse_ar_business_summary(sections)
+
         return ReportText(
-            sections={},
-            report_year=None,
-            source_url=None,
-            truncated=False,
-            dropped_sections=[],
+            sections=sections,
+            report_year=report_year,
+            source_url=source_url,
+            truncated=truncated,
+            dropped_sections=dropped,
             source="nse_annual_reports",
             fetched_at=datetime.now(UTC),
+            business_summary=business_summary,
         )
-
-    pdf_path = _resolve_pdf_path(symbol, record)
-    pages_text = _extract_pages(pdf_path)
-
-    if _is_scanned(pages_text):
-        return ReportText(
-            sections={},
-            report_year=int(record["toYr"]) if str(record.get("toYr", "")).isdigit() else None,
-            source_url=record["fileName"],
-            truncated=False,
-            dropped_sections=[],
-            source="nse_annual_reports",
-            fetched_at=datetime.now(UTC),
-        )
-
-    sections, truncated, dropped = _build_sections(pages_text)
-    business_summary = parse_ar_business_summary(sections)
-
-    return ReportText(
-        sections=sections,
-        report_year=int(record["toYr"]) if str(record.get("toYr", "")).isdigit() else None,
-        source_url=record["fileName"],
-        truncated=truncated,
-        dropped_sections=dropped,
-        source="nse_annual_reports",
-        fetched_at=datetime.now(UTC),
-        business_summary=business_summary,
-    )
+    except (AnnualReportError, httpx.HTTPError) as exc:
+        logger.info("Annual report fetch failed for %s: %s", symbol, exc)
+        report_year = None
+        source_url = record["fileName"] if record else None
+        if record and str(record.get("toYr", "")).isdigit():
+            report_year = int(record["toYr"])
+        return _empty_report(source_url=source_url, report_year=report_year)
