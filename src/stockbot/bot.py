@@ -67,6 +67,7 @@ from stockbot.portfolio_screener.eligibility import (
     check_deep_analysis_eligibility,
     format_analyze_gate_block,
 )
+from stockbot.portfolio_screener.outcome_log import build_candidates_messages
 from stockbot.portfolio_screener.scoring_config import ScreenerRunConfig
 from stockbot.monitor.health_audit import run_health_audit
 from stockbot.storage import backfill_cached_verdicts, invalidate_cached_analyses
@@ -567,12 +568,27 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await _run_and_reply(update, text)
 
 
+async def handle_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
+    args = list(context.args or [])
+    chunks, err = await asyncio.to_thread(build_candidates_messages, args)
+    if err:
+        await update.message.reply_text(err, parse_mode=ParseMode.HTML)
+        return
+    for chunk in chunks:
+        await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
+
+
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
     await update.message.reply_text(
         "Commands:\n"
         "/prescan <symbol> — cheap check: worth deep analysis?\n"
+        "/candidates — list analyze-ready names from prescan history\n"
+        "/candidates strong|candidate|watchlist — filter by score band\n"
+        "/candidates quality 65 — Q≥65 and analyze-ready\n"
         "/analyze <company> — full deep analysis (requires prescan eligibility)\n"
         "/analyze force <symbol> — bypass gate (not recommended)\n"
         "/refresh SYMBOL — clear cached analysis for symbol\n"
@@ -653,6 +669,7 @@ async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 BOT_COMMANDS = [
     BotCommand("prescan", "Cheap check: worth deep analysis?"),
+    BotCommand("candidates", "List prescan picks: strong, watchlist…"),
     BotCommand("analyze", "Full deep analysis by name or symbol"),
     BotCommand("refresh", "Clear cache or backfill stored verdicts"),
     BotCommand("help", "Usage instructions"),
@@ -676,6 +693,7 @@ def build_application() -> Application:
         Application.builder().token(settings.telegram_bot_token).post_init(_register_commands).build()
     )
     application.add_handler(CommandHandler("prescan", handle_prescan))
+    application.add_handler(CommandHandler("candidates", handle_candidates))
     application.add_handler(CommandHandler("analyze", handle_analyze))
     application.add_handler(CommandHandler("refresh", handle_refresh))
     application.add_handler(CommandHandler("help", handle_help))

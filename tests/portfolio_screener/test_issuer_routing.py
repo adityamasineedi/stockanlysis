@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from stockbot.portfolio_screener.issuer_routing import (
+    FINANCIAL_SCORECARD_ISSUERS,
     assess_cash_conversion,
     classify_issuer,
     decide_eligibility_route,
     fundamentals_fetch_failed,
+    is_loss_making,
     quality_override_applies,
 )
 from stockbot.portfolio_screener.models import StockMetrics
@@ -87,6 +89,62 @@ def test_quality_override_uses_rounded_component_scores():
         industry="Aerospace & Defense",
     )
     assert quality_override_applies(quant) is True
+
+
+def test_classify_prajind_non_financial_not_epc():
+    m = _base_nonfin(
+        ticker="PRAJIND",
+        sector="Industrials",
+        industry="Industrial Machinery & Equipment",
+    )
+    assert classify_issuer(m) == "NON_FINANCIAL"
+
+
+def test_classify_zaggle_fintech():
+    m = _base_nonfin(
+        ticker="ZAGGLE",
+        sector="Technology",
+        industry="Software - Application",
+    )
+    assert classify_issuer(m) == "FINTECH_PLATFORM"
+
+
+def test_classify_ashokley_auto_oem():
+    m = _base_nonfin(
+        ticker="ASHOKLEY",
+        sector="Industrials",
+        industry="Farm & Heavy Construction Machinery",
+    )
+    assert classify_issuer(m) == "AUTO_OEM"
+
+
+def test_classify_bse_market_infra():
+    m = _base_nonfin(
+        ticker="BSE",
+        sector="Financial Services",
+        industry="Financial Data & Stock Exchanges",
+    )
+    assert classify_issuer(m) == "MARKET_INFRA"
+
+
+def test_classify_crisil_rating_analytics():
+    m = _base_nonfin(
+        ticker="CRISIL",
+        sector="Financial Services",
+        industry="Financial Data & Stock Exchanges",
+    )
+    assert classify_issuer(m) == "RATING_ANALYTICS"
+
+
+def test_loss_making_checked_before_epc_engineering():
+    m = _base_nonfin(
+        ticker="LOSSCO",
+        sector="Industrials",
+        industry="Engineering Construction",
+        net_income=-10.0,
+        net_income_series=[-8.0, -9.0, -10.0],
+    )
+    assert classify_issuer(m) == "LOSS_MAKING_GROWTH"
 
 
 def test_classify_bel_defence():

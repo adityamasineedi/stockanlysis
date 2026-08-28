@@ -17,12 +17,27 @@ IssuerClass = Literal[
     "BANK",
     "NBFC_HFC",
     "INSURER",
+    "RATING_ANALYTICS",
+    "MARKET_INFRA",
+    "FINTECH_PLATFORM",
     "UTILITY",
     "DEFENCE_EPC_PROJECT",
+    "AUTO_OEM",
     "CONGLOMERATE",
     "LOSS_MAKING_GROWTH",
     "OTHER",
 ]
+
+FINANCIAL_SCORECARD_ISSUERS: frozenset[IssuerClass] = frozenset(
+    {
+        "BANK",
+        "NBFC_HFC",
+        "INSURER",
+        "RATING_ANALYTICS",
+        "MARKET_INFRA",
+        "FINTECH_PLATFORM",
+    }
+)
 
 CashConversionStatus = Literal[
     "PASS",
@@ -97,16 +112,47 @@ _CONGLOMERATE_TICKERS = frozenset(
     }
 )
 
-_BANK_SECTOR_KEYS = (
-    "financial services",
-    "banks",
-    "bank",
-)
+_BANK_SECTOR_KEYS = ("banks",)
 _NBFC_KEYS = ("nbfc", "housing finance", "hfc", "consumer finance")
 _INSURER_KEYS = ("insurance", "life insurance", "general insurance")
+_FINTECH_KEYS = (
+    "fintech",
+    "prepaid",
+    "payment platform",
+    "payments",
+    "expense management",
+    "software application",
+)
+_FINTECH_TICKERS = frozenset({"ZAGGLE", "PAYTM", "POLICYBZR", "NAUKRI"})
+_RATING_TICKERS = frozenset({"CRISIL", "ICRA", "CAREERATINGS"})
+_RATING_KEYS = ("credit rating", "rating agency", "research & analytics")
+_MARKET_INFRA_TICKERS = frozenset({"BSE", "MCX", "CDSL", "ISEC"})
+_MARKET_INFRA_KEYS = ("exchange", "market infrastructure", "stock exchange", "depository")
+_AUTO_OEM_TICKERS = frozenset(
+    {
+        "ASHOKLEY",
+        "TATAMOTORS",
+        "M&M",
+        "MARUTI",
+        "EICHERMOT",
+        "HEROMOTOCO",
+        "BAJAJ-AUTO",
+        "TVSMOTOR",
+    }
+)
+_AUTO_OEM_KEYS = ("automobile", "auto manufacturer", "commercial vehicle", "motor vehicle")
 _UTILITY_KEYS = ("utilities", "utility", "power", "electric", "gas utilities")
 _DEFENCE_TICKERS = frozenset({"BEL", "HAL", "BHEL", "MAZDOCK", "COCHINSHIP", "GRSE"})
-_EPC_PROJECT_KEYS = ("engineering", "construction", "epc", "infrastructure")
+_EPC_STRICT_KEYS = (
+    " epc",
+    "epc ",
+    "engineering construction",
+    "construction & engineering",
+    "infrastructure development",
+    "road construction",
+    "project contractor",
+    "civil engineering",
+)
 
 
 @dataclass(frozen=True)
@@ -145,10 +191,14 @@ _ISSUER_CASHFLOW_CONTEXT: dict[IssuerClass, str] = {
     ),
     "CONGLOMERATE": "diversified group with segment-specific cash-flow cycles",
     "NON_FINANCIAL": "operating business",
+    "AUTO_OEM": "auto OEM with cyclical volumes and working-capital swings",
     "OTHER": "operating business",
     "BANK": "bank",
     "NBFC_HFC": "NBFC/HFC",
     "INSURER": "insurer",
+    "RATING_ANALYTICS": "rating and analytics business",
+    "MARKET_INFRA": "market infrastructure / exchange",
+    "FINTECH_PLATFORM": "fintech / payments platform",
     "LOSS_MAKING_GROWTH": "loss-making growth business",
 }
 
@@ -166,6 +216,45 @@ class RoutingDecision:
     next_action: NextResearchAction = "NO_RESEARCH"
 
 
+def is_loss_making(metrics: StockMetrics) -> bool:
+    """True when the last three fiscal years are all loss-making."""
+    pat = series_present(metrics.net_income_series)
+    return len(pat) >= 3 and all(v < 0 for v in pat[-3:])
+
+
+def _is_bank(sector: str, industry: str) -> bool:
+    if sector.strip() == "banks":
+        return True
+    padded = f" {industry} "
+    if " bank" in padded or industry.endswith(" bank"):
+        return True
+    if "private sector bank" in industry or "public sector bank" in industry:
+        return True
+    return False
+
+
+def _is_epc_or_project_business(blob: str) -> bool:
+    if any(k in blob for k in _EPC_STRICT_KEYS):
+        return True
+    if "epc" in blob:
+        return True
+    if "construction" in blob and ("infrastructure" in blob or "project" in blob):
+        return True
+    if "engineering" in blob and ("construction" in blob or "infrastructure" in blob):
+        return True
+    return False
+
+
+def _is_defence_business(ticker: str, blob: str) -> bool:
+    if ticker in _DEFENCE_TICKERS:
+        return True
+    if "defense" in blob or "defence" in blob:
+        return True
+    if "aerospace" in blob and ("defense" in blob or "defence" in blob):
+        return True
+    return False
+
+
 def classify_issuer(metrics: StockMetrics) -> IssuerClass:
     ticker = (metrics.ticker or "").upper()
     sector = (metrics.sector or "").lower()
@@ -176,27 +265,26 @@ def classify_issuer(metrics: StockMetrics) -> IssuerClass:
         return "INSURER"
     if any(k in blob for k in _NBFC_KEYS):
         return "NBFC_HFC"
-    if any(k in blob for k in _BANK_SECTOR_KEYS) or "bank" in industry:
+    if ticker in _FINTECH_TICKERS or any(k in blob for k in _FINTECH_KEYS):
+        return "FINTECH_PLATFORM"
+    if ticker in _RATING_TICKERS or any(k in blob for k in _RATING_KEYS) or "rating" in industry:
+        return "RATING_ANALYTICS"
+    if ticker in _MARKET_INFRA_TICKERS or any(k in blob for k in _MARKET_INFRA_KEYS):
+        return "MARKET_INFRA"
+    if _is_bank(sector, industry):
         return "BANK"
     if ticker in _CONGLOMERATE_TICKERS or "conglomerate" in blob:
         return "CONGLOMERATE"
     if any(k in blob for k in _UTILITY_KEYS):
         return "UTILITY"
-    if (
-        ticker in _DEFENCE_TICKERS
-        or "defense" in blob
-        or "defence" in blob
-        or ("aerospace" in blob and "equipment" in blob)
-    ):
-        return "DEFENCE_EPC_PROJECT"
-    # Project / EPC businesses share WC-timing OCF patterns with defence suppliers
-    if any(k in blob for k in _EPC_PROJECT_KEYS):
-        return "DEFENCE_EPC_PROJECT"
-
-    # Persistent losses → loss-making growth bucket (Swiggy-style)
-    pat = series_present(metrics.net_income_series)
-    if len(pat) >= 3 and all(v < 0 for v in pat[-3:]):
+    if is_loss_making(metrics):
         return "LOSS_MAKING_GROWTH"
+    if ticker in _AUTO_OEM_TICKERS or any(k in blob for k in _AUTO_OEM_KEYS):
+        return "AUTO_OEM"
+    if _is_defence_business(ticker, blob):
+        return "DEFENCE_EPC_PROJECT"
+    if _is_epc_or_project_business(blob):
+        return "DEFENCE_EPC_PROJECT"
 
     if sector in {"", "unknown"} and industry in {"", "unknown"}:
         return "OTHER"
@@ -263,13 +351,27 @@ def assess_cash_conversion(
     metrics: StockMetrics,
     issuer_class: IssuerClass,
 ) -> CashConversionAssessment:
-    if issuer_class in {"BANK", "NBFC_HFC", "INSURER"}:
+    if issuer_class in FINANCIAL_SCORECARD_ISSUERS:
+        interpretation = {
+            "BANK": "Use bank scorecard metrics (NIM, GNPA, PCR, CAR, P/B).",
+            "NBFC_HFC": "Use NBFC scorecard metrics (NIM, GNPA, leverage, ALM).",
+            "INSURER": "Use insurer scorecard metrics (combined ratio, solvency).",
+            "RATING_ANALYTICS": (
+                "Use rating/analytics lens (fee growth, margins, ROE) — not bank NPA/CAR."
+            ),
+            "MARKET_INFRA": (
+                "Use exchange/market-infra lens (volumes, pricing, ROE) — not bank CASA/NPA."
+            ),
+            "FINTECH_PLATFORM": (
+                "Use fintech/platform lens (TPV, unit economics, burn/runway) — not OCF/PAT."
+            ),
+        }.get(issuer_class, "Use sector scorecard — generic OCF/PAT is not decisive.")
         return CashConversionAssessment(
             status="NOT_APPLICABLE",
             ocf_pat_current=None,
             ocf_pat_3y=None,
             reason="OCF/PAT not a primary quality gate for financials",
-            interpretation="Use bank scorecard metrics (NIM, GNPA, PCR, CAR, P/B).",
+            interpretation=interpretation,
         )
 
     yearly, ocf_pat_3y, cfo_sum, pat_sum, years_used = _aligned_ocf_pat_panel(metrics)
@@ -450,7 +552,7 @@ def decide_next_research_action(
         return "DATA_RETRY"
     if eligibility in {"HOLDING_MONITOR_ONLY", "NOT_SUITABLE_FOR_3Y_RESEARCH"}:
         return "HOLDING_MONITOR" if eligibility == "HOLDING_MONITOR_ONLY" else "NO_RESEARCH"
-    if issuer in {"BANK", "NBFC_HFC", "INSURER"}:
+    if issuer in FINANCIAL_SCORECARD_ISSUERS:
         return "SECTOR_SCORECARD_FIRST"
     if issuer == "DEFENCE_EPC_PROJECT":
         if cash.status == "ESCALATED_WATCH":
@@ -537,7 +639,15 @@ def decide_eligibility_route(
             quality_override=False,
         ))
 
-    if issuer in {"BANK", "NBFC_HFC", "INSURER"}:
+    if issuer in FINANCIAL_SCORECARD_ISSUERS:
+        scorecard_hints = {
+            "BANK": "NIM, GNPA, PCR, CAR, P/B",
+            "NBFC_HFC": "NIM, GNPA, leverage, ALM",
+            "INSURER": "combined ratio, solvency, embedded value",
+            "RATING_ANALYTICS": "fee growth, margins, ROE — not bank NPA/CAR",
+            "MARKET_INFRA": "transaction volumes, pricing, ROE — not bank CASA/NPA",
+            "FINTECH_PLATFORM": "TPV, unit economics, burn/runway — not OCF/PAT",
+        }
         return _fin(RoutingDecision(
             issuer_class=issuer,
             cash_conversion=cash,
@@ -545,8 +655,9 @@ def decide_eligibility_route(
             eligibility="SECTOR_SPECIFIC_REVIEW",
             suitable_for_deep_analysis=True,
             key_reason=(
-                f"Issuer class {issuer}: banking/NBFC scorecard required "
-                f"(generic quant {score:.1f} is not decisive) — NIM, GNPA, PCR, CAR, P/B"
+                f"Issuer class {issuer}: financial scorecard required "
+                f"(generic quant {score:.1f} is not decisive) — "
+                f"{scorecard_hints.get(issuer, 'sector-specific metrics')}"
             ),
             key_risk="Do not use OCF/PAT, D/E, or interest cover as primary rejection criteria",
             quality_override=False,

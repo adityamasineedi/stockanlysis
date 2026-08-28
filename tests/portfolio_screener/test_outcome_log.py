@@ -6,7 +6,11 @@ import json
 from pathlib import Path
 
 from stockbot.portfolio_screener.outcome_log import (
+    CandidatesFilter,
+    build_candidates_messages,
+    format_prescan_telegram_chunks,
     load_prescan_outcomes,
+    parse_candidates_filter,
     query_prescan_outcomes,
 )
 
@@ -79,3 +83,44 @@ def test_query_prescan_outcomes_quality_and_analyze_ready(tmp_path: Path) -> Non
     rows = load_prescan_outcomes(path)
     matched = query_prescan_outcomes(rows, min_quality=65, analyze_ready_only=True)
     assert [r["ticker"] for r in matched] == ["GOOD"]
+
+
+def test_parse_candidates_filter_strong_band() -> None:
+    parsed = parse_candidates_filter(["strong"])
+    assert isinstance(parsed, CandidatesFilter)
+    assert parsed.bands == {"STRONG_CANDIDATE"}
+    assert parsed.analyze_ready_only is True
+
+
+def test_parse_candidates_filter_quality() -> None:
+    parsed = parse_candidates_filter(["quality", "65"])
+    assert isinstance(parsed, CandidatesFilter)
+    assert parsed.min_quality == 65.0
+
+
+def test_format_prescan_telegram_chunks_includes_ticker() -> None:
+    rows = [
+        {
+            "ticker": "HEROMOTOCO",
+            "quality_score": 72.0,
+            "growth_score": 55.0,
+            "strength_score": 88.0,
+            "quant_score": 82.24,
+            "candidate_band": "STRONG_CANDIDATE",
+            "cash_conversion_status": "PASS",
+            "verdict": "AUTO_DEEP_ANALYSIS",
+        }
+    ]
+    chunks = format_prescan_telegram_chunks(rows, title="Strong")
+    assert len(chunks) == 1
+    assert "HEROMOTOCO" in chunks[0]
+    assert "Q72" in chunks[0]
+    assert "AUTO_DEEP" in chunks[0]
+
+
+def test_build_candidates_messages_empty_log(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.jsonl"
+    chunks, err = build_candidates_messages([], path=missing)
+    assert chunks == []
+    assert err is not None
+    assert "No prescan log" in err

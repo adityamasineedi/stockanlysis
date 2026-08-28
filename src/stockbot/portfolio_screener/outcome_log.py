@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from html import escape as html_escape
 from pathlib import Path
 from typing import Any
 
@@ -323,3 +325,202 @@ def summarize_outcomes(path: Path | None = None, *, limit: int = 500) -> dict[st
         key = str(row.get("reject_class") or "unknown")
         counts[key] = counts.get(key, 0) + 1
     return {"rows": n, "by_reject_class": counts, "path": str(target)}
+
+
+BAND_ALIASES: dict[str, str] = {
+    "strong": "STRONG_CANDIDATE",
+    "candidate": "CANDIDATE",
+    "candidates": "CANDIDATE",
+    "watchlist": "WATCHLIST",
+    "watch": "WATCHLIST",
+}
+
+_BAND_ICONS: dict[str, str] = {
+    "STRONG_CANDIDATE": "🏆",
+    "CANDIDATE": "👍",
+    "WATCHLIST": "📌",
+    "REMOVE": "⬇️",
+}
+
+_VERDICT_ICONS: dict[str, str] = {
+    "AUTO_DEEP_ANALYSIS": "✅",
+    "SECTOR_SPECIFIC_REVIEW": "🔎",
+    "HOLDING_MONITOR_ONLY": "👀",
+    "NOT_SUITABLE_FOR_3Y_RESEARCH": "❌",
+    "DATA_UNAVAILABLE_RETRY": "📭",
+}
+
+_CASH_ICONS: dict[str, str] = {
+    "PASS": "💚",
+    "WATCH": "💛",
+    "ESCALATED_WATCH": "🧡",
+    "CRITICAL": "❤️",
+    "NOT_APPLICABLE": "➖",
+    "NOT_APPLICABLE_WHILE_LOSS_MAKING": "🔥",
+}
+
+CANDIDATES_USAGE = (
+    "Usage:\n"
+    "/candidates — analyze-ready names (✅/🔎 gate, cash OK)\n"
+    "/candidates strong — score ≥80 (STRONG_CANDIDATE)\n"
+    "/candidates candidate — score 70–79\n"
+    "/candidates watchlist — score 60–69\n"
+    "/candidates quality 65 — Q≥65 and analyze-ready\n"
+    "/candidates all — every logged prescan (latest per symbol)\n\n"
+    "List builds from /prescan history on this bot."
+)
+
+TELEGRAM_PSCAN_CHUNK = 3800
+
+
+@dataclass(frozen=True)
+class CandidatesFilter:
+    bands: set[str] | None = None
+    min_quality: float | None = None
+    analyze_ready_only: bool = True
+    label: str = "Analyze-ready"
+
+
+def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
+    """Parse /candidates args. Returns usage text when input is invalid."""
+    if not args:
+        return CandidatesFilter(
+            analyze_ready_only=True,
+            label="Analyze-ready (all bands)",
+        )
+
+    lowered = [a.lower() for a in args]
+    if lowered[0] in {"help", "?"}:
+        return CANDIDATES_USAGE
+
+    if lowered[0] == "all":
+        return CandidatesFilter(
+            analyze_ready_only=False,
+            label="All logged prescans",
+        )
+
+    if lowered[0] == "quality":
+        if len(args) < 2:
+            return "Usage: /candidates quality 65"
+        try:
+            min_q = float(args[1])
+        except ValueError:
+            return "Usage: /candidates quality 65 — quality must be a number"
+        return CandidatesFilter(
+            min_quality=min_q,
+            analyze_ready_only=True,
+            label=f"Q≥{min_q:.0f} analyze-ready",
+        )
+
+    band_key = lowered[0]
+    if band_key not in BAND_ALIASES:
+        return CANDIDATES_USAGE
+
+    band = BAND_ALIASES[band_key]
+    labels = {
+        "STRONG_CANDIDATE": "Strong (score ≥80)",
+        "CANDIDATE": "Candidate (score 70–79)",
+        "WATCHLIST": "Watchlist (score 60–69)",
+    }
+    return CandidatesFilter(
+        bands={band},
+        analyze_ready_only=True,
+        label=labels.get(band, band),
+    )
+
+
+def _format_qgs(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key, letter in (
+        ("quality_score", "Q"),
+        ("growth_score", "G"),
+        ("strength_score", "S"),
+    ):
+        val = row.get(key)
+        if isinstance(val, (int, float)):
+            parts.append(f"{letter}{val:.0f}")
+    return " ".join(parts) if parts else "Q/G/S —"
+
+
+def _format_prescan_row_html(row: dict[str, Any]) -> str:
+    ticker = html_escape(str(row.get("ticker") or "?"))
+    band = str(row.get("candidate_band") or "")
+    band_icon = _BAND_ICONS.get(band, "📊")
+    qgs = html_escape(_format_qgs(row))
+    quant = row.get("quant_score")
+    quant_txt = f"{quant:.0f}" if isinstance(quant, (int, float)) else "?"
+    cash = str(row.get("cash_conversion_status") or "")
+    cash_icon = _CASH_ICONS.get(cash, "💵")
+    verdict = str(row.get("verdict") or "")
+    verdict_icon = _VERDICT_ICONS.get(verdict, "📋")
+    verdict_short = {
+        "AUTO_DEEP_ANALYSIS": "AUTO_DEEP",
+        "SECTOR_SPECIFIC_REVIEW": "SECTOR",
+        "HOLDING_MONITOR_ONLY": "MONITOR",
+        "NOT_SUITABLE_FOR_3Y_RESEARCH": "NOT_SUITABLE",
+        "DATA_UNAVAILABLE_RETRY": "RETRY",
+    }.get(verdict, verdict[:12])
+    return (
+        f"{band_icon} <b>{ticker}</b> · {qgs} · score {quant_txt} · "
+        f"{cash_icon} · {verdict_icon} {html_escape(verdict_short)}"
+    )
+
+
+def format_prescan_telegram_chunks(
+    rows: list[dict[str, Any]],
+    *,
+    title: str,
+    max_len: int = TELEGRAM_PSCAN_CHUNK,
+) -> list[str]:
+    """HTML message chunks for Telegram (≤4096 chars each)."""
+    if not rows:
+        return [
+            "<b>📋 Prescan list</b>\n\n"
+            f"No names match <i>{html_escape(title)}</i>.\n"
+            "Run <code>/prescan SYMBOL</code> first — the list builds from prescan history."
+        ]
+
+    header = (
+        f"<b>📋 Prescan list — {html_escape(title)}</b>\n"
+        f"{len(rows)} name(s) · detail: <code>/prescan SYMBOL</code>\n\n"
+    )
+    chunks: list[str] = []
+    current = header
+    for row in rows:
+        line = _format_prescan_row_html(row) + "\n"
+        if len(current) + len(line) > max_len and current.strip():
+            chunks.append(current.rstrip())
+            current = line
+        else:
+            current += line
+    if current.strip():
+        chunks.append(current.rstrip())
+    return chunks
+
+
+def build_candidates_messages(
+    args: list[str],
+    *,
+    path: Path | None = None,
+) -> tuple[list[str], str | None]:
+    """Return Telegram HTML chunks and optional error/usage text."""
+    parsed = parse_candidates_filter(args)
+    if isinstance(parsed, str):
+        return [], parsed
+
+    target = path or OUTCOMES_PATH
+    if not target.exists():
+        return [], (
+            "No prescan log yet on this bot.\n"
+            "Run <code>/prescan SYMBOL</code> on names you care about — "
+            "then retry <code>/candidates</code>."
+        )
+
+    rows = load_prescan_outcomes(target)
+    matched = query_prescan_outcomes(
+        rows,
+        bands=parsed.bands,
+        min_quality=parsed.min_quality,
+        analyze_ready_only=parsed.analyze_ready_only,
+    )
+    return format_prescan_telegram_chunks(matched, title=parsed.label), None

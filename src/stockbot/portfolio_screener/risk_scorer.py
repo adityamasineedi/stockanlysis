@@ -75,9 +75,9 @@ def score_balance_sheet(metrics: StockMetrics) -> float:
 
 
 def score_earnings_quality(metrics: StockMetrics) -> float:
-    from stockbot.portfolio_screener.issuer_routing import classify_issuer
+    from stockbot.portfolio_screener.issuer_routing import FINANCIAL_SCORECARD_ISSUERS, classify_issuer
 
-    if classify_issuer(metrics) in {"BANK", "NBFC_HFC", "INSURER"}:
+    if classify_issuer(metrics) in FINANCIAL_SCORECARD_ISSUERS:
         # CFO/PAT is meaningless for banks — neutral mid score
         return 65.0
 

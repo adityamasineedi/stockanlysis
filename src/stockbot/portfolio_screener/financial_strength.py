@@ -12,10 +12,10 @@ from stockbot.portfolio_screener.score_utils import (
 
 
 def score_financial_strength(metrics: StockMetrics) -> float:
-    from stockbot.portfolio_screener.issuer_routing import classify_issuer
+    from stockbot.portfolio_screener.issuer_routing import FINANCIAL_SCORECARD_ISSUERS, classify_issuer
 
     issuer = classify_issuer(metrics)
-    if issuer in {"BANK", "NBFC_HFC", "INSURER"}:
+    if issuer in FINANCIAL_SCORECARD_ISSUERS:
         # Avoid punishing banks for deposit/borrowings leverage.
         parts = [
             (linear_score(metrics.roe, bad=5.0, good=18.0), 0.45),
