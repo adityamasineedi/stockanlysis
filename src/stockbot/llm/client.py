@@ -142,6 +142,8 @@ def call_anthropic_and_log(
         cache_creation_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
         cache_creation_1h_tokens=cache_creation_1h_tokens,
         thinking_tokens=thinking_tokens,
+        stage=stage,
+        ticker=ticker,
     )
 
     return response, cost_inr

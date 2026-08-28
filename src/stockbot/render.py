@@ -57,6 +57,14 @@ _MONEY_TOKENS = {
 }
 _PERCENT_TOKENS = {"upside_pct", "downside_pct", "promoter_pct", "pledge_pct"}
 
+# Complete set of placeholder names the master prompt allows. validate.py
+# uses this to reject invented tokens before render time.
+ALLOWED_PLACEHOLDER_TOKENS: frozenset[str] = frozenset(
+    _MONEY_TOKENS
+    | _PERCENT_TOKENS
+    | {"price_date", "rsi14"}
+)
+
 
 class PlaceholderError(Exception):
     pass
@@ -80,7 +88,9 @@ def _midpoint(range_: tuple[float, float]) -> float:
     return (range_[0] + range_[1]) / 2
 
 
-def _format(name: str, value: float) -> str:
+def _format(name: str, value: float | str) -> str:
+    if isinstance(value, str):
+        return value
     if name == "price_date":
         return str(value)
     if name == "rsi14":
@@ -125,8 +135,13 @@ def _build_tokens(
         # 141% span isn't a "fair value", it's the whole scenario fan).
         "fair_value_base_low": valuation.fair_value_base_abs[0],
         "fair_value_base_high": valuation.fair_value_base_abs[1],
-        "buy_zone_low": verdict.buy_zone_abs[0],
-        "buy_zone_high": verdict.buy_zone_abs[1],
+        # Constitution may withhold a buy zone (five-year test NO/UNCERTAIN).
+        "buy_zone_low": (
+            verdict.buy_zone_abs[0] if verdict.buy_zone_abs is not None else "not issued"
+        ),
+        "buy_zone_high": (
+            verdict.buy_zone_abs[1] if verdict.buy_zone_abs is not None else "not issued"
+        ),
         # Both computed the same direction — (target - current) / current —
         # so the sign convention is consistent instead of one token always
         # being forced positive: positive means the target sits above the
@@ -171,4 +186,26 @@ def render_report(
     if leftover:
         raise PlaceholderError(f"Unsubstituted placeholder(s) remain after rendering: {leftover}")
 
-    return rendered
+    # Found live on KPITTECH: model typed bear-low–bull-high (₹323–₹780) as
+    # the headline Fair Value while Telegram correctly showed base
+    # (₹484–₹572). Tokens only help when the model uses them; this rewrite
+    # forces every labelled Fair Value *range* to the Python-computed base
+    # so the .md attachment always matches the Telegram card.
+    return canonicalize_headline_fair_value(rendered, valuation)
+
+
+# Matches "Fair Value ₹A–₹B" / "Fair Value range ₹A–₹B" / "**Fair Value:** ₹A–₹B".
+# Allows brief non-digit junk between the label and the first ₹ (markdown closers).
+# Does not touch single-number midpoints ("base fair value of ₹528").
+_HEADLINE_FAIR_VALUE_RANGE_RE = re.compile(
+    r"(Fair\s*Value(?:\s*range)?\s*:?\s*[^\d₹]{0,8}?)"
+    r"₹\s*[\d,]+(?:\.\d+)?\s*[–\-]\s*₹\s*[\d,]+(?:\.\d+)?",
+    re.IGNORECASE,
+)
+
+
+def canonicalize_headline_fair_value(report_md: str, valuation: ValuationComputed) -> str:
+    """Rewrite labelled Fair Value ranges to the computed base low–high."""
+    base_low, base_high = valuation.fair_value_base_abs
+    replacement = rf"\g<1>₹{base_low:.2f}–₹{base_high:.2f}"
+    return _HEADLINE_FAIR_VALUE_RANGE_RE.sub(replacement, report_md)

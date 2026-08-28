@@ -55,8 +55,8 @@ def _metrics_batch(n: int = 15) -> list[StockMetrics]:
             fcf_margin=0.08,
             revenue_cagr_3y=0.10,
             eps_cagr_3y=0.12,
-            promoter_pct=45.0,
-            promoter_pledge_pct=0.0,
+            promoter_holding_pct=45.0,
+            pledged_promoter_holding_pct=0.0,
             years_available=5,
             price_returns=[0.001 * ((i % 5) - 2) for _ in range(80)],
         )

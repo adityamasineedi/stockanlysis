@@ -3,6 +3,7 @@ Telegram bot token needed. Live testing (a real bot round-trip: HTML
 rendering in an actual Telegram client, the ⏳ status-message edit, file
 attachment delivery) is still owed once TELEGRAM_BOT_TOKEN is available."""
 
+from copy import deepcopy
 from datetime import date
 
 from stockbot.bot import esc, format_ambiguous_reply, format_verdict_reply
@@ -13,6 +14,8 @@ VALID_VERDICT_JSON = {
     "current_price_abs": 412.5,
     "price_date": "2026-08-25",
     "buy_zone_abs": [330.0, 355.0],
+    "buy_range_allowed": True,
+    "add_range_allowed": False,
     # fair_value_*_abs are Python-computed (compute_valuation) and merged
     # into verdict_json by pipeline.py alongside the model's raw
     # valuation_inputs — this fixture models what pipeline.py actually
@@ -42,7 +45,7 @@ def _analysis(missing=None) -> Analysis:
     return Analysis(
         ticker="TEST",
         run_date=date(2026, 8, 25),
-        verdict_json=VALID_VERDICT_JSON,
+        verdict_json=deepcopy(VALID_VERDICT_JSON),
         report_md="# full report",
         costs=39.0,
         validation=ValidationResult(True, []),
@@ -62,11 +65,109 @@ def test_format_verdict_reply_contains_key_fields():
     text = format_verdict_reply(_analysis())
     assert "WATCH" in text
     assert "412.5" in text
-    assert "330.0" in text and "355.0" in text
+    assert "330.00" in text and "355.00" in text
+    assert "Fair Value (base): ₹420.00–₹470.00" in text
     assert "MEDIUM" in text
+
+
+def test_format_verdict_reply_shows_stage2_mode():
+    analysis = _analysis()
+    analysis.verdict_json["stage2_mode"] = "LITE"
+    text = format_verdict_reply(analysis)
+    assert "Stage 2:" in text
+    assert "LITE" in text
+    assert "Haiku compact report" in text
+
+
+def test_format_verdict_reply_shows_forced_full_override():
+    analysis = _analysis()
+    analysis.verdict_json["stage2_mode"] = "FULL"
+    analysis.verdict_json["stage2_mode_forced"] = True
+    text = format_verdict_reply(analysis)
+    assert "Stage 2:" in text
+    assert "FULL" in text
+    assert "config override" in text
+
+
+def test_format_verdict_reply_omits_stage2_mode_for_legacy_cache():
+    text = format_verdict_reply(_analysis())
+    assert "Stage 2:" not in text
     assert "Strong moat" in text
     assert "Regulatory overhang" in text
     assert "Q3 margin trend" in text
+
+
+def test_format_verdict_reply_shows_expected_return_scenarios():
+    analysis = _analysis()
+    analysis.verdict_json["expected_return"] = {
+        "horizon_years": 3,
+        "bear_cagr_range_pct": [-10.0, 0.0],
+        "base_cagr_range_pct": [8.0, 12.0],
+        "bull_cagr_range_pct": [15.0, 20.0],
+        "display_mode": "EDUCATIONAL_ONLY",
+        "note": "Probabilistic ranges only.",
+    }
+    text = format_verdict_reply(analysis)
+    assert "Expected 3y CAGR" in text
+    assert "Educational scenario ranges only" in text
+    assert "8.0%" in text or "8.0%–12.0%" in text
+
+
+def test_format_verdict_reply_hides_buy_zone_when_wc_not_temporary():
+    analysis = _analysis()
+    analysis.verdict_json["buy_range_allowed"] = True
+    analysis.verdict_json["wc_gap_classification"] = "INCONCLUSIVE"
+    text = format_verdict_reply(analysis)
+    assert "Buy Zone: not issued" in text
+    assert "WC: INCONCLUSIVE" in text
+    assert "330.00" not in text
+
+
+def test_format_verdict_reply_shows_anti_chase_when_price_above_base_fv():
+    analysis = _analysis()
+    analysis.verdict_json["current_price_abs"] = 2625.0
+    analysis.verdict_json["anti_chase_flag"] = False
+    analysis.verdict_json["fair_value_base_abs"] = [2280.0, 2584.0]
+    analysis.verdict_json["valuation_inputs"] = {
+        "eps_base": 76.0, "multiple_base": [30.0, 34.0],
+        "eps_bear": 55.0, "multiple_bear": [16.0, 20.0],
+        "eps_bull": 88.0, "multiple_bull": [36.0, 40.0],
+    }
+    text = format_verdict_reply(analysis)
+    assert "Anti-chase" in text
+
+
+def test_format_verdict_reply_hides_buy_zone_for_legacy_cash_gap_cache():
+    """Mazdock-style cache: buy_range_allowed True but unresolved OCF gap."""
+    analysis = _analysis()
+    analysis.verdict_json["buy_range_allowed"] = True
+    analysis.verdict_json["wc_gap_classification"] = None
+    analysis.verdict_json["reasons_avoid"] = [
+        "FY26 operating cash flow was sharply negative despite strong reported profit",
+    ]
+    analysis.verdict_json["five_year_business_test"] = {
+        "answer": "YES",
+        "confidence": "MEDIUM",
+        "evidence_for": ["growth"],
+        "evidence_against": ["Cumulative ΣCFO/ΣPAT over the last 3 years is roughly 0.02"],
+    }
+    text = format_verdict_reply(analysis)
+    assert "Buy Zone: not issued" in text
+    assert "RECONCILIATION_REQUIRED" in text
+    assert "330.00" not in text
+
+
+def test_format_verdict_reply_recomputes_base_fv_when_abs_missing():
+    # Older / partial verdict_json may lack fair_value_base_abs; Telegram
+    # must still show base (eps_base × multiple_base), never bear→bull.
+    analysis = _analysis()
+    del analysis.verdict_json["fair_value_base_abs"]
+    del analysis.verdict_json["fair_value_bear_abs"]
+    del analysis.verdict_json["fair_value_bull_abs"]
+    text = format_verdict_reply(analysis)
+    # 25 × [16, 18] = 400–450
+    assert "Fair Value (base): ₹400.00–₹450.00" in text
+    assert "₹300.00" not in text  # must not fall through to bear
 
 
 def test_format_verdict_reply_uses_html_tags_not_markdown():

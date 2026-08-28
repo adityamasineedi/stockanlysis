@@ -17,7 +17,7 @@ from stockbot.portfolio_screener.scoring_config import (
     ValuationRisk,
 )
 
-HardFilterStatus = Literal["PASS", "HARD_EXCLUDE", "DATA_INSUFFICIENT"]
+HardFilterStatus = Literal["PASS", "HARD_EXCLUDE", "DATA_INSUFFICIENT", "DATA_UNAVAILABLE"]
 SelectionStatus = Literal[
     "SELECTED",
     "AI_REJECTED",
@@ -106,8 +106,8 @@ class StockMetrics:
     eps_cagr_5y: float | None = None
     ebitda_cagr_3y: float | None = None
 
-    promoter_pct: float | None = None
-    promoter_pledge_pct: float | None = None
+    promoter_holding_pct: float | None = None
+    pledged_promoter_holding_pct: float | None = None
     share_dilution_pct: float | None = None
 
     ocf_to_pat: float | None = None
@@ -120,6 +120,8 @@ class StockMetrics:
     price_returns: list[float] | None = None  # daily returns for correlation
     missing: dict[str, str] = field(default_factory=dict)
     raw_notes: list[str] = field(default_factory=list)
+    # Where a filled metric came from: "fetched" | "computed" | "yfinance"
+    metric_sources: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

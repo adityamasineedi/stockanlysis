@@ -26,21 +26,23 @@ Your job is ONLY:
 
 ## Output
 
-Return ONLY a JSON array (no markdown fences, no prose) of objects:
+Return ONLY a JSON object (no markdown fences, no prose):
 
 ```json
-[
-  {
-    "ticker": "TCS",
-    "rank": 1,
-    "ai_score": 84,
-    "confidence": "HIGH",
-    "keep_for_deep_analysis": true,
-    "key_reason": "High ROCE/ROE with strong cash conversion",
-    "key_risk": "Valuation premium vs sector",
-    "data_concerns": []
-  }
-]
+{
+  "stocks": [
+    {
+      "ticker": "TCS",
+      "rank": 1,
+      "ai_score": 84,
+      "confidence": "HIGH",
+      "keep_for_deep_analysis": true,
+      "key_reason": "High ROCE/ROE with strong cash conversion",
+      "key_risk": "Valuation premium vs sector",
+      "data_concerns": []
+    }
+  ]
+}
 ```
 
 Ranks must be unique starting at 1. Cover every ticker supplied in the user payload.

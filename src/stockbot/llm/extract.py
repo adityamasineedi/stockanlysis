@@ -54,6 +54,19 @@ MODEL = "claude-sonnet-5"
 # still fails loudly (Stage1Error) if parsing ever comes back empty,
 # rather than silently returning None, in case that changes.
 MAX_TOKENS = 8000
+# Stage 1 only needs governance / audit sections — not full notes tables.
+# Financials are structured separately for Stage 2.
+STAGE1_SECTION_HEADINGS: tuple[str, ...] = (
+    "Qualified Opinion",
+    "Adverse Opinion",
+    "Disclaimer of Opinion",
+    "Independent Auditor's Report",
+    "Emphasis of Matter",
+    "Key Audit Matters",
+    "Contingent Liabilit",
+    "Related Party",
+)
+STAGE1_SECTION_TOKEN_CAP = 15_000
 
 SYSTEM_PROMPT = """You are a forensic extraction assistant. You will be given \
 extracted sections of a company's annual report (auditor's report, key audit \
@@ -102,27 +115,52 @@ class ExtractionResult(BaseModel):
     extraction_gaps: list[str] = Field(default_factory=list)
 
 
+def _select_stage1_sections(sections: dict[str, str]) -> dict[str, str]:
+    """Keep audit/governance headings only, capped for Stage 1 input budget."""
+    selected: dict[str, str] = {}
+    budget = STAGE1_SECTION_TOKEN_CAP
+    chars_per_token = 4
+    for heading in STAGE1_SECTION_HEADINGS:
+        text = sections.get(heading)
+        if not text:
+            continue
+        cost = len(text) // chars_per_token
+        if cost <= budget:
+            selected[heading] = text
+            budget -= cost
+        elif budget > 0:
+            max_chars = budget * chars_per_token
+            clipped = text[:max_chars]
+            last_break = clipped.rfind("\n\n")
+            if last_break > max_chars // 2:
+                clipped = clipped[:last_break]
+            selected[heading] = (
+                clipped + "\n\n[TRUNCATED — exceeds the Stage 1 section token budget]"
+            )
+            budget = 0
+    return selected
+
+
 def build_user_message(brief: Brief) -> str:
-    parts: list[str] = ["## Annual Report Sections"]
+    parts: list[str] = ["## Annual Report Sections (Stage 1 — audit/governance only)"]
 
     if brief.annual_report.sections:
-        for heading, text in brief.annual_report.sections.items():
-            parts.append(f"### {heading}\n{text}")
+        stage1_sections = _select_stage1_sections(brief.annual_report.sections)
+        if stage1_sections:
+            for heading, text in stage1_sections.items():
+                parts.append(f"### {heading}\n{text}")
+        else:
+            parts.append(
+                "MISSING: annual report fetched but no audit/governance headings matched."
+            )
     else:
         parts.append("MISSING: no annual report sections were extracted.")
 
-    parts.append("\n## News")
+    parts.append("\n## News (red-flag search only — general news omitted for Stage 1)")
     if brief.news is None:
         parts.append("MISSING: news fetch failed entirely — no items to review.")
     else:
-        parts.append("### General (last 12 months)")
-        if brief.news.general:
-            for item in brief.news.general:
-                parts.append(f"- {item.headline} | {item.url} | {item.published_date.isoformat()}")
-        else:
-            parts.append("(none found)")
-
-        parts.append("\n### Adversarial red-flag search results")
+        parts.append("### Adversarial red-flag search results")
         parts.append(f"Queries run: {', '.join(brief.news.queries_run)}")
         if brief.news.queries_empty:
             parts.append(

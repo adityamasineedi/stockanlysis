@@ -1,23 +1,15 @@
 """Module 11 — storage and cache.
 
 The `analyses` table is the persistent record of every completed run.
-get_cached deliberately does NOT refresh the price into the cached
-verdict on a hit — v1's design did, and it's unsafe: a 6-day-old
-"BUY BELOW ₹355" shown against today's ₹340 close reads as a live
-trigger from an analysis that never actually saw ₹340. Instead:
-  - within max_age_days, the cache is served with its ORIGINAL price and
-    date, untouched;
-  - today's price is fetched only to decide whether the cache is even
-    safe to serve at all — if it moved more than PRICE_MOVE_REFUSE_PCT,
-    get_cached refuses the cache entirely (returns None) so the caller
-    re-runs fresh, rather than serving a verdict whose buy zone no longer
-    means anything;
-  - if the live price check itself fails (network), the cache is also
-    refused rather than served un-verified — consistent with this
-    project's bias toward failing loudly over serving a possibly-wrong
-    number.
-build_staleness_banner is a separate, pure function for the caller
-(bot.py) to render when it does choose to serve a cache hit.
+On a cache hit within max_age_days (and price move ≤ PRICE_MOVE_REFUSE_PCT),
+the stored report is reused and only the live price is synced from
+yfinance (NSE/BSE last close — same source as a fresh run). Constitution
+gates (anti-chase, valuation tension, buy-zone blocks) are recomputed
+against the live price; the qualitative report prose is unchanged.
+
+If price moved more than PRICE_MOVE_REFUSE_PCT, get_cached returns None
+so the caller re-runs a full analysis. If the live price fetch fails,
+the cache is also refused rather than served un-verified.
 """
 
 from __future__ import annotations
@@ -25,7 +17,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from stockbot.config import DB_PATH
 from stockbot.fetch.prices import fetch_price_data
@@ -36,10 +28,11 @@ PRICE_MOVE_REFUSE_PCT = 0.10
 
 @dataclass(frozen=True)
 class CacheHit:
-    """A served cache row plus the live price used to decide it was safe."""
+    """A served cache row plus the live price used to refresh the card."""
 
     analysis: Analysis
     current_price_abs: float
+    price_date: date
 
 
 def _connect() -> sqlite3.Connection:
@@ -106,6 +99,13 @@ def save_analysis(
         return int(cursor.lastrowid)
 
 
+def invalidate_cached_analyses(ticker: str) -> int:
+    """Delete stored analyses for a ticker so the next /analyze is fresh."""
+    with _connect() as conn:
+        cursor = conn.execute("DELETE FROM analyses WHERE ticker = ?", (ticker.upper(),))
+        return int(cursor.rowcount)
+
+
 def _row_to_analysis(row: sqlite3.Row) -> Analysis:
     verdict_json = json.loads(row["verdict_json"])
     return Analysis(
@@ -134,28 +134,44 @@ def get_cached(ticker: str, max_age_days: int = 7) -> CacheHit | None:
         return None
 
     verdict_json = json.loads(row["verdict_json"])
-    original_price = verdict_json.get("current_price_abs")
+    original_price = verdict_json.get("analysis_price_abs") or verdict_json.get(
+        "current_price_abs"
+    )
     try:
-        current_price = fetch_price_data(ticker).current_price_abs
+        live = fetch_price_data(ticker)
     except Exception:  # noqa: BLE001 - can't verify safety, so refuse below rather than guess
         return None
-    if original_price and abs(current_price - original_price) / original_price > PRICE_MOVE_REFUSE_PCT:
+    if original_price and abs(live.current_price_abs - original_price) / original_price > PRICE_MOVE_REFUSE_PCT:
         return None
 
-    return CacheHit(analysis=_row_to_analysis(row), current_price_abs=current_price)
+    return CacheHit(
+        analysis=_row_to_analysis(row),
+        current_price_abs=live.current_price_abs,
+        price_date=live.price_date,
+    )
 
 
 def build_staleness_banner(analysis: Analysis, current_price_abs: float) -> str:
-    original_price = analysis.verdict_json.get("current_price_abs")
-    original_date = analysis.verdict_json.get("price_date", analysis.run_date.isoformat())
-    if not original_price:
+    """Banner when the cached report date differs from the live synced price."""
+    verdict = analysis.verdict_json
+    analysis_price = verdict.get("analysis_price_abs") or verdict.get("current_price_abs")
+    analysis_date = verdict.get("analysis_price_date") or verdict.get(
+        "price_date", analysis.run_date.isoformat()
+    )
+    if not analysis_price:
         return ""
 
-    change_pct = (current_price_abs - original_price) / original_price * 100
+    if abs(current_price_abs - float(analysis_price)) / float(analysis_price) < 0.001:
+        return (
+            f"Report from {analysis_date} · price unchanged at ₹{current_price_abs:.2f} "
+            f"(live sync, no new LLM run)."
+        )
+
+    change_pct = (current_price_abs - float(analysis_price)) / float(analysis_price) * 100
     sign = "+" if change_pct >= 0 else ""
     return (
-        f"⚠️ Analysis from {original_date} at ₹{original_price:.2f}. "
-        f"Price today: ₹{current_price_abs:.2f} ({sign}{change_pct:.1f}%). "
-        f"Buy zone below assumes conditions as of {original_date}. "
-        f"Send /analyze {analysis.ticker} fresh for a current view."
+        f"Report from {analysis_date} at ₹{float(analysis_price):.2f} · "
+        f"live price ₹{current_price_abs:.2f} ({sign}{change_pct:.1f}%). "
+        f"Qualitative analysis unchanged; gates recomputed at live price. "
+        f"Send /analyze {analysis.ticker} fresh after new results/filings."
     )

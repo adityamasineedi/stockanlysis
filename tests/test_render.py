@@ -226,3 +226,26 @@ def test_report_with_no_tokens_passes_through_unchanged():
         report, _price(), _technicals(), _verdict(), _valuation(), _confirmed_shareholding()
     )
     assert rendered == report
+
+
+def test_render_rewrites_bear_to_bull_headline_fair_value_to_base():
+    # KPITTECH live bug: model typed ₹323–₹780 (bear→bull) as Fair Value;
+    # Telegram showed base ₹400–₹450. Attachment must match the card.
+    report = (
+        "1. QUICK VERDICT\n"
+        "Fair Value ₹300.00–₹600.00 · Upside -10%\n"
+        "**Fair Value:** ₹300.00–₹600.00\n"
+    )
+    rendered = render_report(
+        report, _price(), _technicals(), _verdict(), _valuation(), _confirmed_shareholding()
+    )
+    assert "Fair Value ₹400.00–₹450.00" in rendered
+    assert "**Fair Value:** ₹400.00–₹450.00" in rendered
+    assert "₹300.00–₹600.00" not in rendered
+
+
+def test_canonicalize_does_not_touch_single_midpoint_fair_value_mentions():
+    from stockbot.render import canonicalize_headline_fair_value
+
+    prose = "about 10% below our base fair value of ₹528.00."
+    assert canonicalize_headline_fair_value(prose, _valuation()) == prose

@@ -34,13 +34,22 @@ PASSING_VERDICT_JSON = """```json
     "eps_bear": 20.0, "multiple_bear": [15.0, 17.0],
     "eps_bull": 30.0, "multiple_bull": [18.0, 20.0]
   },
-  "confidence": 6, "risk": "LOW",
+  "confidence": 2, "risk": "LOW",
   "business_quality": 7, "financial_health": 7, "management_quality": 7,
   "earnings_quality": "HIGH", "holding_period": "3-5 years",
   "reasons_buy": ["a"], "reasons_avoid": ["b"], "biggest_watch": "c",
   "missing_data_impact": "no meaningful impact", "gates_failed": []
 }
 ```""".replace("PRICE_DATE_PLACEHOLDER", datetime.now(UTC).date().isoformat())
+
+
+def _passing_report_md() -> str:
+    return (
+        "# 1. QUICK VERDICT\nWATCH.\n\n"
+        "**SHOULD I BUY?**\nNot yet — thin automated test context.\n\n"
+        f"{PASSING_VERDICT_JSON}\n\n"
+        "Research and education, not investment advice.\n"
+    )
 
 
 def _brief() -> Brief:
@@ -63,7 +72,11 @@ def _brief() -> Brief:
 def _patch_common(monkeypatch, *, resolve_result=TICKER, cached=None, budget_ok=True, spent=0.0):
     monkeypatch.setattr(pipeline_module, "load_symbol_table", lambda: object())
     monkeypatch.setattr(pipeline_module, "resolve_ticker", lambda query, table: resolve_result)
-    cache_hit = CacheHit(analysis=cached, current_price_abs=405.0) if cached is not None else None
+    cache_hit = (
+        CacheHit(analysis=cached, current_price_abs=405.0, price_date=date(2026, 8, 28))
+        if cached is not None
+        else None
+    )
     monkeypatch.setattr(pipeline_module.storage, "get_cached", lambda ticker, max_age_days=7: cache_hit)
     monkeypatch.setattr(pipeline_module, "check_budget", lambda: (budget_ok, spent))
     monkeypatch.setattr(pipeline_module, "assemble_brief", lambda ticker: _brief())
@@ -71,6 +84,21 @@ def _patch_common(monkeypatch, *, resolve_result=TICKER, cached=None, budget_ok=
         pipeline_module, "run_stage1", lambda brief: (ExtractionResult(), {"input_tokens": 100, "output_tokens": 50, "cost_inr": 5.0})
     )
     monkeypatch.setattr(pipeline_module.storage, "save_analysis", lambda **kwargs: 1)
+    from stockbot.analysis_routing import AnalysisRouting
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "compute_stage2_routing",
+        lambda ticker: AnalysisRouting(
+            stage2_mode="FULL",
+            eligibility_verdict="AUTO_DEEP_ANALYSIS",
+            issuer_class="NON_FINANCIAL",
+            data_confidence="HIGH",
+            quant_red_flags_count=0,
+            reasons=("test",),
+        ),
+    )
+    monkeypatch.setattr(pipeline_module, "resolve_stage2_mode", lambda ticker, extraction, prescan=None: "FULL")
 
 
 def test_not_found_short_circuits(monkeypatch):
@@ -109,7 +137,9 @@ def test_cache_hit_skips_budget_and_llm_entirely(monkeypatch):
 
     result = run_full_analysis("TEST")
     assert result.status == "ok"
-    assert result.analysis is cached_analysis
+    assert result.analysis.ticker == cached_analysis.ticker
+    assert result.analysis.verdict_json["current_price_abs"] == 405.0
+    assert result.analysis.verdict_json["analysis_price_abs"] == 400.0
     assert result.from_cache is True
     assert result.staleness_banner is not None
     assert "400.00" in result.staleness_banner
@@ -134,8 +164,8 @@ def test_successful_run_saves_and_returns_ok(monkeypatch):
     monkeypatch.setattr(
         pipeline_module,
         "run_stage2",
-        lambda brief, extraction, extra_instruction=None: (
-            PASSING_VERDICT_JSON,
+        lambda brief, extraction, extra_instruction=None, **kwargs: (
+            _passing_report_md(),
             None,
             {"input_tokens": 200, "output_tokens": 100, "cost_inr": 20.0},
         ),
@@ -151,13 +181,13 @@ def test_validation_failure_retries_once_then_succeeds(monkeypatch):
     _patch_common(monkeypatch)
     calls = {"count": 0}
 
-    def _stage2(brief, extraction, extra_instruction=None):
+    def _stage2(brief, extraction, extra_instruction=None, **kwargs):
         calls["count"] += 1
         if calls["count"] == 1:
             return "```json\n{\"verdict\": \"WATCH\"}\n```", None, {
                 "input_tokens": 100, "output_tokens": 50, "cost_inr": 10.0
             }
-        return PASSING_VERDICT_JSON, None, {"input_tokens": 100, "output_tokens": 50, "cost_inr": 10.0}
+        return _passing_report_md(), None, {"input_tokens": 100, "output_tokens": 50, "cost_inr": 10.0}
 
     monkeypatch.setattr(pipeline_module, "run_stage2", _stage2)
 
@@ -171,7 +201,7 @@ def test_validation_failure_twice_returns_insufficient_data(monkeypatch):
     monkeypatch.setattr(
         pipeline_module,
         "run_stage2",
-        lambda brief, extraction, extra_instruction=None: (
+        lambda brief, extraction, extra_instruction=None, **kwargs: (
             "```json\n{\"verdict\": \"WATCH\"}\n```",
             None,
             {"input_tokens": 100, "output_tokens": 50, "cost_inr": 10.0},
@@ -210,7 +240,7 @@ def test_per_analysis_cost_cap_stops_after_stage2_first_attempt(monkeypatch):
     monkeypatch.setattr(
         pipeline_module,
         "run_stage2",
-        lambda brief, extraction, extra_instruction=None: (
+        lambda brief, extraction, extra_instruction=None, **kwargs: (
             "```json\n{\"verdict\": \"WATCH\"}\n```",  # fails validation too, but cost cap wins first
             None,
             {"input_tokens": 1, "output_tokens": 1, "cost_inr": 76.0},  # 5 + 76 = 81 > 80
@@ -226,7 +256,7 @@ def test_per_analysis_cost_cap_stops_after_a_retry_pushes_it_over(monkeypatch):
     _patch_common(monkeypatch)  # stage1 cost_inr=5.0
     calls = {"count": 0}
 
-    def _stage2(brief, extraction, extra_instruction=None):
+    def _stage2(brief, extraction, extra_instruction=None, **kwargs):
         calls["count"] += 1
         # always fails validation (bare-bones JSON) and costs 40 each time:
         # attempt 1 -> running 5+40=45 (under cap, retries);

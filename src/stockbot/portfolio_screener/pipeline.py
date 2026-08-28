@@ -12,7 +12,7 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from stockbot.portfolio_screener.ai_ranker import rank_with_ai
+from stockbot.portfolio_screener.ai_ranker import rank_with_ai, resolve_ai_ranker
 from stockbot.portfolio_screener.audit_logger import (
     format_human_table,
     log_stock_decision,
@@ -128,6 +128,13 @@ def run_prescreen(
         log_stock_decision(rec)
 
     costs = tracker.summary(final_candidates=len(selected))
+    if config.skip_ai or config.dry_run:
+        ai_model_label = "deterministic_fallback"
+    else:
+        resolved = resolve_ai_ranker(config)
+        ai_model_label = (
+            f"{resolved[0]}:{resolved[1]}" if resolved is not None else "unavailable"
+        )
     result = ScreeningResult(
         universe_size=len(metrics),
         hard_excluded=hard_excluded,
@@ -142,7 +149,7 @@ def run_prescreen(
         screening_version=config.screening_version,
         weights_version=config.weights_version,
         prompt_version=config.prompt_version,
-        ai_model=config.ai_model if not (config.skip_ai or config.dry_run) else "deterministic_fallback",
+        ai_model=ai_model_label,
         data_timestamp=datetime.now(UTC),
         universe_timestamp=universe_ts,
         human_table=human_table,

@@ -18,15 +18,26 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from typing import Literal
 
 from stockbot import storage
+from stockbot.analysis_routing import (
+    Stage2Mode,
+    compute_stage2_routing,
+    resolve_stage2_mode,
+)
 from stockbot.brief import assemble_brief, to_markdown
 from stockbot.config import settings
 from stockbot.costs import check_budget
 from stockbot.fetch.tickers import load_symbol_table, resolve_ticker
 from stockbot.llm.extract import run_stage1
+from stockbot.constitution_gates import (
+    apply_constitution_overrides,
+    sync_live_price_into_verdict,
+)
+from stockbot.expected_return import merge_expected_return_into_verdict_json
 from stockbot.llm.verdict import (
     TruncatedResponseError,
     compute_valuation,
@@ -36,7 +47,12 @@ from stockbot.llm.verdict import (
 from stockbot.models import AmbiguousMatch, Analysis, TickerInfo, ValidationResult
 from stockbot.render import PlaceholderError, render_report
 from stockbot.storage import CacheHit, build_staleness_banner
-from stockbot.validate import format_validation_errors, validate_report
+from stockbot.validate import (
+    classify_retry_mode,
+    format_validation_errors,
+    try_auto_fix_report,
+    validate_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +72,9 @@ MAX_TRUNCATION_RETRIES = 2
 # case (Stage 1 + Stage 2 + one retry), not a number any single healthy
 # analysis should get near.
 PER_ANALYSIS_COST_CAP_INR = 80.0
+# Stop starting new paid Stage 2 attempts once wall-clock exceeds this —
+# prevents retry loops from burning budget after an abandoned session.
+ANALYSIS_RUNTIME_CAP_SECONDS = 600
 
 # Paid-path concurrency. Cache hits skip this. Recreated when settings change
 # only at process start — config is read once at import of settings.
@@ -71,6 +90,7 @@ class PipelineResult:
         "insufficient_data",
         "budget_exceeded",
         "analysis_cost_exceeded",
+        "analysis_runtime_exceeded",
         "render_failed",
         "busy",
     ]
@@ -92,17 +112,42 @@ class AnalysisCostExceeded(Exception):
         )
 
 
+class AnalysisRuntimeExceeded(Exception):
+    def __init__(self, elapsed_seconds: float):
+        self.elapsed_seconds = elapsed_seconds
+        super().__init__(
+            f"Analysis runtime cap ({ANALYSIS_RUNTIME_CAP_SECONDS}s) exceeded "
+            f"after {elapsed_seconds:.0f}s — stopping before further LLM calls"
+        )
+
+
+def _runtime_exceeded(started_at: float) -> bool:
+    return time.monotonic() - started_at > ANALYSIS_RUNTIME_CAP_SECONDS
+
+
 def _call_stage2_absorbing_truncation(
-    brief, extraction, extra_instruction: str | None, running_cost_inr: float
+    brief,
+    extraction,
+    extra_instruction: str | None,
+    running_cost_inr: float,
+    stage2_mode: Stage2Mode,
+    started_at: float,
 ) -> tuple[str, dict, float]:
     """Runs one Stage 2 call, transparently re-issuing it (same
     extra_instruction, i.e. not a validation attempt) if truncated. Returns
     (report_text, usage, updated running_cost_inr). Truncation is an
     infrastructure failure, not a validation failure — it must not consume
     one of the scarce MAX_STAGE2_RETRIES slots."""
+    if _runtime_exceeded(started_at):
+        raise AnalysisRuntimeExceeded(time.monotonic() - started_at)
     for truncation_attempt in range(MAX_TRUNCATION_RETRIES + 1):
         try:
-            report_text, _verdict, usage = run_stage2(brief, extraction, extra_instruction=extra_instruction)
+            report_text, _verdict, usage = run_stage2(
+                brief,
+                extraction,
+                extra_instruction=extra_instruction,
+                mode=stage2_mode,
+            )
         except TruncatedResponseError as exc:
             running_cost_inr += exc.cost_inr
             if running_cost_inr > PER_ANALYSIS_COST_CAP_INR:
@@ -122,38 +167,66 @@ def _call_stage2_absorbing_truncation(
 
 
 def _run_stage2_with_validation(
-    brief, extraction, running_cost_inr: float
+    brief,
+    extraction,
+    running_cost_inr: float,
+    stage2_mode: Stage2Mode,
+    started_at: float,
 ) -> tuple[str, dict, ValidationResult]:
     report_text, usage, running_cost_inr = _call_stage2_absorbing_truncation(
-        brief, extraction, None, running_cost_inr
+        brief, extraction, None, running_cost_inr, stage2_mode, started_at
     )
-    validation = validate_report(report_text, brief)
+    validation = validate_report(report_text, brief, stage2_mode=stage2_mode)
+
+    fixed = try_auto_fix_report(report_text, validation, brief, stage2_mode=stage2_mode)
+    if fixed is not None:
+        report_text, validation = fixed
 
     attempt = 1
     while not validation.passed and attempt <= MAX_STAGE2_RETRIES:
-        feedback = format_validation_errors(validation)
-        logger.warning("Stage 2 validation failed (attempt %d), retrying: %s", attempt, feedback)
+        if _runtime_exceeded(started_at):
+            raise AnalysisRuntimeExceeded(time.monotonic() - started_at)
+        retry_mode = classify_retry_mode(validation)
+        feedback = format_validation_errors(validation, retry_mode=retry_mode)
+        logger.warning(
+            "Stage 2 validation failed (attempt %d, %s retry): %s",
+            attempt,
+            retry_mode,
+            feedback,
+        )
         report_text, retry_usage, running_cost_inr = _call_stage2_absorbing_truncation(
-            brief, extraction, feedback, running_cost_inr
+            brief, extraction, feedback, running_cost_inr, stage2_mode, started_at
         )
         usage = {
             "input_tokens": usage["input_tokens"] + retry_usage["input_tokens"],
             "output_tokens": usage["output_tokens"] + retry_usage["output_tokens"],
             "cost_inr": usage["cost_inr"] + retry_usage["cost_inr"],
         }
-        validation = validate_report(report_text, brief)
+        validation = validate_report(report_text, brief, stage2_mode=stage2_mode)
+        fixed = try_auto_fix_report(report_text, validation, brief, stage2_mode=stage2_mode)
+        if fixed is not None:
+            report_text, validation = fixed
         attempt += 1
 
     return report_text, usage, validation
 
 
 def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
+    started_at = time.monotonic()
     budget_ok, spent = check_budget()
     if not budget_ok:
         return PipelineResult(status="budget_exceeded", spent_inr=spent)
 
+    prescan_routing = compute_stage2_routing(ticker)
     brief = assemble_brief(ticker)
     extraction, stage1_usage = run_stage1(brief)
+    stage2_mode = resolve_stage2_mode(ticker, extraction, prescan=prescan_routing)
+    logger.info(
+        "%s Stage 2 mode=%s (prescan: %s)",
+        ticker.symbol,
+        stage2_mode,
+        "; ".join(prescan_routing.reasons),
+    )
 
     if stage1_usage["cost_inr"] > PER_ANALYSIS_COST_CAP_INR:
         return PipelineResult(status="analysis_cost_exceeded", spent_inr=stage1_usage["cost_inr"])
@@ -166,10 +239,17 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
 
     try:
         report_text, stage2_usage, validation = _run_stage2_with_validation(
-            brief, extraction, stage1_usage["cost_inr"]
+            brief,
+            extraction,
+            stage1_usage["cost_inr"],
+            stage2_mode,
+            started_at,
         )
     except AnalysisCostExceeded as exc:
         return PipelineResult(status="analysis_cost_exceeded", spent_inr=exc.spent_inr)
+    except AnalysisRuntimeExceeded as exc:
+        spent_so_far = stage1_usage["cost_inr"]
+        return PipelineResult(status="analysis_runtime_exceeded", spent_inr=spent_so_far)
 
     if not validation.passed:
         return PipelineResult(status="insufficient_data", validation_failures=validation.failures)
@@ -178,6 +258,7 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     # here rather than threading a fourth return value through the retry loop
     verdict = extract_verdict_json(report_text)
     valuation = compute_valuation(verdict.valuation_inputs)
+    verdict = apply_constitution_overrides(verdict, valuation, brief)
     total_cost_inr = stage1_usage["cost_inr"] + stage2_usage["cost_inr"]
 
     # v3's placeholder-token contract: a report that passed every other
@@ -198,6 +279,13 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     # available directly rather than recomputing compute_valuation() again
     # at display time.
     verdict_json = {**verdict.model_dump(mode="json"), **valuation.model_dump(mode="json")}
+    verdict_json["analysis_price_abs"] = verdict.current_price_abs
+    verdict_json["analysis_price_date"] = verdict.price_date.isoformat()
+    verdict_json["stage2_mode"] = stage2_mode
+    verdict_json["stage2_routing_reasons"] = list(prescan_routing.reasons)
+    if settings.force_stage2_full:
+        verdict_json["stage2_mode_forced"] = True
+    verdict_json = merge_expected_return_into_verdict_json(verdict_json)
 
     storage.save_analysis(
         ticker=ticker.symbol,
@@ -236,10 +324,24 @@ def run_full_analysis(query: str, max_cache_age_days: int = 7) -> PipelineResult
 
     cached: CacheHit | None = storage.get_cached(ticker.symbol, max_age_days=max_cache_age_days)
     if cached is not None:
-        banner = build_staleness_banner(cached.analysis, cached.current_price_abs)
+        synced_json = sync_live_price_into_verdict(
+            cached.analysis.verdict_json,
+            live_price_abs=cached.current_price_abs,
+            live_price_date=cached.price_date,
+        )
+        analysis = Analysis(
+            ticker=cached.analysis.ticker,
+            run_date=cached.analysis.run_date,
+            verdict_json=synced_json,
+            report_md=cached.analysis.report_md,
+            costs=cached.analysis.costs,
+            validation=cached.analysis.validation,
+            missing=cached.analysis.missing,
+        )
+        banner = build_staleness_banner(analysis, cached.current_price_abs)
         return PipelineResult(
             status="ok",
-            analysis=cached.analysis,
+            analysis=analysis,
             from_cache=True,
             staleness_banner=banner or None,
         )

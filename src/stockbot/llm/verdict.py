@@ -1,11 +1,10 @@
 """Module 9 — Stage 2: verdict against the external master prompt.
 
 The master prompt (prompts/master-stock-analysis-prompt-v3.md) is loaded
-verbatim as the system prompt — never paraphrased, summarised, or edited
-in code, per the project's own rule that this asset is the user's, not
-ours to alter. (v3 replaced v2 to add the closed-world rule, placeholder
-tokens, and moving fair-value arithmetic out of the model — see
-PROJECT.md's "v3 migration" note.)
+as the Stage 2 system prompt. The Quality-First constitution
+(prompts/quality-first-portfolio-constitution-v1.md) is prepended as
+permanent top-level policy. Neither file is paraphrased into code — only
+composed (constitution first, then master).
 
 It cannot use client.messages.parse() the way Stage 1 does: the master
 prompt's own format is a full 16-section prose report, and only the JSON
@@ -25,21 +24,15 @@ Sonnet 5 rejects `budget_tokens` with a 400 (removed on that model
 generation, same family as the temperature rejection). `{"type": "adaptive"}`
 is the correct, accepted shape and is what's used below.
 
-Three hard injections, layered into the user message rather than edited
-into the master prompt file itself. The first two are now also stated
-natively by v3 itself (closed-world rule, confidence cap) — kept anyway as
-pipeline-level reinforcement, not because v3 is silent on them:
-  1. Technical figures are code-computed [FACT], not to be recomputed.
-  2. Confidence capped at 7/10 for this pipeline, regardless of the
-     model's own assessment (the master prompt's own confidence scale
-     goes to 10; this pipeline's cap is stricter and independent of it).
-  3. No web search tool is available in this call — the master prompt's
-     own Step 0-1 research requirements have already been satisfied by
-     the data-fetching pipeline (see the plan's Prompt 10 rationale: the
-     master prompt assumes an interactive model with search; this
-     pipeline's Opus call doesn't have that tool).
-Plus the requirement for the trailing JSON block itself, whose schema is
-spelled out in the injection text so the model doesn't have to infer it.
+Hard injections are layered into the user message (inside
+<pipeline_constraints>) rather than edited into the master prompt file
+itself. They reinforce rules already stated natively by v3:
+  1. Technical figures are code-computed [FACT], cite [PRICE_AND_TECHNICALS].
+  2. Confidence is 1–10 but capped at 7/10 for this pipeline — always X/10.
+  3. No web search — retrieval already ran; closed-world + explicit "cannot
+     be determined" behaviour.
+  4. Source-conflict preference order.
+Plus the trailing JSON schema (valid JSON only; null for incomplete fields).
 """
 
 from __future__ import annotations
@@ -49,19 +42,29 @@ import re
 from datetime import date
 
 from anthropic import Anthropic
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from stockbot.brief import (
     format_financials_section,
     format_price_section,
     format_shareholding_section,
 )
-from stockbot.config import MASTER_PROMPT_PATH, settings
+from stockbot.config import MASTER_PROMPT_PATH, PROMPTS_DIR, settings
+
+CONSTITUTION_PATH = PROMPTS_DIR / "quality-first-portfolio-constitution-v1.md"
+STAGE2_LITE_PROMPT_PATH = PROMPTS_DIR / "stage2-lite-v1.md"
+from stockbot.analysis_routing import Stage2Mode
 from stockbot.llm.client import call_anthropic_and_log
+from stockbot.order_book_signals import (
+    collect_order_book_signals,
+    format_order_book_signals_for_stage2,
+    order_book_wc_billing_hint,
+)
 from stockbot.llm.extract import ExtractionResult
 from stockbot.models import Brief
 
 MODEL = "claude-sonnet-5"
+LITE_MODEL = "claude-haiku-4-5-20251001"
 # v3 migration: switched from claude-opus-5. Opus goes back in only after
 # a clean end-to-end run on Sonnet, per the migration's own instruction.
 #
@@ -76,6 +79,7 @@ MODEL = "claude-sonnet-5"
 # Raised to 32000; still not proven sufficient, watch for further
 # truncation rather than assuming this is the last raise needed.
 MAX_TOKENS = 32000
+LITE_MAX_TOKENS = 4096
 
 PIPELINE_CONFIDENCE_CAP = 7
 
@@ -92,28 +96,43 @@ def hard_injections(confidence_cap: int) -> str:
 IMPORTANT — pipeline constraints, read before writing the report:
 
 1. The technical figures below (SMA50, SMA200, RSI14, support/resistance) \
-were computed from real OHLCV data in code. Treat them as [FACT]. Do not \
-recompute, estimate, or second-guess them yourself.
+were computed from real OHLCV data in code. Treat them as [FACT] and cite \
+[PRICE_AND_TECHNICALS]. Do not recompute, estimate, or second-guess them yourself.
 
-2. Confidence is capped at {confidence_cap}/10 for this pipeline, regardless of your own \
-assessment of how confident the analysis is. If your assessment would \
+2. Confidence is 1–10, but this pipeline caps at {confidence_cap}/10 maximum. \
+Never exceed {confidence_cap} regardless of evidence quality. Always write \
+confidence as X/10 — never X/{confidence_cap}. If your assessment would \
 otherwise be higher, cap the number at {confidence_cap} but still describe your true \
 assessment in the prose.
 
-3. The research described in this prompt's Step 0-1 (annual report, \
-quarterly results, shareholding pattern, a 12-month news scan, and the \
-mandatory disconfirmation search) has already been performed by a separate \
-data-fetching pipeline and is contained entirely in the material below, \
-including a structured extraction of the annual report's auditor findings \
-and any red flags found in news. You do NOT have a web search tool in this \
-call — do not attempt to research further, and do not assume access to any \
-live data beyond what is provided below. Treat the provided material as the \
-complete evidence base for this analysis; any gap in it is a genuine \
-finding to report as MISSING or [UNVERIFIED], never something to fill in \
-from general knowledge about the company.
+3. Retrieval (price, financials, shareholding, annual-report extraction, \
+news / disconfirmation search) has already been performed by a separate \
+data-fetching pipeline and is contained entirely in the <context> blocks \
+below. You do NOT have a web search tool in this call — do not attempt to \
+research further, and do not assume access to any live data beyond what is \
+provided. Treat the provided material as the complete evidence base; any \
+gap is a genuine finding to report as MISSING or [UNVERIFIED], never \
+something to fill from general knowledge. If analysis cannot be completed \
+from context, state "This cannot be determined from the supplied evidence."
+
+4. On source conflicts: prefer PRICE_AND_TECHNICALS over all for price/tech; \
+FINANCIALS over EXTRACTION/news for accounting numbers; SHAREHOLDING over \
+news for ownership/pledge. Note conflicts in §6.
+
+5. Quality-First constitution (system prompt): complete five_year_business_test \
+before any Ideal Buy / Add More zone. If answer is NO or UNCERTAIN, set \
+buy_range_allowed=false, add_range_allowed=false, buy_zone_abs=null, and do \
+not invent buy/add levels. For defence/EPC/project names with extremely weak \
+reported cash conversion (e.g. 3y ΣCFO/ΣPAT < 0.25, or sharply negative OCF \
+vs profit), set wc_gap_classification and withhold buy/add ranges unless the \
+classification is TEMPORARY_BILLING_CYCLE with a year-by-year CFO-to-PAT \
+reconciliation in the report. A lower price alone never creates an add. \
+Later tranches are conditional. Anti-chase pauses new capital after abnormal \
+short-term surges. Profit review = rebalancing review, not an exact top.
 
 At the very end of your report, after the Final Beginner Summary, include a \
-fenced ```json code block containing exactly these fields. The numbers must \
+fenced ```json code block containing exactly these fields. Output only valid \
+JSON — if a field cannot be completed, use null (or [] for arrays). The numbers must \
 be the SAME as used in the prose above — this is a restatement for the \
 pipeline to parse, never a re-derivation:
 
@@ -122,16 +141,14 @@ pipeline to parse, never a re-derivation:
   "verdict": "BUY|BUY ON CORRECTION|WATCH|SKIP",
   "current_price_abs": <number>,
   "price_date": "<YYYY-MM-DD>",
-  "buy_zone_abs": [<low>, <high>],
+  "buy_zone_abs": [<low>, <high>] | null,
   "valuation_inputs": {{
     "eps_bear": <number>, "eps_base": <number>, "eps_bull": <number>,
     "multiple_bear": [<low>, <high>],
     "multiple_base": [<low>, <high>],
     "multiple_bull": [<low>, <high>]
   }},
-  "confidence": <integer, 1-10 scale per the master prompt's own CONFIDENCE \
-section, but capped at {confidence_cap} per constraint #2 above — never write {confidence_cap} as if it \
-were the scale's maximum>,
+  "confidence": <integer, 1-10 scale, capped at {confidence_cap} — always written as X/10>,
   "risk": "LOW|MEDIUM|HIGH",
   "business_quality": <integer 1-10>,
   "financial_health": <integer 1-10>,
@@ -142,9 +159,44 @@ were the scale's maximum>,
   "reasons_avoid": ["<string>", "..."],
   "biggest_watch": "<string>",
   "missing_data_impact": "<string>",
-  "gates_failed": ["<string>", "..."]
+  "gates_failed": ["<string>", "..."],
+  "bear_growth_justification": null,
+  "five_year_business_test": {{
+    "answer": "YES|NO|UNCERTAIN",
+    "confidence": "HIGH|MEDIUM|LOW",
+    "evidence_for": [],
+    "evidence_against": []
+  }},
+  "buy_range_allowed": <true|false>,
+  "add_range_allowed": <true|false>,
+  "thesis_status": "THESIS_CONFIRMING|THESIS_UNDER_REVIEW|THESIS_AT_RISK|THESIS_BROKEN"|null,
+  "anti_chase_flag": <true|false>,
+  "thesis_invalidation_triggers": [],
+  "wc_gap_classification": "TEMPORARY_BILLING_CYCLE|WORKING_CAPITAL_STRESS|DATA_OR_SCOPE_ERROR|INCONCLUSIVE"|null,
+  "profit_review": {{
+    "status": "NOT_TRIGGERED|REVIEW_FOR_REBALANCING",
+    "trigger_reason": [],
+    "note": "A valuation-range review is not an automatic sell instruction."
+  }},
+  "position_building_plan": null,
+  "expected_return": {{
+    "horizon_years": 3,
+    "assumptions": ["<string>", "..."],
+    "confidence": "HIGH|MEDIUM|LOW",
+    "note": "<probabilistic disclaimer — no guaranteed yearly ladder>"
+  }}
 }}
 ```
+
+Expected return rules (mandatory when valuation_inputs are present):
+- Do **not** state fixed yearly return ladders (forbidden: "year 1 = 12%, year 2 = 14%").
+- Supply only horizon_years (2–5), assumptions (EPS/multiple/order-book/cash-flow drivers), \
+confidence, and note in JSON — Python computes bear/base/bull **CAGR ranges** from \
+fair-value scenarios vs current price.
+- If buy_range_allowed is false or thesis/WC gates are unresolved, assumptions must \
+reflect uncertainty; ranges are **educational only**, not actionable targets.
+- Never invent broker/consensus figures not supported in supplied context — mark \
+external forecasts [UNVERIFIED] in prose and assumptions.
 
 Note on valuation_inputs: supply an EPS estimate and a P/E multiple RANGE
 for each of bear/base/bull — never a price you multiplied yourself.
@@ -183,11 +235,35 @@ class ValuationInputs(BaseModel):
     multiple_bull: tuple[float, float]
 
 
+class FiveYearBusinessTest(BaseModel):
+    answer: str
+    confidence: str | None = None
+    evidence_for: list[str] = []
+    evidence_against: list[str] = []
+
+
+class ProfitReview(BaseModel):
+    status: str = "NOT_TRIGGERED"
+    trigger_reason: list[str] = []
+    note: str | None = None
+
+
+class ExpectedReturnInputs(BaseModel):
+    """Model narrative only — CAGR ranges are computed in Python (expected_return.py)."""
+
+    horizon_years: int = 3
+    assumptions: list[str] = Field(default_factory=list)
+    confidence: str = "MEDIUM"
+    note: str | None = None
+
+
 class VerdictJSON(BaseModel):
     verdict: str
     current_price_abs: float
     price_date: date
-    buy_zone_abs: tuple[float, float]
+    # null when constitution gates block a buy/add range (five-year test
+    # NO/UNCERTAIN, quality fail, or thesis invalidation).
+    buy_zone_abs: tuple[float, float] | None = None
     valuation_inputs: ValuationInputs
     confidence: int
     risk: str
@@ -205,6 +281,20 @@ class VerdictJSON(BaseModel):
     # trailing EPS — otherwise omitted/null. Optional so existing reports
     # (bear EPS at or below TTM, the normal case) don't need to supply it.
     bear_growth_justification: str | None = None
+    # Quality-First constitution fields — optional so older fixtures parse.
+    five_year_business_test: FiveYearBusinessTest | None = None
+    buy_range_allowed: bool | None = None
+    add_range_allowed: bool | None = None
+    thesis_status: str | None = None
+    anti_chase_flag: bool | None = None
+    external_valuation_tension: str | None = None
+    thesis_invalidation_triggers: list[str] | None = None
+    # Defence/EPC cash-gap outcome. Only TEMPORARY_BILLING_CYCLE unlocks
+    # buy/add ranges when reported conversion is extremely weak.
+    wc_gap_classification: str | None = None
+    profit_review: ProfitReview | None = None
+    position_building_plan: dict | list | None = None
+    expected_return: ExpectedReturnInputs | None = None
 
 
 class ValuationComputed(BaseModel):
@@ -235,12 +325,50 @@ def compute_valuation(inputs: ValuationInputs) -> ValuationComputed:
 
 
 def load_master_prompt() -> str:
+    """Load constitution (top-level policy) then the Stage 2 master prompt.
+
+    The master markdown file is not paraphrased in code; composition is
+    prepend-only so the Quality-First constitution is always in force.
+    """
     if not MASTER_PROMPT_PATH.exists():
         raise VerdictParseError(
             f"Master prompt not found at {MASTER_PROMPT_PATH} — this is a required "
             f"external asset, not something the pipeline can proceed without."
         )
-    return MASTER_PROMPT_PATH.read_text(encoding="utf-8")
+    master = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
+    if CONSTITUTION_PATH.exists():
+        constitution = CONSTITUTION_PATH.read_text(encoding="utf-8").strip()
+        return (
+            constitution
+            + "\n\n---\n\n"
+            + "# MASTER ANALYSIS PROTOCOL (follows constitution)\n\n"
+            + master
+        )
+    return master
+
+
+def load_lite_prompt() -> str:
+    """Compact Stage 2 path — constitution + lite section template."""
+    if not STAGE2_LITE_PROMPT_PATH.exists():
+        raise VerdictParseError(
+            f"Lite Stage 2 prompt not found at {STAGE2_LITE_PROMPT_PATH}"
+        )
+    lite = STAGE2_LITE_PROMPT_PATH.read_text(encoding="utf-8")
+    if CONSTITUTION_PATH.exists():
+        constitution = CONSTITUTION_PATH.read_text(encoding="utf-8").strip()
+        return (
+            constitution
+            + "\n\n---\n\n"
+            + "# LITE ANALYSIS PROTOCOL (follows constitution)\n\n"
+            + lite
+        )
+    return lite
+
+
+def load_stage2_system_prompt(mode: Stage2Mode) -> str:
+    if mode == "LITE":
+        return load_lite_prompt()
+    return load_master_prompt()
 
 
 def _format_extraction_result(extraction: ExtractionResult) -> str:
@@ -300,26 +428,73 @@ def _pledge_warning(brief: Brief) -> str | None:
 def build_user_message(
     brief: Brief, extraction: ExtractionResult, extra_instruction: str | None = None
 ) -> str:
-    parts = [
+    # XML delimiters match prompts/master-stock-analysis-prompt-v3.md
+    # "EXPECTED INPUT STRUCTURE" — citation IDs for the model.
+    context_parts: list[str] = [
+        "<context>",
+        "<price_and_technicals>",
         format_price_section(brief.price, brief.technicals),
+        "</price_and_technicals>",
         "",
+        "<financials>",
         format_financials_section(brief.financials),
+        "</financials>",
         "",
+        "<shareholding>",
         format_shareholding_section(brief.shareholding),
+        "</shareholding>",
     ]
     pledge_note = _pledge_warning(brief)
     if pledge_note:
-        parts.append(pledge_note)
-    parts.extend(
+        context_parts.extend(["", "<pipeline_note>", pledge_note, "</pipeline_note>"])
+    order_book_signals = collect_order_book_signals(brief)
+    if order_book_signals:
+        context_parts.extend(
+            [
+                "",
+                "<external_claims>",
+                "Order-book / backlog signals (news = UNVERIFIED; annual report = primary filing excerpt):",
+                *[f"- {line}" for line in format_order_book_signals_for_stage2(order_book_signals)],
+                "Treat news as external claims only; reconcile against investor presentation / results.",
+                "</external_claims>",
+            ]
+        )
+        wc_hint = order_book_wc_billing_hint(brief, order_book_signals)
+        if wc_hint:
+            context_parts.extend(["", "<pipeline_note>", wc_hint, "</pipeline_note>"])
+    context_parts.extend(
         [
             "",
+            "<extraction>",
             _format_extraction_result(extraction),
-            hard_injections(effective_confidence_cap(brief)),
+            "</extraction>",
+            "",
+            "<pipeline_constraints>",
+            hard_injections(effective_confidence_cap(brief)).strip(),
+            "</pipeline_constraints>",
         ]
     )
     if extra_instruction:
-        parts.append(f"\n### Retry feedback from the previous attempt\n{extra_instruction}")
-    return "\n".join(parts)
+        context_parts.extend(
+            [
+                "",
+                "<retry_feedback>",
+                extra_instruction,
+                "</retry_feedback>",
+            ]
+        )
+    context_parts.append("</context>")
+
+    company_label = f"{brief.ticker.company_name} ({brief.ticker.symbol}, {brief.ticker.exchange})"
+    context_parts.extend(
+        [
+            "",
+            "<instruction>",
+            f"Analyze: {company_label}",
+            "</instruction>",
+        ]
+    )
+    return "\n".join(context_parts)
 
 
 def extract_verdict_json(report_text: str) -> VerdictJSON:
@@ -346,14 +521,24 @@ def run_stage2(
     extra_instruction: str | None = None,
     max_tokens: int | None = None,
     model: str | None = None,
+    mode: Stage2Mode = "FULL",
 ) -> tuple[str, VerdictJSON, dict]:
     # model override exists only for pre-Opus cost-conscious debugging (e.g.
     # running the real master prompt + hard injections against Sonnet 5,
     # ~5x cheaper, to check the prompt itself works before ever spending on
     # Opus) — production calls always take the default (Opus 5).
     client = client or Anthropic(api_key=settings.anthropic_api_key)
-    call_model = model or MODEL
-    master_prompt = load_master_prompt()
+    if mode == "LITE":
+        call_model = model or LITE_MODEL
+        call_max_tokens = max_tokens or LITE_MAX_TOKENS
+        thinking = None
+    else:
+        call_model = model or MODEL
+        call_max_tokens = max_tokens or MAX_TOKENS
+        # {"type": "adaptive"} is the only accepted shape on Sonnet 5 —
+        # budget_tokens is rejected outright (400), not just deprecated.
+        thinking = {"type": "adaptive"}
+    system_prompt = load_stage2_system_prompt(mode)
     user_message = build_user_message(brief, extraction, extra_instruction)
 
     # Streaming, not .create(): the Anthropic SDK refuses a non-streaming
@@ -364,11 +549,11 @@ def run_stage2(
     # would have, so nothing below this needs to know the difference.
     response, cost_inr = call_anthropic_and_log(
         client,
-        stage="stage2",
+        stage="stage2_lite" if mode == "LITE" else "stage2",
         ticker=brief.ticker.symbol,
         model=call_model,
-        max_tokens=max_tokens or MAX_TOKENS,
-        # master_prompt is byte-identical on every call regardless of
+        max_tokens=call_max_tokens,
+        # system_prompt is byte-identical on every call regardless of
         # ticker — cache it. 1h TTL (not the 5m default) on purpose: real
         # cache_creation_tokens observed live (~8-9k tokens per write), but
         # the 5-min window barely helps this bot's actual usage pattern —
@@ -379,11 +564,9 @@ def run_stage2(
         # multi-ticker session (this same master prompt reused across
         # several tickers analyzed back to back, e.g. the SKIP-gate batch).
         system=[
-            {"type": "text", "text": master_prompt, "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+            {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral", "ttl": "1h"}}
         ],
-        # {"type": "adaptive"} is the only accepted shape on Sonnet 5 —
-        # budget_tokens is rejected outright (400), not just deprecated.
-        thinking={"type": "adaptive"},
+        thinking=thinking,
         messages=[{"role": "user", "content": user_message}],
         stream=True,
     )
@@ -391,13 +574,14 @@ def run_stage2(
     report_text = "".join(block.text for block in response.content if block.type == "text")
 
     if response.stop_reason == "max_tokens":
-        raise TruncatedResponseError(cost_inr, len(report_text), max_tokens or MAX_TOKENS)
+        raise TruncatedResponseError(cost_inr, len(report_text), call_max_tokens)
 
     verdict = extract_verdict_json(report_text)
     usage = {
         "input_tokens": response.usage.input_tokens,
         "output_tokens": response.usage.output_tokens,
         "cost_inr": cost_inr,
+        "stage2_mode": mode,
     }
 
     return report_text, verdict, usage

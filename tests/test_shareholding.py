@@ -60,8 +60,7 @@ def test_raises_when_both_sources_fail(monkeypatch):
         fetch_shareholding("NOPE")
 
 
-def test_pledge_is_always_none_never_zero():
-    # both real sources leave it None; this pins the contract so a future
-    # change can't silently start defaulting it to 0.0
+def test_pledge_is_none_when_xbrl_unavailable():
+    # Screener has no pledge data; NSE JSON alone does not carry pledge %.
     assert NSE_RESULT.pledge_pct_of_promoter_holding is None
     assert SCREENER_RESULT.pledge_pct_of_promoter_holding is None

@@ -12,6 +12,24 @@ from stockbot.portfolio_screener.score_utils import (
 
 
 def score_financial_strength(metrics: StockMetrics) -> float:
+    from stockbot.portfolio_screener.issuer_routing import classify_issuer
+
+    issuer = classify_issuer(metrics)
+    if issuer in {"BANK", "NBFC_HFC", "INSURER"}:
+        # Avoid punishing banks for deposit/borrowings leverage.
+        parts = [
+            (linear_score(metrics.roe, bad=5.0, good=18.0), 0.45),
+            (linear_score(metrics.roce, bad=5.0, good=15.0), 0.25),
+            (
+                80.0
+                if metrics.net_income is not None and metrics.net_income > 0
+                else 30.0,
+                0.30,
+            ),
+        ]
+        score, coverage = weighted_mean(parts)
+        return clamp(score * (0.6 + 0.4 * coverage))
+
     debt_trend_score: float | None = None
     debt = series_present(metrics.debt_series)
     if len(debt) >= 2 and debt[0] > 0:

@@ -1,10 +1,20 @@
-"""Red-flag penalty system — separate from base metric scores."""
+"""Red-flag penalty system — separate from base metric scores.
+
+Promoter *holding* % is never a red flag by itself.
+Only *pledged* share of promoter holding uses pledge thresholds
+(aligned with eligibility prompt: Prefer ≤10, Borderline 10–25, Critical >25).
+"""
 
 from __future__ import annotations
 
 from stockbot.portfolio_screener.models import RedFlag, StockMetrics
 from stockbot.portfolio_screener.score_utils import series_present
 from stockbot.portfolio_screener.scoring_config import RedFlagPenalties
+
+# Eligibility / gatekeeper bands for pledged_promoter_holding_pct only.
+_PLEDGE_PREFER_MAX = 10.0
+_PLEDGE_BORDERLINE_MAX = 25.0
+_PLEDGE_SEVERE_AT = 40.0
 
 
 def collect_red_flags(
@@ -29,25 +39,28 @@ def collect_red_flags(
             )
         )
 
-    if metrics.promoter_pledge_pct is not None:
-        if metrics.promoter_pledge_pct >= 40:
+    # --- Pledge only (never promoter_holding_pct) ---
+    pledge = metrics.pledged_promoter_holding_pct
+    if pledge is not None:
+        if pledge >= _PLEDGE_SEVERE_AT:
             add(
                 "severe",
                 "PLEDGE_HIGH",
-                f"Promoter pledge {metrics.promoter_pledge_pct:.1f}%",
+                f"pledged_promoter_holding_pct {pledge:.1f}% (Critical)",
             )
-        elif metrics.promoter_pledge_pct >= 20:
+        elif pledge > _PLEDGE_BORDERLINE_MAX:
             add(
                 "major",
                 "PLEDGE_ELEVATED",
-                f"Promoter pledge {metrics.promoter_pledge_pct:.1f}%",
+                f"pledged_promoter_holding_pct {pledge:.1f}% (Critical)",
             )
-        elif metrics.promoter_pledge_pct >= 5:
+        elif pledge > _PLEDGE_PREFER_MAX:
             add(
                 "minor",
-                "PLEDGE_LOW",
-                f"Promoter pledge {metrics.promoter_pledge_pct:.1f}%",
+                "PLEDGE_BORDERLINE",
+                f"pledged_promoter_holding_pct {pledge:.1f}% (Borderline)",
             )
+        # Prefer (≤10%): no red flag
 
     if metrics.share_dilution_pct is not None and metrics.share_dilution_pct > 25:
         add(
@@ -62,11 +75,43 @@ def collect_red_flags(
         and metrics.net_income > 0
         and metrics.ocf_to_pat < 0.5
     ):
-        add(
-            "major",
-            "OCF_PAT_GAP",
-            f"OCF/PAT={metrics.ocf_to_pat:.2f}",
+        from stockbot.portfolio_screener.issuer_routing import (
+            assess_cash_conversion,
+            classify_issuer,
         )
+
+        issuer = classify_issuer(metrics)
+        cash = assess_cash_conversion(metrics, issuer)
+        if cash.status == "CRITICAL":
+            add(
+                "major",
+                "OCF_PAT_GAP",
+                f"OCF/PAT current={cash.ocf_pat_current} 3y_cum={cash.ocf_pat_3y} (Critical)",
+            )
+        elif cash.status == "ESCALATED_WATCH":
+            add(
+                "moderate",
+                "OCF_PAT_ESCALATED",
+                f"OCF/PAT ESCALATED_WATCH: current={cash.ocf_pat_current} 3y_cum={cash.ocf_pat_3y}",
+            )
+        elif cash.status == "WATCH":
+            add(
+                "minor",
+                "OCF_PAT_WATCH",
+                f"OCF/PAT WATCH: {cash.reason}",
+            )
+        elif cash.status in {
+            "NOT_APPLICABLE",
+            "NOT_APPLICABLE_WHILE_LOSS_MAKING",
+            "DATA_INSUFFICIENT_FOR_TREND",
+        }:
+            pass
+        else:
+            add(
+                "minor",
+                "OCF_PAT_WATCH",
+                f"OCF/PAT={metrics.ocf_to_pat:.2f}",
+            )
 
     margins = series_present(metrics.operating_margin_series)
     if len(margins) >= 3 and margins[-1] < margins[0] - 0.05:
@@ -94,3 +139,25 @@ def collect_red_flags(
 
 def total_penalty(flags: list[RedFlag]) -> float:
     return sum(f.penalty for f in flags)
+
+
+def governance_notes(metrics: StockMetrics) -> list[str]:
+    """Informational holding/pledge lines for AI payload and Telegram Data:."""
+    notes: list[str] = []
+    holding = metrics.promoter_holding_pct
+    pledge = metrics.pledged_promoter_holding_pct
+    if holding is not None:
+        notes.append(
+            f"promoter_holding_pct {holding:.2f}% (ownership concentration; informational — not Critical)"
+        )
+    else:
+        notes.append("promoter_holding_pct null")
+    if pledge is None:
+        notes.append("pledged_promoter_holding_pct null")
+    elif pledge > _PLEDGE_BORDERLINE_MAX:
+        notes.append(f"pledged_promoter_holding_pct {pledge:.2f}% (Critical)")
+    elif pledge > _PLEDGE_PREFER_MAX:
+        notes.append(f"pledged_promoter_holding_pct {pledge:.2f}% (Borderline)")
+    else:
+        notes.append(f"pledged_promoter_holding_pct {pledge:.2f}% (Prefer)")
+    return notes

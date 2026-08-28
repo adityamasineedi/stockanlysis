@@ -39,8 +39,10 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = ""
     anthropic_api_key: str = ""
-    # 17D: DeepSeek A/B test only — not used by the production pipeline.
+    # 17D: DeepSeek A/B test + portfolio pre-screener ranking.
     deepseek_api_key: str = ""
+    # Optional — portfolio pre-screener ranking (gpt-4o-mini default when set).
+    openai_api_key: str = ""
     monthly_budget_inr: float = 1400.0
     # Spot USD/INR for LLM cost conversion. Refresh periodically — do not
     # leave a years-old rate here (was 88 for a long stretch while spot ~95).
@@ -49,6 +51,9 @@ class Settings(BaseSettings):
     # overlapping runs cannot both pass check_budget() then double-bill past
     # the monthly cap.
     max_concurrent_analyses: int = 1
+    # Debug / quality check: always run Sonnet full 16-section Stage 2 even when
+    # routing would pick the cheaper Haiku lite path.
+    force_stage2_full: bool = False
 
 
 settings = Settings()

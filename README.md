@@ -29,7 +29,9 @@ copy .env.example .env
 | `MONTHLY_BUDGET_INR` | no | `1400` | Hard monthly spend block |
 | `USD_INR_RATE` | no | `95.5` | Cost conversion (update with spot USD/INR) |
 | `MAX_CONCURRENT_ANALYSES` | no | `1` | Paid analyses in parallel |
-| `DEEPSEEK_API_KEY` | no | — | A/B tooling only, not production |
+| `FORCE_STAGE2_FULL` | no | `false` | Always use Sonnet full Stage 2 (skip Haiku lite path) |
+| `OPENAI_API_KEY` | no | — | Pre-screener ranking (gpt-4o-mini, preferred) |
+| `DEEPSEEK_API_KEY` | no | — | Pre-screener fallback + A/B tooling |
 
 ### Data directories (created on demand)
 
@@ -54,6 +56,7 @@ Commands:
 
 - `/analyze <name or symbol>` or plain text — full analysis (often **5–15 minutes**)
 - `/spend` — month-to-date LLM spend vs monthly budget
+- `/health` — cost/token/quality audit (no LLM spend; attaches report if issues found)
 - `/help` — short usage
 
 **Do not restart the bot mid-analysis.** In-flight Anthropic calls are still billed; results are not recovered after a process kill.
@@ -66,11 +69,24 @@ Reduces a 40+ stock watchlist to ~10–18 candidates before expensive deep analy
 # Edit data/portfolio/watchlist.txt then:
 uv run stockbot-prescreen --dry-run          # quant only, no AI, no deep analysis
 uv run stockbot-prescreen --skip-ai          # quant + diversification, no AI ranker
-uv run stockbot-prescreen                    # quant + cheap AI ranking
+uv run stockbot-prescreen                    # quant + cheap AI ranking (auto: openai > deepseek > haiku)
+uv run stockbot-prescreen --ai-provider deepseek
 uv run stockbot-prescreen --run-deep         # then run_full_analysis on survivors
 ```
 
 Watchlist: `data/portfolio/watchlist.txt` (one NSE symbol per line). Audit JSON lands in `logs/portfolio_screen_*.json`.
+
+**Single-ticker (Telegram / CLI):** ask whether one stock is worth deep analysis — does **not** scan the whole list.
+
+```powershell
+uv run stockbot-prescreen BEL
+```
+
+Telegram (restart bot to load new command):
+
+- `/prescan BEL` or plain text `prescan BEL`
+- `/health` — audit spend, token waste, and quality issues
+- If suitable → then `/analyze BEL` for the expensive master-prompt run
 
 ## Cost caps
 
@@ -86,6 +102,7 @@ Cache hits (≤7 days, price move ≤10%) do not call the LLM.
 uv run stockbot-verify SYMBOL      # fetch-layer check
 uv run stockbot-dry-run SYMBOL     # brief + Stage 1/2 payloads, no full spend path as designed in that script
 uv run stockbot-smoke-test SYMBOL  # live full pipeline (spends money)
+uv run stockbot-monitor             # cost/token/quality audit (no LLM spend)
 uv run pytest                      # unit tests (no network / no keys)
 uv run ruff check src tests
 ```

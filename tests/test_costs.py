@@ -285,4 +285,23 @@ def test_deepseek_rejects_cache_creation_tokens():
 
 def test_unknown_provider_raises():
     with pytest.raises(ValueError, match="Unknown provider"):
-        compute_cost_inr("some-model", 100, 100, provider="openai")
+        compute_cost_inr("some-model", 100, 100, provider="not-a-provider")
+
+
+def test_openai_gpt4o_mini_pricing():
+    # 1M in @ $0.15 + 1M out @ $0.60 = $0.75 → ₹67.5 at rate 90
+    cost = compute_cost_inr(
+        "gpt-4o-mini", 1_000_000, 1_000_000, provider="openai"
+    )
+    assert cost == pytest.approx(0.75 * 90.0)
+
+
+def test_openai_cached_input_pricing():
+    cost = compute_cost_inr(
+        "gpt-4o-mini",
+        input_tokens=0,
+        output_tokens=0,
+        cached_tokens=1_000_000,
+        provider="openai",
+    )
+    assert cost == pytest.approx(0.075 * 90.0)

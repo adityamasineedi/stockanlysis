@@ -10,7 +10,19 @@ from typing import Literal
 SCREENING_VERSION = "v1.0"
 WEIGHTS_VERSION = "v1.0"
 PROMPT_VERSION = "v1.0"
-AI_RANKER_MODEL = "claude-haiku-4-5-20251001"
+
+# Pre-screen AI ranking defaults. gpt-4o-mini is the cheapest solid option
+# among keys this project supports (~$0.15/$0.60 vs DeepSeek Flash $0.22/$0.66
+# off-peak vs Haiku $1/$5). resolve_ai_ranker() picks by available keys.
+AI_PROVIDER_AUTO = "auto"
+AI_RANKER_PROVIDER_DEFAULT = AI_PROVIDER_AUTO
+AI_RANKER_MODELS = {
+    "openai": "gpt-4o-mini",
+    "deepseek": "deepseek-v4-flash",
+    "anthropic": "claude-haiku-4-5-20251001",
+}
+# Legacy alias — kept so older imports still resolve.
+AI_RANKER_MODEL = AI_RANKER_MODELS["openai"]
 
 ConfidenceLevel = Literal["HIGH", "MEDIUM", "LOW"]
 ValuationRisk = Literal["LOW", "MEDIUM", "HIGH", "EXTREME"]
@@ -121,7 +133,16 @@ class HardFilterThresholds:
         "net_income",
         "eps",
         "operating_cash_flow",
+        # ROE is preferred but may be derived from P&L+BS when Screener
+        # omits the ratios row (found live: BBOX). It is gated via
+        # key_trio_metrics instead of always forcing DATA_INSUFFICIENT.
+    )
+    # Gatekeeper key trio — DATA_INSUFFICIENT only when ≥2 of these are still
+    # missing after fetched/computed fallbacks (v1.3 confidence alignment).
+    key_trio_metrics: tuple[str, ...] = (
         "roe",
+        "debt_equity",
+        "ocf_to_pat",
     )
     allow_human_override: bool = False
 
@@ -177,7 +198,9 @@ class ScreenerRunConfig:
     screening_version: str = SCREENING_VERSION
     weights_version: str = WEIGHTS_VERSION
     prompt_version: str = PROMPT_VERSION
-    ai_model: str = AI_RANKER_MODEL
+    # "auto" | "openai" | "deepseek" | "anthropic"
+    ai_provider: str = AI_RANKER_PROVIDER_DEFAULT
+    ai_model: str | None = None  # None → provider default from AI_RANKER_MODELS
     dry_run: bool = False
     skip_ai: bool = False
     run_deep_analysis: bool = False

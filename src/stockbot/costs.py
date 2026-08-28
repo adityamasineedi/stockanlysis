@@ -57,6 +57,14 @@ DEEPSEEK_PRICING_USD_PER_MTOK = {
     "deepseek-v4-pro": {"cache_hit_input": 0.022, "cache_miss_input": 0.66, "output": 1.98},
 }
 
+# OpenAI — used by portfolio pre-screener ranking (gpt-4o-mini).
+# Verified against OpenAI public pricing tables 2026-08-27.
+OPENAI_PRICING_USD_PER_MTOK = {
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60, "cached_input": 0.075},
+    "gpt-5-nano": {"input": 0.05, "output": 0.40, "cached_input": 0.025},
+    "gpt-5-mini": {"input": 0.25, "output": 2.00, "cached_input": 0.125},
+}
+
 
 def _deepseek_rate_multiplier(called_at: datetime) -> float:
     # Peak: 01:00-04:00 and 06:00-10:00 UTC, Monday-Friday, at exactly 2x
@@ -90,17 +98,17 @@ def _connect() -> sqlite3.Connection:
             cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0,
             thinking_tokens INTEGER NOT NULL DEFAULT 0,
             provider TEXT NOT NULL DEFAULT 'anthropic',
+            stage TEXT,
+            ticker TEXT,
             cost_inr REAL NOT NULL
         )
         """
     )
-    # Migrations for DBs created before a column existed — real rows already
-    # exist from live calls, so this can't just be a fresh CREATE TABLE.
-    # Checked via PRAGMA rather than a blind ALTER + catch, per the project
-    # rule against swallowing exceptions: an unexpected ALTER failure (e.g.
-    # a genuinely locked DB) should still surface loudly instead of being
-    # mistaken for "column already exists".
     existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_calls)")}
+    if "stage" not in existing_columns:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN stage TEXT")
+    if "ticker" not in existing_columns:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN ticker TEXT")
     if "cache_creation_tokens" not in existing_columns:
         conn.execute("ALTER TABLE llm_calls ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0")
     if "cache_creation_1h_tokens" not in existing_columns:
@@ -171,6 +179,17 @@ def compute_cost_inr(
             + cached_tokens / 1_000_000 * rates["cache_hit_input"] * multiplier
             + output_tokens / 1_000_000 * rates["output"] * multiplier
         )
+    elif provider == "openai":
+        if cache_creation_tokens or cache_creation_1h_tokens:
+            raise ValueError("cache_creation_tokens is an Anthropic-only concept — not applicable to OpenAI")
+        if model not in OPENAI_PRICING_USD_PER_MTOK:
+            raise ValueError(f"Unknown OpenAI model for pricing: {model!r}")
+        rates = OPENAI_PRICING_USD_PER_MTOK[model]
+        cost_usd = (
+            input_tokens / 1_000_000 * rates["input"]
+            + cached_tokens / 1_000_000 * rates["cached_input"]
+            + output_tokens / 1_000_000 * rates["output"]
+        )
     else:
         raise ValueError(f"Unknown provider: {provider!r}")
     return cost_usd * settings.usd_inr_rate
@@ -186,6 +205,8 @@ def log_call(
     thinking_tokens: int = 0,
     provider: str = "anthropic",
     called_at: datetime | None = None,
+    stage: str | None = None,
+    ticker: str | None = None,
 ) -> float:
     called_at = called_at or datetime.now(UTC)
     cost_inr = compute_cost_inr(
@@ -202,8 +223,8 @@ def log_call(
         conn.execute(
             "INSERT INTO llm_calls "
             "(called_at, model, input_tokens, output_tokens, cached_tokens, cache_creation_tokens, "
-            "cache_creation_1h_tokens, thinking_tokens, provider, cost_inr) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "cache_creation_1h_tokens, thinking_tokens, provider, stage, ticker, cost_inr) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 called_at.isoformat(),
                 model,
@@ -214,6 +235,8 @@ def log_call(
                 cache_creation_1h_tokens,
                 thinking_tokens,
                 provider,
+                stage,
+                ticker.upper() if ticker else None,
                 cost_inr,
             ),
         )

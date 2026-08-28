@@ -32,6 +32,7 @@ stockbot-smoke-test = "stockbot.smoke_test:main"
 stockbot-dry-run = "stockbot.dry_run:main"
 stockbot-ab-test = "stockbot.ab_test:main"
 stockbot-prescreen = "stockbot.portfolio_screener.cli:main"
+stockbot-monitor = "stockbot.monitor.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]

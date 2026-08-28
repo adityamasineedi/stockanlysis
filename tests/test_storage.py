@@ -23,9 +23,18 @@ def _isolated_db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage_module, "DB_PATH", tmp_path / "test_analyses.sqlite3")
 
 
-def _price(value: float) -> PriceData:
+def _price(value: float, price_date: date | None = None) -> PriceData:
     df = pd.DataFrame({"Close": [value]})
-    return PriceData(value, date(2026, 8, 25), df, df, 500.0, 300.0, "yfinance", datetime.now(UTC))
+    return PriceData(
+        value,
+        price_date or date(2026, 8, 25),
+        df,
+        df,
+        500.0,
+        300.0,
+        "yfinance",
+        datetime.now(UTC),
+    )
 
 
 def _save(ticker="TEST", verdict_json=None, created_offset_days=0, missing=None):
@@ -57,9 +66,9 @@ def test_get_cached_returns_recent_analysis_when_price_stable(monkeypatch):
 
     result = get_cached("TEST")
     assert result is not None
-    assert result.analysis.verdict_json["current_price_abs"] == 400.0  # original price, not refreshed
-    assert result.analysis.costs == 39.0
+    assert result.analysis.verdict_json["current_price_abs"] == 400.0  # DB row unchanged
     assert result.current_price_abs == 405.0
+    assert result.price_date == date(2026, 8, 25)
 
 
 def test_get_cached_preserves_missing_list_across_the_cache(monkeypatch):
@@ -120,13 +129,19 @@ def test_get_cached_refuses_when_original_price_missing_and_live_fetch_fails(mon
     assert get_cached("TEST") is None
 
 
-def test_build_staleness_banner_includes_original_and_current_price():
+def test_build_staleness_banner_shows_analysis_and_live_price():
     from stockbot.models import Analysis, ValidationResult
 
     analysis = Analysis(
         ticker="TEST",
         run_date=date(2026, 8, 19),
-        verdict_json=VERDICT_JSON,
+        verdict_json={
+            **VERDICT_JSON,
+            "analysis_price_abs": 400.0,
+            "analysis_price_date": "2026-08-19",
+            "current_price_abs": 340.0,
+            "price_date": "2026-08-25",
+        },
         report_md="# r",
         costs=39.0,
         validation=ValidationResult(True, []),
@@ -136,4 +151,4 @@ def test_build_staleness_banner_includes_original_and_current_price():
     assert "400.00" in banner
     assert "340.00" in banner
     assert "-15.0%" in banner
-    assert "/analyze TEST" in banner
+    assert "fresh after new results" in banner

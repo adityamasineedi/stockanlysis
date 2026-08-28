@@ -26,9 +26,9 @@ def score_risk(
     cyclical_sector: bool = False,
 ) -> float:
     governance = 100.0
-    if metrics.promoter_pledge_pct is not None:
+    if metrics.pledged_promoter_holding_pct is not None:
         governance = linear_score(
-            metrics.promoter_pledge_pct,
+            metrics.pledged_promoter_holding_pct,
             bad=50.0,
             good=0.0,
             higher_is_better=False,
@@ -75,6 +75,12 @@ def score_balance_sheet(metrics: StockMetrics) -> float:
 
 
 def score_earnings_quality(metrics: StockMetrics) -> float:
+    from stockbot.portfolio_screener.issuer_routing import classify_issuer
+
+    if classify_issuer(metrics) in {"BANK", "NBFC_HFC", "INSURER"}:
+        # CFO/PAT is meaningless for banks — neutral mid score
+        return 65.0
+
     parts = [
         (linear_score(metrics.ocf_to_pat, bad=0.3, good=1.2), 0.45),
         (linear_score(metrics.fcf_to_pat, bad=0.0, good=1.0), 0.25),

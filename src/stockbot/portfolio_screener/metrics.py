@@ -34,13 +34,31 @@ _OCF_ALIASES = ("Cash from Operating Activity", "Cash from Operating Activities"
 _CAPEX_ALIASES = ("Cash from Investing Activity", "Cash from Investing Activities")
 _FCF_ALIASES = ("Free Cash Flow",)  # rarely present as its own row
 _BORROWINGS_ALIASES = ("Borrowings", "Total Borrowings", "Debt")
-_EQUITY_ALIASES = ("Equity Capital", "Share Capital")
-_RESERVES_ALIASES = ("Reserves",)
+_EQUITY_ALIASES = (
+    "Equity Capital",
+    "Share Capital",
+    "Equity Share Capital",
+)
+_RESERVES_ALIASES = (
+    "Reserves",
+    "Reserves and Surplus",
+    "Other Equity",
+)
+_TOTAL_EQUITY_ALIASES = (
+    "Total Equity",
+    "Shareholders Funds",
+    "Shareholder's Funds",
+    "Shareholders' Funds",
+    "Net Worth",
+    "Total Shareholders Funds",
+)
 _CASH_ALIASES = ("Cash Equivalents", "Cash", "Cash and Bank")
 _TOTAL_ASSETS_ALIASES = ("Total Assets",)
 _ROE_ALIASES = ("ROE %", "ROE")
 _ROCE_ALIASES = ("ROCE %", "ROCE")
 _CURRENT_RATIO_ALIASES = ("Current Ratio",)
+_CURRENT_ASSETS_ALIASES = ("Current Assets", "Total Current Assets")
+_CURRENT_LIAB_ALIASES = ("Current Liabilities", "Total Current Liabilities")
 _DEBTOR_DAYS_ALIASES = ("Debtor Days", "Debtor days")
 
 
@@ -68,6 +86,71 @@ def _series_values(row: pd.Series | None) -> list[float | None]:
 
 def _mark_missing(metrics: StockMetrics, field: str, reason: str) -> None:
     metrics.missing[field] = reason
+
+
+def _clamp_pct(value: float | None) -> float | None:
+    """Accept only 0–100 percentage points; reject garbage before scoring."""
+    if value is None:
+        return None
+    if value < 0.0 or value > 100.0:
+        logger.warning("rejecting out-of-range percentage value: %s", value)
+        return None
+    return float(value)
+
+
+def _set_metric(
+    metrics: StockMetrics,
+    field: str,
+    value: float | None,
+    *,
+    source: str,
+    missing_reason: str,
+) -> None:
+    """Set a metric value and record its provenance; clear missing if filled."""
+    if value is None:
+        _mark_missing(metrics, field, missing_reason)
+        return
+    setattr(metrics, field, value)
+    metrics.metric_sources[field] = source
+    metrics.missing.pop(field, None)
+
+
+def _equity_book_series(bs: pd.DataFrame) -> list[float | None]:
+    """Book equity series: Total Equity row, else Equity Capital + Reserves."""
+    total = _series_values(_row(bs, _TOTAL_EQUITY_ALIASES))
+    if any(v is not None for v in total):
+        return total
+
+    eq = _series_values(_row(bs, _EQUITY_ALIASES))
+    res = _series_values(_row(bs, _RESERVES_ALIASES))
+    n = max(len(eq), len(res))
+    out: list[float | None] = []
+    for i in range(n):
+        e = eq[i] if i < len(eq) else None
+        r = res[i] if i < len(res) else None
+        if e is not None and r is not None:
+            out.append(e + r)
+        elif r is not None:
+            out.append(r)
+        elif e is not None:
+            out.append(e)
+        else:
+            out.append(None)
+    return out
+
+
+def _roe_series_from_pat_equity(
+    pat: list[float | None], equity: list[float | None]
+) -> list[float | None]:
+    n = min(len(pat), len(equity))
+    out: list[float | None] = []
+    for i in range(n):
+        p, e = pat[i], equity[i]
+        if p is None or e is None or e == 0:
+            out.append(None)
+        else:
+            out.append((p / e) * 100.0)
+    return out
 
 
 def _cagr_from_series(values: list[float | None], years: int) -> float | None:
@@ -116,6 +199,8 @@ def fetch_market_metadata(symbol: str) -> dict[str, float | str | None]:
         "pb": None,
         "dividend_yield_pct": None,
         "shares_outstanding": None,
+        "roe_pct": None,
+        "roce_pct": None,
     }
     for suffix in (".NS", ".BO"):
         try:
@@ -153,6 +238,20 @@ def fetch_market_metadata(symbol: str) -> dict[str, float | str | None]:
         if shares:
             try:
                 meta["shares_outstanding"] = float(shares)
+            except (TypeError, ValueError):
+                pass
+        for yf_key, meta_key in (
+            ("returnOnEquity", "roe_pct"),
+            ("returnOnCapital", "roce_pct"),
+        ):
+            if meta[meta_key] is not None:
+                continue
+            raw = info.get(yf_key)
+            if raw is None:
+                continue
+            try:
+                val = float(raw)
+                meta[meta_key] = val * 100.0 if abs(val) <= 2.0 else val
             except (TypeError, ValueError):
                 pass
         if meta["sector"] or meta["market_cap_cr"]:
@@ -220,15 +319,27 @@ def extract_metrics(
         m.pe = float(trailing_pe)
 
     if shareholding is None:
-        _mark_missing(m, "promoter_pct", "shareholding fetch failed")
-        _mark_missing(m, "promoter_pledge_pct", "shareholding fetch failed")
+        _mark_missing(m, "promoter_holding_pct", "shareholding fetch failed")
+        _mark_missing(m, "pledged_promoter_holding_pct", "shareholding fetch failed")
     else:
-        m.promoter_pct = shareholding.promoter_pct
-        m.promoter_pledge_pct = shareholding.pledge_pct_of_promoter_holding
-        if m.promoter_pct is None:
-            _mark_missing(m, "promoter_pct", "promoter holding not reported")
-        if m.promoter_pledge_pct is None:
-            _mark_missing(m, "promoter_pledge_pct", "pledge status unconfirmed")
+        # Map fetch-layer Shareholding fields → explicit screener names so
+        # holding % is never confused with pledge % of promoter holding.
+        holding = _clamp_pct(shareholding.promoter_pct)
+        pledge = _clamp_pct(shareholding.pledge_pct_of_promoter_holding)
+        m.promoter_holding_pct = holding
+        m.pledged_promoter_holding_pct = pledge
+        if holding is None:
+            _mark_missing(m, "promoter_holding_pct", "promoter holding not reported")
+        else:
+            m.metric_sources["promoter_holding_pct"] = "fetched"
+        if pledge is None:
+            _mark_missing(
+                m,
+                "pledged_promoter_holding_pct",
+                "pledge status unconfirmed (not the same as promoter holding %)",
+            )
+        else:
+            m.metric_sources["pledged_promoter_holding_pct"] = "fetched"
 
     if financials is None:
         for field in (
@@ -294,8 +405,19 @@ def extract_metrics(
         _mark_missing(m, "eps", "EPS row missing")
 
     interest = latest(_series_values(_row(pnl, _INTEREST_ALIASES)))
-    m.interest_coverage = _compute_interest_coverage(m.operating_profit, interest)
-    if m.interest_coverage is None:
+    cov = _compute_interest_coverage(m.operating_profit, interest)
+    if cov is not None:
+        _set_metric(
+            m,
+            "interest_coverage",
+            cov,
+            source="computed",
+            missing_reason="interest coverage unavailable",
+        )
+        m.raw_notes.append(
+            f"Interest coverage computed as Operating Profit / Interest = {cov:.2f}"
+        )
+    else:
         _mark_missing(m, "interest_coverage", "interest and/or operating profit missing")
 
     ocf_row = _row(cf, _OCF_ALIASES)
@@ -341,39 +463,161 @@ def extract_metrics(
     else:
         _mark_missing(m, "net_debt", "debt and/or cash unavailable")
 
+    equity_series = _equity_book_series(bs)
     equity_cap = latest(_series_values(_row(bs, _EQUITY_ALIASES)))
     reserves = latest(_series_values(_row(bs, _RESERVES_ALIASES)))
-    if equity_cap is not None and reserves is not None:
-        m.equity = equity_cap + reserves
-    elif reserves is not None:
-        m.equity = reserves
-    else:
-        _mark_missing(m, "equity", "Equity Capital / Reserves missing")
+    m.equity = latest(equity_series)
+    if m.equity is None:
+        if equity_cap is not None and reserves is not None:
+            m.equity = equity_cap + reserves
+        elif reserves is not None:
+            m.equity = reserves
+        else:
+            _mark_missing(m, "equity", "Equity Capital / Reserves missing")
 
-    m.debt_equity = safe_div(m.debt, m.equity) if m.debt is not None and m.equity else None
-    if m.debt is not None and m.equity is not None and m.equity <= 0:
+    if m.debt is not None and m.equity is not None and m.equity > 0:
+        _set_metric(
+            m,
+            "debt_equity",
+            safe_div(m.debt, m.equity),
+            source="computed",
+            missing_reason="cannot compute debt_equity",
+        )
+    elif m.debt is not None and m.equity is not None and m.equity <= 0:
         m.debt_equity = None
         m.raw_notes.append("negative/zero equity — debt_equity undefined")
         _mark_missing(m, "debt_equity", "non-positive equity")
+    else:
+        _mark_missing(m, "debt_equity", "debt and/or equity unavailable")
 
-    m.net_debt_ebitda = safe_div(m.net_debt, m.ebitda) if m.ebitda and m.ebitda > 0 else None
+    if m.net_debt is not None and m.ebitda is not None and m.ebitda > 0:
+        _set_metric(
+            m,
+            "net_debt_ebitda",
+            safe_div(m.net_debt, m.ebitda),
+            source="computed",
+            missing_reason="net_debt_ebitda unavailable",
+        )
+    else:
+        m.net_debt_ebitda = None
+        if m.net_debt is None or m.ebitda is None or m.ebitda <= 0:
+            _mark_missing(m, "net_debt_ebitda", "net debt and/or positive EBITDA missing")
 
+    # ROE: Screener ratios → compute from PAT/book equity → point fallback → yfinance
     m.roe_series = _series_values(_row(ratios, _ROE_ALIASES))
     m.roe = latest(m.roe_series)
-    if m.roe is None:
-        _mark_missing(m, "roe", "ROE % missing from ratios")
+    if m.roe is not None:
+        m.metric_sources["roe"] = "fetched"
+        m.missing.pop("roe", None)
+    else:
+        computed_series = _roe_series_from_pat_equity(m.net_income_series, equity_series)
+        computed_roe = latest(computed_series)
+        if computed_roe is None and m.net_income is not None and m.equity not in (None, 0):
+            computed_roe = (m.net_income / m.equity) * 100.0
+            computed_series = [*computed_series, computed_roe]
+        if computed_roe is not None:
+            m.roe_series = computed_series
+            _set_metric(
+                m,
+                "roe",
+                computed_roe,
+                source="computed",
+                missing_reason="ROE unavailable",
+            )
+            m.raw_notes.append(
+                f"ROE % computed from Net Profit / book equity = {computed_roe:.2f}"
+            )
+        else:
+            yf_roe = meta.get("roe_pct") if meta else None
+            if isinstance(yf_roe, (int, float)):
+                _set_metric(
+                    m,
+                    "roe",
+                    float(yf_roe),
+                    source="yfinance",
+                    missing_reason="ROE unavailable",
+                )
+                m.raw_notes.append(f"ROE % from yfinance returnOnEquity = {float(yf_roe):.2f}")
+            else:
+                _mark_missing(m, "roe", "ROE % missing from ratios; cannot compute from P&L+BS")
 
+    # ROCE: Screener ratios → EBIT / (Equity + Debt) → yfinance
     m.roce_series = _series_values(_row(ratios, _ROCE_ALIASES))
     m.roce = latest(m.roce_series)
-    if m.roce is None:
-        _mark_missing(m, "roce", "ROCE % missing from ratios")
+    if m.roce is not None:
+        m.metric_sources["roce"] = "fetched"
+        m.missing.pop("roce", None)
+    else:
+        capital_employed = None
+        if m.equity is not None:
+            capital_employed = m.equity + (m.debt or 0.0)
+        computed_roce = None
+        if (
+            m.operating_profit is not None
+            and capital_employed is not None
+            and capital_employed > 0
+        ):
+            computed_roce = (m.operating_profit / capital_employed) * 100.0
+        if computed_roce is not None:
+            _set_metric(
+                m,
+                "roce",
+                computed_roce,
+                source="computed",
+                missing_reason="ROCE unavailable",
+            )
+            m.raw_notes.append(
+                "ROCE % computed from Operating Profit / "
+                f"(Equity Capital + Reserves + Borrowings) = {computed_roce:.2f}"
+            )
+        else:
+            yf_roce = meta.get("roce_pct") if meta else None
+            if isinstance(yf_roce, (int, float)):
+                _set_metric(
+                    m,
+                    "roce",
+                    float(yf_roce),
+                    source="yfinance",
+                    missing_reason="ROCE unavailable",
+                )
+                m.raw_notes.append(f"ROCE % from yfinance = {float(yf_roce):.2f}")
+            else:
+                _mark_missing(
+                    m, "roce", "ROCE % missing from ratios; cannot compute from P&L+BS"
+                )
 
     m.current_ratio = latest(_series_values(_row(ratios, _CURRENT_RATIO_ALIASES)))
-    if m.current_ratio is None:
-        _mark_missing(m, "current_ratio", "Current Ratio missing")
+    if m.current_ratio is not None:
+        m.metric_sources["current_ratio"] = "fetched"
+        m.missing.pop("current_ratio", None)
+    else:
+        ca = latest(_series_values(_row(bs, _CURRENT_ASSETS_ALIASES)))
+        cl = latest(_series_values(_row(bs, _CURRENT_LIAB_ALIASES)))
+        computed_cr = safe_div(ca, cl) if ca is not None and cl is not None else None
+        if computed_cr is not None:
+            _set_metric(
+                m,
+                "current_ratio",
+                computed_cr,
+                source="computed",
+                missing_reason="Current Ratio unavailable",
+            )
+            m.raw_notes.append(
+                f"Current Ratio computed from Current Assets / Current Liabilities = {computed_cr:.2f}"
+            )
+        else:
+            _mark_missing(
+                m,
+                "current_ratio",
+                "Current Ratio missing; Current Assets/Liabilities not on condensed BS",
+            )
 
     m.operating_margin = _compute_margins(m.revenue, m.operating_profit)
+    if m.operating_margin is not None:
+        m.metric_sources["operating_margin"] = "computed"
     m.ebitda_margin = _compute_margins(m.revenue, m.ebitda)
+    if m.ebitda_margin is not None:
+        m.metric_sources["ebitda_margin"] = "computed"
     if rev_row is not None and op_row is not None:
         m.operating_margin_series = [
             safe_div(o, r) for o, r in zip(op_series, m.revenue_series, strict=False)
@@ -381,8 +625,15 @@ def extract_metrics(
 
     total_assets = latest(_series_values(_row(bs, _TOTAL_ASSETS_ALIASES)))
     m.asset_turnover = safe_div(m.revenue, total_assets)
+    if m.asset_turnover is not None:
+        m.metric_sources["asset_turnover"] = "computed"
 
     m.ocf_to_pat = safe_div(m.operating_cash_flow, m.net_income) if m.net_income else None
+    if m.ocf_to_pat is not None:
+        m.metric_sources["ocf_to_pat"] = "computed"
+        m.missing.pop("ocf_to_pat", None)
+    else:
+        _mark_missing(m, "ocf_to_pat", "OCF and/or Net Profit unavailable")
     m.fcf_to_pat = safe_div(m.free_cash_flow, m.net_income) if m.net_income else None
     m.fcf_margin = safe_div(m.free_cash_flow, m.revenue)
 

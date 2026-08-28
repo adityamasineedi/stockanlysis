@@ -56,8 +56,28 @@ BASE_VERDICT = {
 
 def _report(overrides: dict | None = None, prose: str = "") -> str:
     verdict = {**BASE_VERDICT, **(overrides or {})}
-    return f"{prose}\n\n## FINAL BEGINNER SUMMARY\n\n```json\n{json.dumps(verdict)}\n```\n"
+    # Nested valuation_inputs: shallow merge replaces the whole dict when
+    # overrides supplies it (existing call sites pass a complete block).
+    if "valuation_inputs" in (overrides or {}) and overrides is not None:
+        verdict["valuation_inputs"] = overrides["valuation_inputs"]
+    return (
+        f"{prose}\n\n"
+        f"**SHOULD I BUY?**\n"
+        f"- **Decision:** {verdict['verdict']}\n"
+        f"- **Current Price:** {{{{current_price}}}} ({{{{price_date}}}})\n"
+        f"- **Buy Zone:** {{{{buy_zone_low}}}}–{{{{buy_zone_high}}}}\n"
+        f"- **Fair Value:** {{{{fair_value_base_low}}}}–{{{{fair_value_base_high}}}}\n\n"
+        f"```json\n{json.dumps(verdict)}\n```\n\n"
+        f"*Research and education, not investment advice. Verify the numbers before "
+        f"acting, and consider a SEBI-registered investment adviser.*\n"
+    )
 
+
+BEAR_DOWNSIDE_PASS_PROSE = (
+    "### 11. VALUATION\n"
+    "Bear downside check: {{downside_pct}} vs 30% floor for >40x trailing — PASS — "
+    "bear multiple compressed with EPS at/below TTM.\n"
+)
 
 def _brief(
     *,
@@ -182,6 +202,177 @@ def test_passes_high_risk_deep_discount():
         _brief(),
     )
     assert result.passed is True
+
+
+def test_five_year_gate_blocks_buy_zone_when_answer_not_yes():
+    result = validate_report(
+        _report(
+            {
+                "verdict": "WATCH",
+                "buy_zone_abs": [370.0, 380.0],
+                "buy_range_allowed": True,
+                "five_year_business_test": {
+                    "answer": "NO",
+                    "confidence": "MEDIUM",
+                    "evidence_for": [],
+                    "evidence_against": ["no path to stronger business"],
+                },
+            }
+        ),
+        _brief(),
+    )
+    assert result.passed is False
+    assert any("five_year_buy_gate" in f for f in result.failures)
+
+
+def test_five_year_gate_allows_null_zone_when_uncertain():
+    result = validate_report(
+        _report(
+            {
+                "verdict": "WATCH",
+                "buy_zone_abs": None,
+                "buy_range_allowed": False,
+                "add_range_allowed": False,
+                "five_year_business_test": {
+                    "answer": "UNCERTAIN",
+                    "confidence": "LOW",
+                    "evidence_for": [],
+                    "evidence_against": [],
+                },
+            }
+        ),
+        _brief(),
+    )
+    assert result.passed is True
+
+
+def _extreme_cash_financials() -> Financials:
+    # 3y ΣOCF=10 / ΣPAT=510 → ~0.02 (Mazdock-style escalated weakness)
+    empty = pd.DataFrame()
+    pnl = pd.DataFrame(
+        {"FY24": [160.0], "FY25": [170.0], "FY26": [180.0]},
+        index=["Net Profit"],
+    )
+    cash_flow = pd.DataFrame(
+        {"FY24": [50.0], "FY25": [60.0], "FY26": [-100.0]},
+        index=["Cash from Operating Activity"],
+    )
+    return Financials(
+        pnl=pnl,
+        balance_sheet=empty,
+        cash_flow=cash_flow,
+        ratios=empty,
+        quarterly=empty,
+        basis="consolidated",
+        years_available=3,
+        source="test",
+        fetched_at=NOW,
+    )
+
+
+def test_wc_gate_blocks_buy_zone_when_cash_extreme_without_temporary_class():
+    result = validate_report(
+        _report(
+            {
+                "verdict": "WATCH",
+                "buy_zone_abs": [370.0, 380.0],
+                "buy_range_allowed": True,
+                "five_year_business_test": {
+                    "answer": "YES",
+                    "confidence": "MEDIUM",
+                    "evidence_for": ["growth"],
+                    "evidence_against": ["cash"],
+                },
+                "wc_gap_classification": "INCONCLUSIVE",
+            }
+        ),
+        _brief(financials=_extreme_cash_financials()),
+    )
+    assert result.passed is False
+    assert any("wc_buy_gate" in f for f in result.failures)
+
+
+def test_wc_gate_blocks_buy_zone_when_extreme_and_classification_missing():
+    result = validate_report(
+        _report(
+            {
+                "verdict": "WATCH",
+                "buy_zone_abs": [370.0, 380.0],
+                "buy_range_allowed": True,
+                "five_year_business_test": {
+                    "answer": "YES",
+                    "confidence": "HIGH",
+                    "evidence_for": ["roce"],
+                    "evidence_against": [],
+                },
+            }
+        ),
+        _brief(financials=_extreme_cash_financials()),
+    )
+    assert result.passed is False
+    assert any("wc_buy_gate" in f for f in result.failures)
+
+
+def test_wc_gate_allows_buy_zone_only_for_temporary_billing_cycle():
+    result = validate_report(
+        _report(
+            {
+                "verdict": "WATCH",
+                "buy_zone_abs": [370.0, 380.0],
+                "buy_range_allowed": True,
+                "five_year_business_test": {
+                    "answer": "YES",
+                    "confidence": "HIGH",
+                    "evidence_for": ["order book"],
+                    "evidence_against": [],
+                },
+                "wc_gap_classification": "TEMPORARY_BILLING_CYCLE",
+            }
+        ),
+        _brief(financials=_extreme_cash_financials()),
+    )
+    assert result.passed is True
+
+
+def test_anti_chase_required_when_price_at_base_fv_top():
+    result = validate_report(
+        _report(
+            {
+                "current_price_abs": 400.0,
+                "anti_chase_flag": False,
+                "earnings_quality": "MEDIUM",
+                "buy_zone_abs": None,
+                "buy_range_allowed": False,
+                "valuation_inputs": {
+                    "eps_bear": 8.0,
+                    "eps_base": 10.0,
+                    "eps_bull": 12.0,
+                    "multiple_bear": [30.0, 32.0],
+                    "multiple_base": [38.0, 40.0],
+                    "multiple_bull": [42.0, 45.0],
+                },
+            }
+        ),
+        _brief(financials=_extreme_cash_financials()),
+    )
+    assert result.passed is False
+    assert any("anti_chase_flag" in f for f in result.failures)
+
+
+def test_holding_period_fails_when_thesis_under_review_but_3_5_years():
+    result = validate_report(
+        _report(
+            {
+                "thesis_status": "THESIS_UNDER_REVIEW",
+                "holding_period": "3-5 years",
+                "buy_range_allowed": False,
+                "buy_zone_abs": None,
+            }
+        ),
+        _brief(),
+    )
+    assert result.passed is False
+    assert any("holding_period_vs_thesis" in f for f in result.failures)
 
 
 def test_fails_when_price_date_stale():
@@ -436,10 +627,11 @@ def test_passes_when_bear_eps_exceeds_trailing_with_justification():
             "Order book already contracted through FY27 covers this revenue with no new bookings assumed"
         ),
     }
-    report = _report(overrides)
+    report = _report(overrides, prose=BEAR_DOWNSIDE_PASS_PROSE)
     brief = _brief(financials=_financials_with_eps(ttm_eps=1.91, fy_eps=1.80))
     result = validate_report(report, brief)
     assert not any("bear_eps_sanity" in f for f in result.failures)
+    assert not any("bear_downside_check_prose" in f for f in result.failures)
 
 
 def test_passes_when_bear_eps_at_or_below_trailing():
@@ -451,7 +643,7 @@ def test_passes_when_bear_eps_at_or_below_trailing():
             "eps_bull": 2.35, "multiple_bull": [55.0, 60.0],
         },
     }
-    report = _report(overrides)
+    report = _report(overrides, prose=BEAR_DOWNSIDE_PASS_PROSE)
     brief = _brief(financials=_financials_with_eps(ttm_eps=1.91, fy_eps=1.80))
     result = validate_report(report, brief)
     assert not any("bear_eps_sanity" in f for f in result.failures)
@@ -471,7 +663,7 @@ def test_fails_when_bear_case_insufficiently_adverse_for_high_multiple_stock():
             "eps_bull": 2.35, "multiple_bull": [55.0, 60.0],
         },
     }
-    report = _report(overrides)
+    report = _report(overrides, prose=BEAR_DOWNSIDE_PASS_PROSE)
     brief = _brief(financials=_financials_with_eps(ttm_eps=1.91, fy_eps=1.80))
     result = validate_report(report, brief)
     assert result.passed is False
@@ -490,11 +682,11 @@ def test_passes_when_bear_case_adequately_adverse_for_high_multiple_stock():
         },
         "bear_growth_justification": "placeholder so bear_eps_sanity doesn't also fire in this check-isolation test",
     }
-    report = _report(overrides)
+    report = _report(overrides, prose=BEAR_DOWNSIDE_PASS_PROSE)
     brief = _brief(financials=_financials_with_eps(ttm_eps=1.91, fy_eps=1.80))
     result = validate_report(report, brief)
     assert not any("bear_adequacy_high_multiple" in f for f in result.failures)
-
+    assert not any("bear_downside_check_prose" in f for f in result.failures)
 
 def test_bear_checks_not_applicable_below_40x_multiple():
     overrides = {
@@ -524,3 +716,194 @@ def test_format_validation_errors_lists_all_failures():
     formatted = format_validation_errors(result)
     assert "confidence_cap" in formatted
     assert formatted.startswith("The previous attempt failed")
+
+
+def test_fails_when_confidence_written_as_over_seven():
+    # KPITTECH live bug: prose said "Confidence: 5/7" while scale is always /10.
+    prose = "1. QUICK VERDICT\nWATCH\nRisk: MEDIUM · Confidence: 5/7\n"
+    result = validate_report(_report(prose=prose), _brief())
+    assert result.passed is False
+    assert any("confidence_scale_over_ten" in f for f in result.failures)
+
+
+def test_fails_when_rupees_wrapped_in_backticks():
+    # KPITTECH live bug: `₹400.00`–`₹430.00` from backtick-wrapped tokens.
+    prose = "Buy Zone: `₹370.00`–`₹380.00`\n"
+    result = validate_report(_report(prose=prose), _brief())
+    assert result.passed is False
+    assert any("no_backtick_wrapped_rupees" in f for f in result.failures)
+
+
+def test_fails_when_headline_fair_value_spans_bear_to_bull():
+    # BASE from fixture: 25*[16,18] = 400–450; BEAR 300–340; BULL 540–600.
+    # Headline must show BASE, not bear-low–bull-high.
+    prose = "Fair Value ₹300.00–₹600.00\n"
+    result = validate_report(_report(prose=prose), _brief())
+    assert result.passed is False
+    assert any("headline_fair_value_is_base" in f for f in result.failures)
+
+
+def test_passes_when_headline_fair_value_is_base_range():
+    prose = "Fair Value ₹400.00–₹450.00\n"
+    result = validate_report(_report(prose=prose), _brief())
+    assert not any("headline_fair_value_is_base" in f for f in result.failures)
+
+
+# --- Deployment checklist (master prompt v3) ---------------------------------
+
+
+def test_deployment_fails_on_invalid_citation_id():
+    prose = "Revenue grew 18% [FINANCIALS]. Also saw something [NEWS].\n"
+    result = validate_report(_report(prose=prose), _brief())
+    assert result.passed is False
+    assert any("citation_ids_valid" in f and "NEWS" in f for f in result.failures)
+
+
+def test_deployment_passes_on_valid_citations_and_evidence_labels():
+    prose = (
+        "Revenue grew 18% [FINANCIALS]. RSI is {{rsi14}} [PRICE_AND_TECHNICALS]. "
+        "Gap noted [MISSING]. This is [FACT] and [ANALYSIS].\n"
+    )
+    result = validate_report(_report(prose=prose), _brief())
+    assert not any("citation_ids_valid" in f for f in result.failures)
+
+
+def test_deployment_fails_on_unknown_placeholder_token():
+    prose = "Price is {{current_price}} but also {{made_up_token}}.\n"
+    result = validate_report(_report(prose=prose), _brief())
+    assert result.passed is False
+    assert any("placeholder_tokens_known" in f and "made_up_token" in f for f in result.failures)
+
+
+def test_deployment_fails_when_high_pe_missing_bear_downside_check_line():
+    overrides = {
+        "current_price_abs": 111.17,
+        "valuation_inputs": {
+            "eps_bear": 1.50,
+            "multiple_bear": [30.0, 35.0],
+            "eps_base": 2.20,
+            "multiple_base": [45.0, 50.0],
+            "eps_bull": 2.35,
+            "multiple_bull": [55.0, 60.0],
+        },
+    }
+    report = _report(overrides, prose="### 11. VALUATION\nNo sanity check line here.\n")
+    brief = _brief(financials=_financials_with_eps(ttm_eps=1.91, fy_eps=1.80))
+    result = validate_report(report, brief)
+    assert result.passed is False
+    assert any("bear_downside_check_prose" in f for f in result.failures)
+
+
+def test_deployment_fails_when_bear_downside_check_left_on_fail():
+    overrides = {
+        "current_price_abs": 111.17,
+        "valuation_inputs": {
+            "eps_bear": 1.50,
+            "multiple_bear": [30.0, 35.0],
+            "eps_base": 2.20,
+            "multiple_base": [45.0, 50.0],
+            "eps_bull": 2.35,
+            "multiple_bull": [55.0, 60.0],
+        },
+    }
+    prose = (
+        "### 11. VALUATION\n"
+        "Bear downside check: {{downside_pct}} vs 30% floor for >40x trailing — FAIL — "
+        "downside only 22% with no contracted growth evidence.\n"
+    )
+    report = _report(overrides, prose=prose)
+    brief = _brief(financials=_financials_with_eps(ttm_eps=1.91, fy_eps=1.80))
+    result = validate_report(report, brief)
+    assert result.passed is False
+    assert any("bear_downside_check_prose" in f and "FAIL" in f for f in result.failures)
+
+
+def test_deployment_fails_when_beginner_summary_after_json():
+    verdict = {**BASE_VERDICT}
+    bad = (
+        f"### 1. QUICK VERDICT\nWATCH\n\n"
+        f"```json\n{json.dumps(verdict)}\n```\n\n"
+        f"**SHOULD I BUY?**\n- **Decision:** WATCH\n\n"
+        f"*Research and education, not investment advice. Verify the numbers before "
+        f"acting, and consider a SEBI-registered investment adviser.*\n"
+    )
+    result = validate_report(bad, _brief())
+    assert result.passed is False
+    assert any("output_order" in f and "SHOULD I BUY" in f for f in result.failures)
+
+
+def test_deployment_fails_when_footer_missing():
+    verdict = {**BASE_VERDICT}
+    bad = (
+        f"**SHOULD I BUY?**\n- **Decision:** WATCH\n\n"
+        f"```json\n{json.dumps(verdict)}\n```\n"
+    )
+    result = validate_report(bad, _brief())
+    assert result.passed is False
+    assert any("output_order" in f and "footer" in f.lower() for f in result.failures)
+
+
+def test_deployment_empty_context_rejects_buy_and_high_confidence():
+    # Skeletal brief: no financials, no shareholding — checklist item 1.
+    brief = _brief(
+        shareholding=None,
+        financials=None,
+        missing=[
+            "MISSING: financials",
+            "MISSING: shareholding",
+            "MISSING: business description",
+            "MISSING: extraction",
+            "MISSING: news",
+            "MISSING: annual report",
+            "MISSING: all fields",
+        ],
+        confidence_ceiling=2,
+    )
+    result = validate_report(
+        _report({"verdict": "BUY", "confidence": 6, "business_quality": 8, "management_quality": 8}),
+        brief,
+    )
+    assert result.passed is False
+    assert any("empty_context_verdict" in f for f in result.failures)
+
+
+def test_deployment_empty_context_allows_skip_low_confidence():
+    brief = _brief(
+        shareholding=None,
+        financials=None,
+        missing=["MISSING: all fields"] * 7,
+        confidence_ceiling=2,
+    )
+    result = validate_report(_report({"verdict": "SKIP", "confidence": 2}), brief)
+    assert not any("empty_context_verdict" in f for f in result.failures)
+
+
+def test_deployment_thin_context_rejects_invented_business_model():
+    prose = (
+        "### 2. COMPANY IN 60 SECONDS\n"
+        "Reliance Industries is a conglomerate spanning oil refining, telecom (Jio), "
+        "and retail — a household Indian name with vast operations.\n\n"
+        "### 3. WHY COULD THIS STOCK GO UP?\nMomentum.\n"
+    )
+    brief = _brief(
+        financials=None,
+        missing=["MISSING: business description — Screener had no About block"],
+    )
+    result = validate_report(_report(prose=prose), brief)
+    assert result.passed is False
+    assert any("thin_context_business_model" in f for f in result.failures)
+
+
+def test_deployment_thin_context_passes_when_section2_cites_missing():
+    prose = (
+        "### 2. COMPANY IN 60 SECONDS\n"
+        "Business description is not available [MISSING]. "
+        "This cannot be determined from the supplied evidence.\n\n"
+        "### 3. WHY COULD THIS STOCK GO UP?\nNone evidenced.\n"
+    )
+    brief = _brief(
+        financials=None,
+        missing=["MISSING: business description — Screener had no About block"],
+    )
+    result = validate_report(_report(prose=prose), brief)
+    assert not any("thin_context_business_model" in f for f in result.failures)

@@ -124,10 +124,10 @@ def _good_metrics(ticker: str, sector: str = "Technology") -> StockMetrics:
     # price is critical — inject manually for tests without yfinance
     m.current_price_abs = 450.0
     m.missing.pop("current_price_abs", None)
-    m.promoter_pct = 40.0
-    m.promoter_pledge_pct = 0.0
-    m.missing.pop("promoter_pct", None)
-    m.missing.pop("promoter_pledge_pct", None)
+    m.promoter_holding_pct = 40.0
+    m.pledged_promoter_holding_pct = 0.0
+    m.missing.pop("promoter_holding_pct", None)
+    m.missing.pop("pledged_promoter_holding_pct", None)
     # synthetic returns for correlation
     import math
 
@@ -185,7 +185,7 @@ def test_hard_filter_data_insufficient_when_critical_missing():
 def test_quant_score_auditable_base_and_penalty():
     m = _good_metrics("TCS")
     # force a red-flag via high pledge
-    m.promoter_pledge_pct = 25.0
+    m.pledged_promoter_holding_pct = 25.0
     result = compute_quant_score(m, ScreenerRunConfig(skip_ai=True, dry_run=True))
     assert result.base_score > 0
     assert result.red_flag_penalty < 0

@@ -125,9 +125,13 @@ def _minimal_brief() -> Brief:
 
 def test_build_user_message_includes_hard_injections():
     message = build_user_message(_minimal_brief(), ExtractionResult())
-    assert "Confidence is capped at 7/10" in message
+    assert "this pipeline caps at 7/10 maximum" in message
     assert "You do NOT have a web search tool" in message
     assert "Treat them as [FACT]" in message
+    assert "<context>" in message
+    assert "<price_and_technicals>" in message
+    assert "<instruction>" in message
+    assert "Analyze:" in message
 
 
 def test_build_user_message_uses_brief_confidence_ceiling():
@@ -146,7 +150,7 @@ def test_build_user_message_uses_brief_confidence_ceiling():
         generated_at=base.generated_at,
     )
     message = build_user_message(brief, ExtractionResult())
-    assert "Confidence is capped at 4/10" in message
+    assert "this pipeline caps at 4/10 maximum" in message
 
 
 def test_build_user_message_warns_against_inventing_pledge_when_unconfirmed():
@@ -157,6 +161,7 @@ def test_build_user_message_warns_against_inventing_pledge_when_unconfirmed():
     message = build_user_message(_minimal_brief(), ExtractionResult())  # shareholding=None
     assert "PLEDGE NOTE" in message
     assert "Do NOT" in message
+    assert "<pipeline_note>" in message
 
 
 def test_build_user_message_omits_pledge_warning_when_confirmed():
@@ -168,6 +173,7 @@ def test_build_user_message_omits_pledge_warning_when_confirmed():
     brief = dataclasses.replace(_minimal_brief(), shareholding=confirmed)
     message = build_user_message(brief, ExtractionResult())
     assert "PLEDGE NOTE" not in message
+    assert "<pipeline_note>" not in message
 
 
 def test_build_user_message_includes_extraction_summary():
@@ -178,20 +184,21 @@ def test_build_user_message_includes_extraction_summary():
     message = build_user_message(_minimal_brief(), extraction)
     assert "qualified" in message
     assert "going concern doubt" in message
+    assert "<extraction>" in message
 
 
 def test_build_user_message_includes_retry_feedback_when_present():
     message = build_user_message(
         _minimal_brief(), ExtractionResult(), extra_instruction="§1 confidence exceeded cap of 7"
     )
-    assert "Retry feedback" in message
+    assert "<retry_feedback>" in message
     assert "exceeded cap of 7" in message
 
 
 def test_build_user_message_omits_retry_section_when_absent():
     message = build_user_message(_minimal_brief(), ExtractionResult())
+    assert "<retry_feedback>" not in message
     assert "Retry feedback" not in message
-
 
 def test_run_stage2_logs_cost_and_raises_clearly_on_truncation(monkeypatch, tmp_path):
     # Regression test for two real bugs found on the first live run: (1)
@@ -270,3 +277,61 @@ def test_compute_valuation_handles_negative_eps():
     assert valuation.fair_value_bear_abs == (-75.0, -50.0)
     assert valuation.fair_value_base_abs == (-30.0, -20.0)
     assert valuation.fair_value_bull_abs == (10.0, 15.0)
+
+
+def test_load_master_prompt_prepends_constitution():
+    from stockbot.llm.verdict import load_master_prompt
+
+    text = load_master_prompt()
+    assert "Quality-First 3–5 Year Portfolio Constitution" in text
+    assert "MASTER ANALYSIS PROTOCOL" in text
+    assert text.index("Quality-First") < text.index("MASTER ANALYSIS PROTOCOL")
+
+
+def test_extract_verdict_json_accepts_constitution_fields_and_null_buy_zone():
+    block = """
+```json
+{
+  "verdict": "WATCH",
+  "current_price_abs": 412.0,
+  "price_date": "2026-08-25",
+  "buy_zone_abs": null,
+  "valuation_inputs": {
+    "eps_bear": 10.0, "eps_base": 12.0, "eps_bull": 14.0,
+    "multiple_bear": [30.0, 32.0],
+    "multiple_base": [35.0, 39.0],
+    "multiple_bull": [40.0, 44.0]
+  },
+  "confidence": 5,
+  "risk": "MEDIUM",
+  "business_quality": 6,
+  "financial_health": 6,
+  "management_quality": 6,
+  "earnings_quality": "MEDIUM",
+  "holding_period": "THESIS RESEARCH REQUIRED",
+  "reasons_buy": [],
+  "reasons_avoid": ["five-year evidence weak"],
+  "biggest_watch": "no durable growth proof",
+  "missing_data_impact": "limits conviction",
+  "gates_failed": ["five_year_business_test"],
+  "five_year_business_test": {
+    "answer": "UNCERTAIN",
+    "confidence": "LOW",
+    "evidence_for": [],
+    "evidence_against": ["cyclical risk"]
+  },
+  "buy_range_allowed": false,
+  "add_range_allowed": false,
+  "thesis_status": "THESIS_UNDER_REVIEW",
+  "anti_chase_flag": false,
+  "thesis_invalidation_triggers": ["Revenue declines two annual periods"],
+  "profit_review": {"status": "NOT_TRIGGERED", "trigger_reason": [], "note": null},
+  "position_building_plan": null
+}
+```
+"""
+    verdict = extract_verdict_json(block)
+    assert verdict.buy_zone_abs is None
+    assert verdict.buy_range_allowed is False
+    assert verdict.five_year_business_test is not None
+    assert verdict.five_year_business_test.answer == "UNCERTAIN"

@@ -19,6 +19,7 @@ data/cache/
 data/db/
 data/symbols/
 data/llm_fixtures/
+data/portfolio/prescan_outcomes.jsonl
 reports/
 logs/
 *.log

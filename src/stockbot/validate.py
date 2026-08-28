@@ -7,17 +7,27 @@ this is the layer everything downstream depends on. The one exception
 a fundamentally safer kind of check than extracting-and-comparing a value
 out of free text: a false positive here just means an unnecessary retry,
 never a wrong number silently accepted.
+
+Also enforces the v3 master-prompt deployment checklist on every Stage 2
+report: citation IDs, known placeholder tokens, §11 bear-downside PASS
+line for >40x names, output order (Beginner Summary → JSON → Footer),
+empty/thin-context guards.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import UTC, datetime
+from typing import Literal
 
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel
 
+from stockbot.constitution_gates import should_anti_chase
+from stockbot.expected_return import report_contains_yearly_return_ladder
+from stockbot.analysis_routing import Stage2Mode
 from stockbot.llm.verdict import (
     ValuationComputed,
     VerdictJSON,
@@ -26,6 +36,8 @@ from stockbot.llm.verdict import (
     extract_verdict_json,
 )
 from stockbot.models import Brief, ValidationResult
+
+logger = logging.getLogger(__name__)
 
 STALENESS_TRADING_DAYS = 5
 
@@ -54,6 +66,26 @@ RISK_DISCOUNT_BANDS = {
 # down to 17% as "close enough". That swallows a real, visible band miss —
 # tightened so a violation this size is caught instead of tolerated.
 DISCOUNT_TOLERANCE = 0.01
+
+# Found live on a real KPITTECH report: §1 wrote "Confidence: 5/7" — the
+# pipeline cap is 7 on a 10-point scale, not a /7 scale. Master prompt
+# explicitly: "never X/7". Catch the prose form so a retry fixes it.
+_CONFIDENCE_OVER_SEVEN_RE = re.compile(
+    r"\bconfidence\b[^.\n]{0,40}?\b(\d{1,2})\s*/\s*7\b",
+    re.IGNORECASE,
+)
+
+# Found live on the same KPITTECH report: tokens wrapped in backticks
+# (`` `{{buy_zone_low}}`–`{{buy_zone_high}}` ``) rendered as
+# `` `₹400.00`–`₹430.00` `` — literal backticks stuck to every money figure
+# in the Quick Verdict line. Master prompt forbids wrapping tokens in backticks.
+_BACKTICK_RUPEE_RE = re.compile(r"`\s*₹\s*[\d,]+(?:\.\d+)?\s*`")
+
+# Headline Fair Value must be the BASE range, never bear-low–bull-high.
+_HEADLINE_FAIR_VALUE_RE = re.compile(
+    r"fair\s*value[^₹\n]{0,40}?₹\s*([\d,]+(?:\.\d+)?)\s*[–\-]\s*₹\s*([\d,]+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
 
 _PLEDGE_PCT_RE = re.compile(r"pledg\w*[^.\n]{0,50}?\d+(?:\.\d+)?\s*%", re.IGNORECASE)
 
@@ -122,11 +154,285 @@ TECHNICAL_FIGURE_TOLERANCE = 0.5
 # number is still caught.
 _PLACEHOLDER_TOKEN_RE = re.compile(r"\{\{.*?\}\}")
 
+# Deployment checklist (master prompt v3): valid [BRACKET] tags are source
+# citation IDs plus evidence labels. [FACT]/[ANALYSIS]/etc. are labels,
+# not source IDs, but they use the same bracket form and must not be
+# rejected as "invalid citations".
+VALID_BRACKET_TAGS: frozenset[str] = frozenset(
+    {
+        "PRICE_AND_TECHNICALS",
+        "FINANCIALS",
+        "SHAREHOLDING",
+        "EXTRACTION",
+        "MISSING",
+        "PIPELINE_NOTE",
+        "FACT",
+        "ANALYSIS",
+        "ESTIMATE",
+        "UNVERIFIED",
+    }
+)
+_BRACKET_TAG_RE = re.compile(r"\[([A-Z][A-Z0-9_]*)\]")
+_TOKEN_NAME_RE = re.compile(r"\{\{(\w+)\}\}")
+_JSON_FENCE_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
+_BEAR_DOWNSIDE_LINE_RE = re.compile(
+    r"Bear\s+downside\s+check(?:\s*\(revised\))?\s*:.*",
+    re.IGNORECASE,
+)
+_FOOTER_NEEDLE = "Research and education, not investment advice"
+_BEGINNER_SUMMARY_NEEDLE = "SHOULD I BUY?"
+
+# Checks fixable in Python without a full Stage 2 regeneration.
+AUTO_FIXABLE_CHECKS: frozenset[str] = frozenset(
+    {
+        "confidence_scale_over_ten",
+        "no_backtick_wrapped_rupees",
+    }
+)
+
+# Prose-only fixes — narrow retry prompt instead of regenerating all sections.
+NARROW_RETRY_CHECKS: frozenset[str] = frozenset(
+    {
+        "bear_downside_check_prose",
+        "output_order",
+        "citation_ids_valid",
+        "standalone_disclosed",
+        "headline_fair_value_is_base",
+        "placeholder_tokens_known",
+    }
+)
 
 class CheckResult(BaseModel):
     name: str
     passed: bool
     message: str
+
+
+def _check_citation_ids_valid(report_text: str) -> CheckResult:
+    found = _BRACKET_TAG_RE.findall(report_text)
+    invalid = sorted({tag for tag in found if tag not in VALID_BRACKET_TAGS})
+    if invalid:
+        return CheckResult(
+            name="citation_ids_valid",
+            passed=False,
+            message=f"invalid bracket tags (must be UPPERCASE from the allowed set): {invalid}",
+        )
+    return CheckResult(name="citation_ids_valid", passed=True, message="ok")
+
+
+def _check_placeholder_tokens_known(report_text: str) -> CheckResult:
+    from stockbot.render import ALLOWED_PLACEHOLDER_TOKENS
+
+    found = _TOKEN_NAME_RE.findall(report_text)
+    unknown = sorted({name for name in found if name not in ALLOWED_PLACEHOLDER_TOKENS})
+    if unknown:
+        return CheckResult(
+            name="placeholder_tokens_known",
+            passed=False,
+            message=f"unknown placeholder token(s): {unknown}",
+        )
+    return CheckResult(name="placeholder_tokens_known", passed=True, message="ok")
+
+
+def _section_eleven(report_text: str) -> str:
+    """Return §11 body text when headings are present; else the full report."""
+    match = re.search(
+        r"#{0,3}\s*11\.\s*VALUATION\b(.*?)(?=\n#{0,3}\s*12\.|\n#\s*OUTPUT|\n\*\*SHOULD I BUY\?\*\*|\n```json|\Z)",
+        report_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        return match.group(1)
+    return report_text
+
+
+def _check_bear_downside_check_prose(
+    report_text: str, verdict: VerdictJSON, brief: Brief
+) -> CheckResult:
+    """Master prompt rule #5: for >40x trailing, §11 must end on a PASS line."""
+    trailing_eps = _trailing_eps(brief)
+    if trailing_eps is None or trailing_eps <= 0:
+        return CheckResult(
+            name="bear_downside_check_prose",
+            passed=True,
+            message="trailing EPS unavailable, not applicable",
+        )
+    current_pe = verdict.current_price_abs / trailing_eps
+    if current_pe <= HIGH_MULTIPLE_PE_THRESHOLD:
+        return CheckResult(
+            name="bear_downside_check_prose",
+            passed=True,
+            message=f"not applicable ({current_pe:.0f}x <= 40x)",
+        )
+
+    section = _section_eleven(report_text)
+    lines = _BEAR_DOWNSIDE_LINE_RE.findall(section)
+    if not lines:
+        return CheckResult(
+            name="bear_downside_check_prose",
+            passed=False,
+            message=(
+                f"{current_pe:.0f}x stock requires an explicit "
+                f"'Bear downside check: … — PASS — …' line in §11"
+            ),
+        )
+    last = lines[-1]
+    if re.search(r"—\s*PASS\s*—", last, re.IGNORECASE):
+        return CheckResult(name="bear_downside_check_prose", passed=True, message="ok")
+    if re.search(r"—\s*FAIL\s*—", last, re.IGNORECASE):
+        return CheckResult(
+            name="bear_downside_check_prose",
+            passed=False,
+            message=(
+                "§11 bear downside check ends on FAIL — must revise and leave a "
+                "final 'Bear downside check (revised): … — PASS — …' line"
+            ),
+        )
+    return CheckResult(
+        name="bear_downside_check_prose",
+        passed=False,
+        message=f"§11 bear downside check line missing PASS/FAIL marker: {last[:120]!r}",
+    )
+
+
+def _check_output_order(report_text: str) -> CheckResult:
+    """Enforce §1–16 → Beginner Summary → JSON → Footer (when structure is present)."""
+    fences = list(_JSON_FENCE_RE.finditer(report_text))
+    if not fences:
+        return CheckResult(
+            name="output_order",
+            passed=False,
+            message="no fenced json block found",
+        )
+    if len(fences) > 1:
+        return CheckResult(
+            name="output_order",
+            passed=False,
+            message=f"expected exactly one fenced json block, found {len(fences)}",
+        )
+    fence = fences[0]
+    before = report_text[: fence.start()]
+    after = report_text[fence.end() :]
+
+    if _BEGINNER_SUMMARY_NEEDLE not in before:
+        return CheckResult(
+            name="output_order",
+            passed=False,
+            message="Beginner Summary ('SHOULD I BUY?') must appear before the JSON block",
+        )
+    if _FOOTER_NEEDLE.lower() not in after.lower():
+        return CheckResult(
+            name="output_order",
+            passed=False,
+            message="SEBI footer must appear after the JSON block (last in the response)",
+        )
+
+    has_s1 = bool(re.search(r"#{0,3}\s*1\.\s*QUICK VERDICT\b", before, re.IGNORECASE))
+    has_s16 = bool(
+        re.search(r"#{0,3}\s*16\.\s*WHAT WOULD CHANGE THE VERDICT", before, re.IGNORECASE)
+    )
+    if has_s1 and has_s16:
+        s16 = re.search(
+            r"#{0,3}\s*16\.\s*WHAT WOULD CHANGE THE VERDICT", before, re.IGNORECASE
+        )
+        beginner = before.rfind(_BEGINNER_SUMMARY_NEEDLE)
+        if s16 is not None and beginner < s16.start():
+            return CheckResult(
+                name="output_order",
+                passed=False,
+                message="Beginner Summary must appear after §16, before JSON",
+            )
+
+    return CheckResult(name="output_order", passed=True, message="ok")
+
+
+def _check_thin_context_no_invented_business(
+    report_text: str, brief: Brief
+) -> CheckResult:
+    """Famous-company + thin-context guard: §2 must not invent a business model."""
+    business_missing = brief.financials is None or (
+        brief.financials.business_description is None
+        or not str(brief.financials.business_description).strip()
+    )
+    # Also treat an explicit missing marker on the brief.
+    explicit = any(
+        "business" in item.lower() and "description" in item.lower()
+        for item in brief.missing
+    )
+    if not business_missing and not explicit:
+        return CheckResult(
+            name="thin_context_business_model",
+            passed=True,
+            message="business description present in brief, not applicable",
+        )
+
+    section2 = re.search(
+        r"#{0,3}\s*2\.\s*COMPANY IN 60 SECONDS\b(.*?)(?=\n#{0,3}\s*3\.|\n\*\*SHOULD I BUY\?\*\*|\n```json|\Z)",
+        report_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if section2 is None:
+        # Section absent — other structure checks may catch it; don't double-fail.
+        return CheckResult(
+            name="thin_context_business_model",
+            passed=True,
+            message="§2 not present, skipped",
+        )
+    body = section2.group(1)
+    cites_missing = "[MISSING]" in body
+    admits_gap = bool(
+        re.search(
+            r"cannot be determined|not available|MISSING|no (?:business|product|company) description",
+            body,
+            re.IGNORECASE,
+        )
+    )
+    if cites_missing or admits_gap:
+        return CheckResult(name="thin_context_business_model", passed=True, message="ok")
+    return CheckResult(
+        name="thin_context_business_model",
+        passed=False,
+        message=(
+            "business description is missing from the brief but §2 does not cite "
+            "[MISSING] or state the gap cannot be determined — likely filled from memory"
+        ),
+    )
+
+
+def _check_empty_context_verdict(verdict: VerdictJSON, brief: Brief) -> CheckResult:
+    """Empty/near-empty evidence: must not produce a BUY and must keep confidence low."""
+    if len(brief.missing) < 4 and brief.financials is not None:
+        return CheckResult(
+            name="empty_context_verdict",
+            passed=True,
+            message="context not empty, not applicable",
+        )
+    # Heavy MISSING and no financials → SKIP/WATCH only, confidence ≤ 2 when
+    # essentially everything is gone (≥6 missing or financials None + shareholding None).
+    skeletal = brief.financials is None and brief.shareholding is None
+    heavy = len(brief.missing) >= 6 or skeletal
+    if not heavy:
+        return CheckResult(
+            name="empty_context_verdict",
+            passed=True,
+            message="not applicable",
+        )
+    if verdict.verdict == "BUY":
+        return CheckResult(
+            name="empty_context_verdict",
+            passed=False,
+            message=f"empty/thin context must not yield BUY (got {verdict.verdict!r})",
+        )
+    if skeletal and verdict.confidence > 2:
+        return CheckResult(
+            name="empty_context_verdict",
+            passed=False,
+            message=(
+                f"skeletal context (no financials, no shareholding) requires "
+                f"confidence≤2, got {verdict.confidence}"
+            ),
+        )
+    return CheckResult(name="empty_context_verdict", passed=True, message="ok")
 
 
 def _check_confidence_cap(verdict: VerdictJSON, brief: Brief) -> CheckResult:
@@ -162,13 +468,15 @@ def _check_ranges_ordered(verdict: VerdictJSON, valuation: ValuationComputed) ->
     # fair_value_*_abs are Python-computed (see compute_valuation) and
     # already sorted defensively for negative EPS, so this is really
     # checking buy_zone_abs (still model-stated) plus a sanity confirmation
-    # the computed ranges came out sane.
-    ranges = {
-        "buy_zone_abs": verdict.buy_zone_abs,
+    # the computed ranges came out sane. buy_zone_abs may be null when
+    # constitution gates block a range.
+    ranges: dict[str, tuple[float, float]] = {
         "fair_value_base_abs": valuation.fair_value_base_abs,
         "fair_value_bear_abs": valuation.fair_value_bear_abs,
         "fair_value_bull_abs": valuation.fair_value_bull_abs,
     }
+    if verdict.buy_zone_abs is not None:
+        ranges["buy_zone_abs"] = verdict.buy_zone_abs
     bad = [name for name, (low, high) in ranges.items() if not (low < high)]
     return CheckResult(
         name="ranges_ordered",
@@ -178,6 +486,12 @@ def _check_ranges_ordered(verdict: VerdictJSON, valuation: ValuationComputed) ->
 
 
 def _check_buy_zone_discount(verdict: VerdictJSON, valuation: ValuationComputed) -> CheckResult:
+    if verdict.buy_zone_abs is None or verdict.buy_range_allowed is False:
+        return CheckResult(
+            name="buy_zone_discount",
+            passed=True,
+            message="buy zone not issued — discount check skipped",
+        )
     band = RISK_DISCOUNT_BANDS.get(verdict.risk)
     if band is None:
         return CheckResult(
@@ -216,6 +530,211 @@ def _check_buy_zone_discount(verdict: VerdictJSON, valuation: ValuationComputed)
             ),
         )
     return CheckResult(name="buy_zone_discount", passed=True, message="within band")
+
+
+def _check_five_year_buy_gate(verdict: VerdictJSON) -> CheckResult:
+    """Constitution: no buy/add range unless five-year test is YES."""
+    test = verdict.five_year_business_test
+    if test is None:
+        return CheckResult(
+            name="five_year_buy_gate",
+            passed=True,
+            message="five_year_business_test omitted — gate not enforced on legacy JSON",
+        )
+    answer = (test.answer or "").strip().upper()
+    if answer == "YES":
+        return CheckResult(name="five_year_buy_gate", passed=True, message="YES")
+
+    blocked_verdicts = {"BUY", "BUY ON CORRECTION"}
+    range_claimed = verdict.buy_range_allowed is True or verdict.add_range_allowed is True
+    zone_present = verdict.buy_zone_abs is not None
+    verdict_blocked = verdict.verdict.strip().upper() in blocked_verdicts
+    violated = range_claimed or zone_present or verdict_blocked
+    return CheckResult(
+        name="five_year_buy_gate",
+        passed=not violated,
+        message=(
+            f"five_year_answer={answer!r}, buy_range_allowed={verdict.buy_range_allowed!r}, "
+            f"add_range_allowed={verdict.add_range_allowed!r}, "
+            f"buy_zone_abs={'set' if zone_present else 'null'}, verdict={verdict.verdict!r}"
+        ),
+    )
+
+
+_OCF_ROW_ALIASES = (
+    "Cash from Operating Activity",
+    "Cash from Operating Activities",
+)
+_PAT_ROW_ALIASES = ("Net Profit", "Profit after Tax", "PAT")
+_WC_UNLOCK_CLASSIFICATION = "TEMPORARY_BILLING_CYCLE"
+_WC_BLOCK_CLASSIFICATIONS = frozenset(
+    {
+        "WORKING_CAPITAL_STRESS",
+        "DATA_OR_SCOPE_ERROR",
+        "INCONCLUSIVE",
+    }
+)
+_ESCALATED_CUM_OCF_PAT = 0.25
+
+
+def _numeric_series_from_statement(
+    frame: pd.DataFrame, aliases: tuple[str, ...]
+) -> list[float]:
+    for name in aliases:
+        if name not in frame.index:
+            continue
+        row = frame.loc[name]
+        values: list[float] = []
+        for col in row.index:
+            if str(col).strip().upper() == "TTM":
+                continue
+            raw = row[col]
+            if pd.isna(raw):
+                continue
+            try:
+                values.append(float(raw))
+            except (TypeError, ValueError):
+                continue
+        if values:
+            return values
+    return []
+
+
+def brief_shows_extreme_cash_conversion(brief: Brief) -> bool:
+    """True when supplied FINANCIALS show Mazdock-style reported OCF weakness."""
+    if brief.financials is None:
+        return False
+    ocf = _numeric_series_from_statement(brief.financials.cash_flow, _OCF_ROW_ALIASES)
+    pat = _numeric_series_from_statement(brief.financials.pnl, _PAT_ROW_ALIASES)
+    if not ocf or not pat:
+        return False
+
+    n = min(len(ocf), len(pat), 3)
+    if n >= 2:
+        ocf_sum = sum(ocf[-n:])
+        pat_sum = sum(pat[-n:])
+        if pat_sum > 0 and (ocf_sum / pat_sum) < _ESCALATED_CUM_OCF_PAT:
+            return True
+
+    # Sharply negative latest OCF against positive latest PAT
+    if ocf[-1] < 0 and pat[-1] > 0 and abs(ocf[-1]) > 0.25 * pat[-1]:
+        return True
+    return False
+
+
+def _claims_buy_or_add_range(verdict: VerdictJSON) -> bool:
+    if verdict.buy_range_allowed is True or verdict.add_range_allowed is True:
+        return True
+    if verdict.buy_zone_abs is not None:
+        return True
+    return verdict.verdict.strip().upper() in {"BUY", "BUY ON CORRECTION"}
+
+
+def _check_wc_buy_gate(verdict: VerdictJSON, brief: Brief) -> CheckResult:
+    """No buy/add range until WC gap is TEMPORARY_BILLING_CYCLE when cash is extreme."""
+    classification_raw = verdict.wc_gap_classification
+    classification = (
+        classification_raw.strip().upper() if isinstance(classification_raw, str) else None
+    )
+    if classification == "":
+        classification = None
+
+    claiming = _claims_buy_or_add_range(verdict)
+    extreme = brief_shows_extreme_cash_conversion(brief)
+
+    if classification in _WC_BLOCK_CLASSIFICATIONS and claiming:
+        return CheckResult(
+            name="wc_buy_gate",
+            passed=False,
+            message=(
+                f"wc_gap_classification={classification!r} blocks buy/add ranges; "
+                f"only {_WC_UNLOCK_CLASSIFICATION} unlocks them"
+            ),
+        )
+
+    if extreme and claiming and classification != _WC_UNLOCK_CLASSIFICATION:
+        return CheckResult(
+            name="wc_buy_gate",
+            passed=False,
+            message=(
+                "Reported cash conversion is extremely weak in FINANCIALS; "
+                f"set wc_gap_classification={_WC_UNLOCK_CLASSIFICATION} with "
+                "year-by-year CFO-to-PAT evidence, or set buy_zone_abs=null and "
+                "buy_range_allowed=false"
+            ),
+        )
+
+    if (
+        classification is not None
+        and classification != _WC_UNLOCK_CLASSIFICATION
+        and claiming
+    ):
+        return CheckResult(
+            name="wc_buy_gate",
+            passed=False,
+            message=f"unknown/blocking wc_gap_classification={classification!r}",
+        )
+
+    return CheckResult(
+        name="wc_buy_gate",
+        passed=True,
+        message=(
+            f"ok (extreme={extreme}, classification={classification!r}, claiming={claiming})"
+        ),
+    )
+
+
+def _check_anti_chase_flag(
+    verdict: VerdictJSON, valuation: ValuationComputed, brief: Brief
+) -> CheckResult:
+    expected, reason = should_anti_chase(verdict, valuation, brief)
+    if not expected:
+        return CheckResult(name="anti_chase_flag", passed=True, message="not required")
+    if verdict.anti_chase_flag is True:
+        return CheckResult(name="anti_chase_flag", passed=True, message=reason)
+    return CheckResult(
+        name="anti_chase_flag",
+        passed=False,
+        message=f"anti_chase_flag must be true — {reason}",
+    )
+
+
+def _check_anti_chase_blocks_buy_range(verdict: VerdictJSON) -> CheckResult:
+    if verdict.anti_chase_flag is not True:
+        return CheckResult(name="anti_chase_buy_block", passed=True, message="ok")
+    claiming = (
+        verdict.buy_range_allowed is True
+        or verdict.add_range_allowed is True
+        or verdict.buy_zone_abs is not None
+    )
+    return CheckResult(
+        name="anti_chase_buy_block",
+        passed=not claiming,
+        message=(
+            "anti_chase_flag=true requires buy_range_allowed=false and buy_zone_abs=null"
+            if claiming
+            else "ok"
+        ),
+    )
+
+
+def _check_holding_period_vs_thesis(verdict: VerdictJSON) -> CheckResult:
+    """Thesis under review → monitoring horizon, not committed 3–5y holding."""
+    status = (verdict.thesis_status or "").strip().upper()
+    if status not in {"THESIS_UNDER_REVIEW", "THESIS_AT_RISK", "THESIS_BROKEN"}:
+        return CheckResult(name="holding_period_vs_thesis", passed=True, message="ok")
+    hp = (verdict.holding_period or "").lower()
+    long_term_markers = ("3-5", "3–5", "5+", "5+ years", "five year", "5 year")
+    if any(m in hp for m in long_term_markers):
+        return CheckResult(
+            name="holding_period_vs_thesis",
+            passed=False,
+            message=(
+                f"thesis_status={status!r} with holding_period={verdict.holding_period!r} "
+                "— use a monitoring horizon (e.g. 6–12 months) until thesis confirms"
+            ),
+        )
+    return CheckResult(name="holding_period_vs_thesis", passed=True, message="ok")
 
 
 def _check_confidence_vs_missing_data(verdict: VerdictJSON, brief: Brief) -> CheckResult:
@@ -396,7 +915,123 @@ def _check_technical_figures_not_recomputed(report_text: str, brief: Brief) -> C
     )
 
 
-def validate_report(report_text: str, brief: Brief) -> ValidationResult:
+def _parse_rupee(raw: str) -> float:
+    return float(raw.replace(",", ""))
+
+
+def _check_confidence_scale_is_over_ten(report_text: str) -> CheckResult:
+    match = _CONFIDENCE_OVER_SEVEN_RE.search(report_text)
+    if match is None:
+        return CheckResult(name="confidence_scale_over_ten", passed=True, message="ok")
+    return CheckResult(
+        name="confidence_scale_over_ten",
+        passed=False,
+        message=(
+            f"report states Confidence {match.group(1)}/7 — scale is always X/10 "
+            f"(7 is the pipeline cap, not the denominator). Rewrite as {match.group(1)}/10."
+        ),
+    )
+
+
+def _check_no_backtick_wrapped_rupees(report_text: str) -> CheckResult:
+    hits = _BACKTICK_RUPEE_RE.findall(report_text)
+    if not hits:
+        return CheckResult(name="no_backtick_wrapped_rupees", passed=True, message="ok")
+    return CheckResult(
+        name="no_backtick_wrapped_rupees",
+        passed=False,
+        message=(
+            f"found {len(hits)} backtick-wrapped ₹ amounts (e.g. {hits[0]}) — "
+            "write tokens bare ({{buy_zone_low}} not `{{buy_zone_low}}`); "
+            "Python substitutes plain numbers"
+        ),
+    )
+
+
+def _check_headline_fair_value_is_base(
+    report_text: str, valuation: ValuationComputed
+) -> CheckResult:
+    """Reject bear-low–bull-high as the headline Fair Value span."""
+    match = _HEADLINE_FAIR_VALUE_RE.search(report_text)
+    if match is None:
+        return CheckResult(name="headline_fair_value_is_base", passed=True, message="ok")
+
+    low = _parse_rupee(match.group(1))
+    high = _parse_rupee(match.group(2))
+    bear_low, _bear_high = valuation.fair_value_bear_abs
+    _bull_low, bull_high = valuation.fair_value_bull_abs
+    base_low, base_high = valuation.fair_value_base_abs
+
+    spans_bear_to_bull = abs(low - bear_low) <= 1.0 and abs(high - bull_high) <= 1.0
+    matches_base = abs(low - base_low) <= 1.0 and abs(high - base_high) <= 1.0
+    if spans_bear_to_bull and not matches_base:
+        return CheckResult(
+            name="headline_fair_value_is_base",
+            passed=False,
+            message=(
+                f"headline Fair Value ₹{low:.2f}–₹{high:.2f} spans bear-low to bull-high; "
+                f"must be the BASE range ₹{base_low:.2f}–₹{base_high:.2f} "
+                f"(use {{{{fair_value_base_low}}}}–{{{{fair_value_base_high}}}})"
+            ),
+        )
+    return CheckResult(name="headline_fair_value_is_base", passed=True, message="ok")
+
+
+def _failed_check_names(result: ValidationResult) -> set[str]:
+    names: set[str] = set()
+    for failure in result.failures:
+        if ":" in failure:
+            names.add(failure.split(":", 1)[0].strip())
+    return names
+
+
+def classify_retry_mode(result: ValidationResult) -> Literal["narrow", "full"]:
+    names = _failed_check_names(result)
+    if names and names <= NARROW_RETRY_CHECKS:
+        return "narrow"
+    return "full"
+
+
+def try_auto_fix_report(
+    report_text: str, result: ValidationResult, brief: Brief, *, stage2_mode: Stage2Mode = "FULL"
+) -> tuple[str, ValidationResult] | None:
+    """Apply deterministic prose fixes when failures are purely formatting."""
+    names = _failed_check_names(result)
+    if not names or not names <= AUTO_FIXABLE_CHECKS:
+        return None
+
+    fixed = report_text
+    if "confidence_scale_over_ten" in names:
+
+        def _fix_confidence_scale(match: re.Match[str]) -> str:
+            return match.group(0).replace("/7", "/10")
+
+        fixed = _CONFIDENCE_OVER_SEVEN_RE.sub(_fix_confidence_scale, fixed)
+    if "no_backtick_wrapped_rupees" in names:
+        fixed = _BACKTICK_RUPEE_RE.sub(lambda m: m.group(0).strip("`"), fixed)
+
+    revalidated = validate_report(fixed, brief, stage2_mode=stage2_mode)
+    if revalidated.passed:
+        logger.info("Auto-fixed validation failures without Stage 2 retry: %s", sorted(names))
+    return fixed, revalidated
+
+
+def _check_no_yearly_return_ladder(report_text: str) -> CheckResult:
+    if report_contains_yearly_return_ladder(report_text):
+        return CheckResult(
+            name="no_yearly_return_ladder",
+            passed=False,
+            message=(
+                "report states fixed per-year return targets (e.g. 'year 1 = 12%') — "
+                "use scenario CAGR ranges over 2–5 years instead, not a yearly ladder"
+            ),
+        )
+    return CheckResult(name="no_yearly_return_ladder", passed=True, message="ok")
+
+
+def validate_report(
+    report_text: str, brief: Brief, *, stage2_mode: Stage2Mode = "FULL"
+) -> ValidationResult:
     try:
         verdict = extract_verdict_json(report_text)
     except VerdictParseError as exc:
@@ -407,6 +1042,11 @@ def validate_report(report_text: str, brief: Brief) -> ValidationResult:
     checks = [
         _check_confidence_cap(verdict, brief),
         _check_buy_gate(verdict),
+        _check_five_year_buy_gate(verdict),
+        _check_wc_buy_gate(verdict, brief),
+        _check_anti_chase_flag(verdict, valuation, brief),
+        _check_anti_chase_blocks_buy_range(verdict),
+        _check_holding_period_vs_thesis(verdict),
         _check_ranges_ordered(verdict, valuation),
         _check_buy_zone_discount(verdict, valuation),
         _check_confidence_vs_missing_data(verdict, brief),
@@ -414,15 +1054,45 @@ def validate_report(report_text: str, brief: Brief) -> ValidationResult:
         _check_bear_adequacy_for_high_multiple(verdict, valuation, brief),
         _check_price_date_fresh(verdict),
         _check_pledge_not_stated_when_unconfirmed(report_text, brief),
-        _check_standalone_disclosed(report_text, brief),
         _check_technical_figures_not_recomputed(report_text, brief),
+        _check_confidence_scale_is_over_ten(report_text),
+        _check_no_backtick_wrapped_rupees(report_text),
+        _check_no_yearly_return_ladder(report_text),
+        _check_citation_ids_valid(report_text),
+        _check_output_order(report_text),
     ]
+    if stage2_mode == "FULL":
+        checks.extend(
+            [
+                _check_bear_downside_check_prose(report_text, verdict, brief),
+                _check_standalone_disclosed(report_text, brief),
+                _check_headline_fair_value_is_base(report_text, valuation),
+                _check_placeholder_tokens_known(report_text),
+                _check_empty_context_verdict(verdict, brief),
+                _check_thin_context_no_invented_business(report_text, brief),
+            ]
+        )
+    else:
+        checks.extend(
+            [
+                _check_headline_fair_value_is_base(report_text, valuation),
+                _check_placeholder_tokens_known(report_text),
+            ]
+        )
 
     failures = [f"{c.name}: {c.message}" for c in checks if not c.passed]
     return ValidationResult(passed=not failures, failures=failures)
 
 
-def format_validation_errors(result: ValidationResult) -> str:
-    lines = ["The previous attempt failed these checks — fix them and resend the FULL report:"]
+def format_validation_errors(
+    result: ValidationResult, *, retry_mode: Literal["narrow", "full"] = "full"
+) -> str:
+    if retry_mode == "narrow":
+        lines = [
+            "The previous attempt failed these checks — fix ONLY the listed issues.",
+            "Keep all other sections and the JSON block unchanged unless a fix requires a small edit:",
+        ]
+    else:
+        lines = ["The previous attempt failed these checks — fix them and resend the FULL report:"]
     lines.extend(f"- {failure}" for failure in result.failures)
     return "\n".join(lines)

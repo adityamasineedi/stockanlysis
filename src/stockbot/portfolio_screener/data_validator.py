@@ -24,8 +24,8 @@ _SOFT_METRICS = (
     "pb",
     "ev_ebitda",
     "dividend_yield_pct",
-    "promoter_pct",
-    "promoter_pledge_pct",
+    "promoter_holding_pct",
+    "pledged_promoter_holding_pct",
     "share_dilution_pct",
     "forward_pe",
     "industry",
@@ -86,18 +86,34 @@ def validate_stock_data(
         if not _metric_present(metrics, name):
             critical_missing[name] = metrics.missing.get(name, "unavailable")
 
+    # Key trio (ROE / leverage / cash conversion): allow a single gap so a
+    # Screener ratios omission doesn't alone force DATA_INSUFFICIENT when
+    # P&L+BS still support scoring. ≥2 missing → treat as critical failure.
+    key_trio_missing: dict[str, str] = {}
+    for name in thresholds.key_trio_metrics:
+        if not _metric_present(metrics, name):
+            key_trio_missing[name] = metrics.missing.get(name, "unavailable")
+    if len(key_trio_missing) >= 2:
+        critical_missing.update(key_trio_missing)
+
     soft_missing = 0
     soft_total = len(_SOFT_METRICS)
     for name in _SOFT_METRICS:
         if not _metric_present(metrics, name):
             soft_missing += 1
 
+    # Completeness counts core critical + key trio + soft metrics
+    trio_total = len(thresholds.key_trio_metrics)
+    trio_present = trio_total - len(key_trio_missing)
     critical_total = len(thresholds.require_critical_metrics)
-    critical_present = critical_total - len(critical_missing)
+    critical_present = critical_total - len(
+        {k: v for k, v in critical_missing.items() if k in thresholds.require_critical_metrics}
+    )
+    denom = critical_total + trio_total + soft_total
     completeness = 0.0
-    if critical_total + soft_total > 0:
+    if denom > 0:
         completeness = (
-            (critical_present + (soft_total - soft_missing)) / (critical_total + soft_total)
+            (critical_present + trio_present + (soft_total - soft_missing)) / denom
         ) * 100.0
 
     contradictions = _detect_contradictions(metrics)
@@ -118,14 +134,24 @@ def validate_stock_data(
     else:
         confidence = "LOW"
 
+    # Single key-trio gap stays in missing_metrics for data_concerns, but does
+    # not alone set critical_ok=False (unless folded in via ≥2 rule above).
+    all_missing = {
+        **critical_missing,
+        **{k: v for k, v in key_trio_missing.items() if k not in critical_missing},
+        **{
+            k: v
+            for k, v in metrics.missing.items()
+            if k not in critical_missing and k not in key_trio_missing
+        },
+    }
+
     return DataValidationResult(
         ticker=metrics.ticker,
         data_completeness_score=round(completeness, 2),
         data_quality_score=round(quality, 2),
         data_confidence=confidence,
-        missing_metrics={**critical_missing, **{
-            k: v for k, v in metrics.missing.items() if k not in critical_missing
-        }},
+        missing_metrics=all_missing,
         contradictions=contradictions,
         critical_ok=len(critical_missing) == 0,
     )
