@@ -57,7 +57,10 @@ from stockbot.pipeline import (
     PipelineResult,
     run_full_analysis,
 )
-from stockbot.portfolio_screener.eligibility import check_deep_analysis_eligibility
+from stockbot.portfolio_screener.eligibility import (
+    check_deep_analysis_eligibility,
+    format_analyze_gate_block,
+)
 from stockbot.portfolio_screener.scoring_config import ScreenerRunConfig
 from stockbot.monitor.health_audit import run_health_audit
 
@@ -381,7 +384,44 @@ async def _send_progress_updates(status_message, query: str) -> None:
         pass
 
 
-async def _run_and_reply(update: Update, query: str) -> None:
+async def _check_analyze_eligibility_gate(update: Update, query: str) -> bool:
+    """Quant-only prescan gate — no eligibility AI spend on every /analyze."""
+    try:
+        result = await asyncio.to_thread(
+            check_deep_analysis_eligibility,
+            query,
+            config=ScreenerRunConfig(ai_provider="auto", skip_ai=True),
+        )
+    except Exception as exc:
+        logger.exception("analyze eligibility gate failed for %r", query)
+        await update.message.reply_text(
+            f"Could not run eligibility check: {esc(exc)}. "
+            "Try /prescan first, or /analyze force if you accept the risk."
+        )
+        return False
+
+    if result.suitable_for_deep_analysis:
+        logger.info(
+            "Analyze gate passed for %r: verdict=%s ticker=%s",
+            query,
+            result.verdict,
+            result.ticker,
+        )
+        return True
+
+    await update.message.reply_text(
+        format_analyze_gate_block(result),
+        parse_mode=ParseMode.HTML,
+    )
+    return False
+
+
+async def _run_and_reply(update: Update, query: str, *, force: bool = False) -> None:
+    if settings.require_prescan_for_analyze and not force:
+        allowed = await _check_analyze_eligibility_gate(update, query)
+        if not allowed:
+            return
+
     key = query.strip().upper()
     if key in _IN_FLIGHT:
         await update.message.reply_text(
@@ -408,11 +448,23 @@ async def _run_and_reply(update: Update, query: str) -> None:
 
 
 async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = " ".join(context.args) if context.args else ""
+    query, force = _parse_analyze_command_args(context.args)
     if not query:
-        await update.message.reply_text("Usage: /analyze <company name or symbol>")
+        await update.message.reply_text(
+            "Usage: /analyze <company name or symbol>\n"
+            "       /analyze force <symbol> — bypass eligibility gate (not recommended)"
+        )
         return
-    await _run_and_reply(update, query)
+    await _run_and_reply(update, query, force=force)
+
+
+def _parse_analyze_command_args(args: list[str] | None) -> tuple[str, bool]:
+    parts = list(args or [])
+    force = False
+    if parts and parts[0].lower() == "force":
+        force = True
+        parts = parts[1:]
+    return " ".join(parts).strip(), force
 
 
 async def handle_prescan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -454,6 +506,16 @@ def _parse_prescan_plain_text(text: str) -> str | None:
     return None
 
 
+def _parse_force_analyze_plain_text(text: str) -> tuple[str, bool] | None:
+    """Accept 'force BEL' as a plain-text override for the eligibility gate."""
+    stripped = text.strip()
+    if stripped.lower().startswith("force "):
+        rest = stripped[6:].strip()
+        if rest:
+            return rest, True
+    return None
+
+
 async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.message.text or "").strip()
     if not text:
@@ -462,6 +524,11 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if prescan_query is not None:
         await _run_prescan_and_reply(update, prescan_query)
         return
+    force_query = _parse_force_analyze_plain_text(text)
+    if force_query is not None:
+        query, force = force_query
+        await _run_and_reply(update, query, force=force)
+        return
     await _run_and_reply(update, text)
 
 
@@ -469,7 +536,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(
         "Commands:\n"
         "/prescan <symbol> — cheap check: worth deep analysis?\n"
-        "/analyze <company> — full expensive deep analysis\n"
+        "/analyze <company> — full deep analysis (requires prescan eligibility)\n"
+        "/analyze force <symbol> — bypass gate (not recommended)\n"
         "/spend — month-to-date cost\n"
         "/health — cost/token/quality audit (no LLM spend)\n\n"
         "Or send: prescan BEL\n\n"

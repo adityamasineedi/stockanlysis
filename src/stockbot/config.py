@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     # Debug / quality check: always run Sonnet full 16-section Stage 2 even when
     # routing would pick the cheaper Haiku lite path.
     force_stage2_full: bool = False
+    # Block /analyze unless prescan eligibility passes (AUTO_DEEP or SECTOR_REVIEW).
+    require_prescan_for_analyze: bool = True
 
 
 settings = Settings()

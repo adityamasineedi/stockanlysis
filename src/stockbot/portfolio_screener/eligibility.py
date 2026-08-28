@@ -530,6 +530,16 @@ def _esc(value: object) -> str:
     return html.escape(str(value), quote=False)
 
 
+def format_analyze_gate_block(result: EligibilityResult) -> str:
+    """Telegram HTML when /analyze is blocked by the eligibility gate."""
+    return (
+        f"{result.telegram_html()}\n\n"
+        "<b>Deep /analyze blocked</b> — this name failed the 3-year research gate.\n"
+        "Run <code>/prescan SYMBOL</code> for the full card, fix data gaps, then retry.\n"
+        "Override (not recommended): <code>/analyze force SYMBOL</code>"
+    )
+
+
 def _verdict_from_band(band: str, hard_status: str) -> tuple[EligibilityVerdict, bool]:
     """Legacy band→verdict helper (tests / AI fallback only). Prefer routing."""
     if hard_status == "DATA_UNAVAILABLE":

@@ -7,6 +7,7 @@ from stockbot.portfolio_screener.eligibility import (
     EligibilityResult,
     _normalize_verdict,
     _verdict_from_band,
+    format_analyze_gate_block,
 )
 from stockbot.portfolio_screener.issuer_routing import WC_RECONCILIATION_CHECKLIST
 
@@ -46,6 +47,21 @@ def test_parse_prescan_plain_text():
     assert _parse_prescan_plain_text("prescreen INFY") == "INFY"
     assert _parse_prescan_plain_text("analyze BEL") is None
     assert _parse_prescan_plain_text("prescan") is None
+
+
+def test_format_analyze_gate_block():
+    result = EligibilityResult(
+        query="WEAKCO",
+        ticker="WEAKCO",
+        company_name="Weak Co",
+        verdict="NOT_SUITABLE_FOR_3Y_RESEARCH",
+        suitable_for_deep_analysis=False,
+        key_reason="Hard exclude",
+    )
+    html = format_analyze_gate_block(result)
+    assert "Deep /analyze blocked" in html
+    assert "/analyze force SYMBOL" in html
+    assert "NOT_SUITABLE" in html or "❌" in html
 
 
 def test_cheap_wc_telegram_card_wording_and_checklist():

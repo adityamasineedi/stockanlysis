@@ -6,7 +6,14 @@ attachment delivery) is still owed once TELEGRAM_BOT_TOKEN is available."""
 from copy import deepcopy
 from datetime import date
 
-from stockbot.bot import esc, format_ambiguous_reply, format_verdict_reply
+from stockbot.bot import (
+    _parse_analyze_command_args,
+    _parse_force_analyze_plain_text,
+    _parse_prescan_plain_text,
+    esc,
+    format_ambiguous_reply,
+    format_verdict_reply,
+)
 from stockbot.models import AmbiguousMatch, Analysis, TickerInfo, ValidationResult
 
 VALID_VERDICT_JSON = {
@@ -228,3 +235,17 @@ def test_format_ambiguous_reply_lists_all_candidates():
     assert "HDFCBANK" in text
     assert "HDFCAMC" in text
     assert "<code>" in text
+
+
+def test_parse_analyze_command_args():
+    assert _parse_analyze_command_args(["BEL"]) == ("BEL", False)
+    assert _parse_analyze_command_args(["force", "MAZDOCK"]) == ("MAZDOCK", True)
+    assert _parse_analyze_command_args(["Force", "TCS"]) == ("TCS", True)
+    assert _parse_analyze_command_args([]) == ("", False)
+
+
+def test_parse_force_analyze_plain_text():
+    assert _parse_force_analyze_plain_text("force BEL") == ("BEL", True)
+    assert _parse_force_analyze_plain_text("Force MAZDOCK") == ("MAZDOCK", True)
+    assert _parse_force_analyze_plain_text("BEL") is None
+    assert _parse_force_analyze_plain_text("force") is None

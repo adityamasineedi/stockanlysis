@@ -54,7 +54,8 @@ uv run stockbot-bot
 
 Commands:
 
-- `/analyze <name or symbol>` or plain text — full analysis (often **5–15 minutes**)
+- `/analyze <name or symbol>` or plain text — full analysis (often **5–15 minutes**); blocked unless prescan eligibility passes
+- `/analyze force SYMBOL` — bypass eligibility gate (not recommended)
 - `/spend` — month-to-date LLM spend vs monthly budget
 - `/health` — cost/token/quality audit (no LLM spend; attaches report if issues found)
 - `/help` — short usage
@@ -86,7 +87,7 @@ Telegram (restart bot to load new command):
 
 - `/prescan BEL` or plain text `prescan BEL`
 - `/health` — audit spend, token waste, and quality issues
-- If suitable → then `/analyze BEL` for the expensive master-prompt run
+- If suitable → then `/analyze BEL` for the expensive master-prompt run (gate enforced; use `/analyze force BEL` to override)
 
 ## Cost caps
 
