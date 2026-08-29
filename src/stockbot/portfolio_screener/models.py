@@ -187,6 +187,7 @@ class QuantScreenResult:
     hard_filter: HardFilterResult
     sector: str | None
     industry: str | None
+    data_timestamp: datetime | None = None
 
 
 @dataclass

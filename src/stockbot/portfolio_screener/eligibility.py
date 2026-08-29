@@ -803,6 +803,7 @@ def check_deep_analysis_eligibility(
     if allow_ai:
         payload = {
             "ticker": quant.ticker,
+            "data_timestamp": m.data_timestamp.isoformat() if m.data_timestamp else None,
             "sector": quant.sector,
             "industry": quant.industry,
             "issuer_class": routing.issuer_class,

@@ -16,6 +16,7 @@ Your job is ONLY:
 
 ## Hard rules
 
+- Each stock's payload includes `data_timestamp`, the UTC time its metrics were fetched — treat it as the as-of time for that stock's numbers, not today's date.
 - Do NOT invent missing financial data.
 - Do NOT perform full stock analysis.
 - Do NOT output BUY, WATCH, SKIP, buy zone, fair value, target price, or expected return.

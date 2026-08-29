@@ -112,6 +112,7 @@ def _payload_for_ai(results: list[QuantScreenResult]) -> list[dict[str, Any]]:
         rows.append(
             {
                 "ticker": r.ticker,
+                "data_timestamp": r.data_timestamp.isoformat() if r.data_timestamp else None,
                 "sector": r.sector,
                 "industry": r.industry,
                 "hard_filter_status": r.hard_filter.status,
