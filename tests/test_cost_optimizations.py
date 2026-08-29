@@ -112,6 +112,6 @@ def test_auto_fix_confidence_scale():
     assert not failed.passed
     fixed = try_auto_fix_report(report, failed, brief, stage2_mode="LITE")
     assert fixed is not None
-    new_text, new_result = fixed
+    new_text, _new_result = fixed
     assert "5/10" in new_text
     assert "/7" not in new_text

@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from stockbot.order_book_signals import (
-    extract_order_book_news_claims as extract_order_book_news_claims,
-)
+from stockbot.order_book_signals import extract_order_book_news_claims
+
+__all__ = ["extract_order_book_news_claims"]

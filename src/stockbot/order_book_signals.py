@@ -40,9 +40,9 @@ def _parse_amount_cr(text: str) -> float | None:
     except ValueError:
         return None
     unit = match.group(2).lower()
-    if unit.startswith("lakh") or unit.startswith("lac"):
+    if unit.startswith(("lakh", "lac")):
         return value / 100.0
-    if unit.startswith("bn") or unit.startswith("billion"):
+    if unit.startswith(("bn", "billion")):
         return value * 100.0
     return value
 

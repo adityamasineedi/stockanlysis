@@ -617,9 +617,7 @@ def brief_shows_extreme_cash_conversion(brief: Brief) -> bool:
             return True
 
     # Sharply negative latest OCF against positive latest PAT
-    if ocf[-1] < 0 and pat[-1] > 0 and abs(ocf[-1]) > 0.25 * pat[-1]:
-        return True
-    return False
+    return ocf[-1] < 0 and pat[-1] > 0 and abs(ocf[-1]) > 0.25 * pat[-1]
 
 
 def _claims_buy_or_add_range(verdict: VerdictJSON) -> bool:

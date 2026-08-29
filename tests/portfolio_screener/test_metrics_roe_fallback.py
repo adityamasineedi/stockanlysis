@@ -16,7 +16,6 @@ from stockbot.portfolio_screener.scoring_config import HardFilterThresholds
 
 
 def _financials_without_roe_ratio() -> Financials:
-    years = ["Mar 2024", "Mar 2025", "Mar 2026"]
     pnl = pd.DataFrame(
         {
             "Mar 2024": [1000.0, 120.0, 80.0, 5.0],

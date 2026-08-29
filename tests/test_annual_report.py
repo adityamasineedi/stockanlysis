@@ -191,9 +191,11 @@ def test_build_sections_no_hits_returns_empty_without_error():
 
 def test_build_sections_extracts_business_headings():
     pages = [
-        "Management Discussion and Analysis\n"
-        "Order book stands at Rs. 20,535 crore with execution over 2 years.\n"
-        "Segment - Shipbuilding: revenue growth remained strong.",
+        (
+            "Management Discussion and Analysis\n"
+            "Order book stands at Rs. 20,535 crore with execution over 2 years.\n"
+            "Segment - Shipbuilding: revenue growth remained strong."
+        ),
         "Segment Information\nShipbuilding, Submarines, Refits",
     ]
     sections, _, _ = _build_sections(pages)

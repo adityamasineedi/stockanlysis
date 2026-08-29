@@ -88,17 +88,27 @@ WcGapClassification = Literal[
 ]
 
 WC_RECONCILIATION_CHECKLIST: tuple[str, ...] = (
-    "Verify CFO and PAT use the same period and statement scope "
-    "(consolidated with consolidated, or standalone with standalone).",
-    "Pull CFO, PAT, receivables, inventory, contract assets/liabilities, "
-    "customer advances, and capex for each of the last 3–5 years.",
-    "Explain the year-by-year cash bridge: "
-    "PAT → non-cash items → working-capital changes → CFO.",
-    "Compare receivables, inventory, and contract assets growth with revenue "
-    "and order-book growth.",
+    (
+        "Verify CFO and PAT use the same period and statement scope "
+        "(consolidated with consolidated, or standalone with standalone)."
+    ),
+    (
+        "Pull CFO, PAT, receivables, inventory, contract assets/liabilities, "
+        "customer advances, and capex for each of the last 3–5 years."
+    ),
+    (
+        "Explain the year-by-year cash bridge: "
+        "PAT → non-cash items → working-capital changes → CFO."
+    ),
+    (
+        "Compare receivables, inventory, and contract assets growth with revenue "
+        "and order-book growth."
+    ),
     "Check whether customer advances and milestone payments are rising or falling.",
-    "Check whether contract execution, delivery, or government/customer collection "
-    "timing explains the cash-flow gap.",
+    (
+        "Check whether contract execution, delivery, or government/customer collection "
+        "timing explains the cash-flow gap."
+    ),
     "Confirm that the order book is executable, funded, and not merely announced.",
 )
 
@@ -251,9 +261,7 @@ def _is_bank(sector: str, industry: str) -> bool:
     padded = f" {industry} "
     if " bank" in padded or industry.endswith(" bank"):
         return True
-    if "private sector bank" in industry or "public sector bank" in industry:
-        return True
-    return False
+    return "private sector bank" in industry or "public sector bank" in industry
 
 
 def _is_epc_or_project_business(blob: str) -> bool:
@@ -263,9 +271,7 @@ def _is_epc_or_project_business(blob: str) -> bool:
         return True
     if "construction" in blob and ("infrastructure" in blob or "project" in blob):
         return True
-    if "engineering" in blob and ("construction" in blob or "infrastructure" in blob):
-        return True
-    return False
+    return "engineering" in blob and ("construction" in blob or "infrastructure" in blob)
 
 
 def _is_defence_business(ticker: str, blob: str) -> bool:
@@ -273,9 +279,7 @@ def _is_defence_business(ticker: str, blob: str) -> bool:
         return True
     if "defense" in blob or "defence" in blob:
         return True
-    if "aerospace" in blob and ("defense" in blob or "defence" in blob):
-        return True
-    return False
+    return "aerospace" in blob and ("defense" in blob or "defence" in blob)
 
 
 def classify_issuer(metrics: StockMetrics) -> IssuerClass:
@@ -611,9 +615,7 @@ def fundamentals_fetch_failed(metrics: StockMetrics) -> bool:
         "timeout",
     )
     blob = " ".join(str(v).lower() for v in metrics.missing.values())
-    if any(m in blob for m in markers):
-        return True
-    return False
+    return any(m in blob for m in markers)
 
 
 def quality_override_applies(quant: QuantScreenResult) -> bool:
@@ -640,7 +642,6 @@ def decide_eligibility_route(
     cash = assess_cash_conversion(metrics, issuer)
     hard = quant.hard_filter.status
     score = quant.final_quant_score
-    c = quant.components
     override = quality_override_applies(quant)
 
     def _fin(decision: RoutingDecision) -> RoutingDecision:
