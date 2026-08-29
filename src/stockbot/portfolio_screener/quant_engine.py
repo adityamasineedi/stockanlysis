@@ -127,4 +127,5 @@ def compute_quant_score(
         hard_filter=hard,
         sector=metrics.sector,
         industry=metrics.industry,
+        data_timestamp=metrics.data_timestamp,
     )

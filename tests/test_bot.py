@@ -9,7 +9,6 @@ from datetime import date
 from stockbot.bot import (
     _parse_analyze_command_args,
     _parse_force_analyze_plain_text,
-    _parse_prescan_plain_text,
     esc,
     format_ambiguous_reply,
     format_verdict_reply,

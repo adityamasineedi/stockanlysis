@@ -64,11 +64,18 @@ class StockMetrics:
     operating_profit: float | None = None
     net_income: float | None = None
     net_income_series: list[float | None] = field(default_factory=list)
+    # Same as net_income_series but with any trailing "TTM" column dropped, so it
+    # aligns fiscal-year-for-fiscal-year with ocf_series_fy_only. Screener's P&L
+    # table often carries a TTM column that its cash-flow table does not; summing
+    # the raw "last N" tails of net_income_series/ocf_series can silently pair
+    # different periods. Used only for multi-year cumulative ratios.
+    net_income_series_fy_only: list[float | None] = field(default_factory=list)
     eps: float | None = None
     eps_series: list[float | None] = field(default_factory=list)
 
     operating_cash_flow: float | None = None
     ocf_series: list[float | None] = field(default_factory=list)
+    ocf_series_fy_only: list[float | None] = field(default_factory=list)
     free_cash_flow: float | None = None
     fcf_series: list[float | None] = field(default_factory=list)
 
@@ -187,6 +194,7 @@ class QuantScreenResult:
     hard_filter: HardFilterResult
     sector: str | None
     industry: str | None
+    data_timestamp: datetime | None = None
 
 
 @dataclass

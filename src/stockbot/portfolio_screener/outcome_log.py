@@ -467,9 +467,11 @@ def format_prescan_telegram_chunks(
     """HTML message chunks for Telegram (≤4096 chars each)."""
     if not rows:
         return [
-            "<b>📋 Prescan list</b>\n\n"
-            f"No names match <i>{html_escape(title)}</i>.\n"
-            "Run <code>/prescan SYMBOL</code> first — the list builds from prescan history."
+            (
+                "<b>📋 Prescan list</b>\n\n"
+                f"No names match <i>{html_escape(title)}</i>.\n"
+                "Run <code>/prescan SYMBOL</code> first — the list builds from prescan history."
+            )
         ]
 
     header = (

@@ -150,7 +150,7 @@ def merge_expected_return_into_verdict_json(verdict_json: dict) -> dict:
             {k: v for k, v in verdict_json.items() if k in _VERDICT_KEYS}
         )
         valuation = compute_valuation(ValuationInputs.model_validate(raw_inputs))
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort enrichment, fall back to input unchanged
         return verdict_json
 
     computed = compute_expected_return(verdict, valuation, verdict.expected_return)

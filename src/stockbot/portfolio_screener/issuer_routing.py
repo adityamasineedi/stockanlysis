@@ -22,6 +22,7 @@ IssuerClass = Literal[
     "FINTECH_PLATFORM",
     "UTILITY",
     "DEFENCE_EPC_PROJECT",
+    "EPC_PROJECT_BUSINESS",
     "AUTO_OEM",
     "CONGLOMERATE",
     "LOSS_MAKING_GROWTH",
@@ -64,6 +65,7 @@ EligibilityRoute = Literal[
     "BANK_SCORECARD",
     "UTILITY_DEEP_REVIEW",
     "DEFENCE_WC_REVIEW",
+    "EPC_WC_REVIEW",
     "CONGLOMERATE_SOTP_REVIEW",
     "EXCEPTION_DEEP_REVIEW",
     "LOSS_MAKING_GROWTH_FRAMEWORK",
@@ -86,17 +88,27 @@ WcGapClassification = Literal[
 ]
 
 WC_RECONCILIATION_CHECKLIST: tuple[str, ...] = (
-    "Verify CFO and PAT use the same period and statement scope "
-    "(consolidated with consolidated, or standalone with standalone).",
-    "Pull CFO, PAT, receivables, inventory, contract assets/liabilities, "
-    "customer advances, and capex for each of the last 3–5 years.",
-    "Explain the year-by-year cash bridge: "
-    "PAT → non-cash items → working-capital changes → CFO.",
-    "Compare receivables, inventory, and contract assets growth with revenue "
-    "and order-book growth.",
+    (
+        "Verify CFO and PAT use the same period and statement scope "
+        "(consolidated with consolidated, or standalone with standalone)."
+    ),
+    (
+        "Pull CFO, PAT, receivables, inventory, contract assets/liabilities, "
+        "customer advances, and capex for each of the last 3–5 years."
+    ),
+    (
+        "Explain the year-by-year cash bridge: "
+        "PAT → non-cash items → working-capital changes → CFO."
+    ),
+    (
+        "Compare receivables, inventory, and contract assets growth with revenue "
+        "and order-book growth."
+    ),
     "Check whether customer advances and milestone payments are rising or falling.",
-    "Check whether contract execution, delivery, or government/customer collection "
-    "timing explains the cash-flow gap.",
+    (
+        "Check whether contract execution, delivery, or government/customer collection "
+        "timing explains the cash-flow gap."
+    ),
     "Confirm that the order book is executable, funded, and not merely announced.",
 )
 
@@ -141,12 +153,24 @@ _AUTO_OEM_TICKERS = frozenset(
     }
 )
 _AUTO_OEM_KEYS = ("automobile", "auto manufacturer", "commercial vehicle", "motor vehicle")
-_UTILITY_KEYS = ("utilities", "utility", "power", "electric", "gas utilities")
+# Word-boundary phrases, not bare substrings — "electric" alone matches "Electrical
+# Equipment" manufacturers (ATLANTAELE) that aren't regulated utilities at all.
+_UTILITY_KEYS = (
+    "utilities",
+    "utility",
+    "electric utilit",
+    "gas utilit",
+    "power utilit",
+    "power generation",
+    "power distribution",
+    "power transmission",
+)
 _DEFENCE_TICKERS = frozenset({"BEL", "HAL", "BHEL", "MAZDOCK", "COCHINSHIP", "GRSE"})
 # Known yfinance sector mislabels — checked before keyword routing.
 _ISSUER_TICKER_OVERRIDES: dict[str, IssuerClass] = {
     "VGUARD": "NON_FINANCIAL",
     "SERVOTECH": "NON_FINANCIAL",
+    "ATLANTAELE": "NON_FINANCIAL",
 }
 _EPC_STRICT_KEYS = (
     " epc",
@@ -191,6 +215,10 @@ _ISSUER_CASHFLOW_CONTEXT: dict[IssuerClass, str] = {
     "DEFENCE_EPC_PROJECT": (
         "defence/project business with possible milestone billing and working-capital timing"
     ),
+    "EPC_PROJECT_BUSINESS": (
+        "EPC/engineering project business with possible milestone billing and "
+        "working-capital timing"
+    ),
     "UTILITY": (
         "capital-intensive utility with regulated/project cash-flow cycles"
     ),
@@ -233,9 +261,7 @@ def _is_bank(sector: str, industry: str) -> bool:
     padded = f" {industry} "
     if " bank" in padded or industry.endswith(" bank"):
         return True
-    if "private sector bank" in industry or "public sector bank" in industry:
-        return True
-    return False
+    return "private sector bank" in industry or "public sector bank" in industry
 
 
 def _is_epc_or_project_business(blob: str) -> bool:
@@ -245,9 +271,7 @@ def _is_epc_or_project_business(blob: str) -> bool:
         return True
     if "construction" in blob and ("infrastructure" in blob or "project" in blob):
         return True
-    if "engineering" in blob and ("construction" in blob or "infrastructure" in blob):
-        return True
-    return False
+    return "engineering" in blob and ("construction" in blob or "infrastructure" in blob)
 
 
 def _is_defence_business(ticker: str, blob: str) -> bool:
@@ -255,9 +279,7 @@ def _is_defence_business(ticker: str, blob: str) -> bool:
         return True
     if "defense" in blob or "defence" in blob:
         return True
-    if "aerospace" in blob and ("defense" in blob or "defence" in blob):
-        return True
-    return False
+    return "aerospace" in blob and ("defense" in blob or "defence" in blob)
 
 
 def classify_issuer(metrics: StockMetrics) -> IssuerClass:
@@ -291,7 +313,7 @@ def classify_issuer(metrics: StockMetrics) -> IssuerClass:
     if _is_defence_business(ticker, blob):
         return "DEFENCE_EPC_PROJECT"
     if _is_epc_or_project_business(blob):
-        return "DEFENCE_EPC_PROJECT"
+        return "EPC_PROJECT_BUSINESS"
 
     if sector in {"", "unknown"} and industry in {"", "unknown"}:
         return "OTHER"
@@ -318,8 +340,13 @@ def _aligned_ocf_pat_panel(
     Cumulative 3y = ΣOCF / ΣPAT over the same N fiscal years (not an average of
     annual ratios). Requires matching series lengths from the end.
     """
-    ocf_raw = list(metrics.ocf_series or [])
-    pat_raw = list(metrics.net_income_series or [])
+    # Prefer the TTM-stripped, fiscal-year-aligned series when available — Screener's
+    # P&L table often carries a trailing TTM column that its cash-flow table does
+    # not, which would otherwise misalign a positional "last 3" pairing between
+    # the two statements. Falls back to the raw series for hand-built StockMetrics
+    # (e.g. tests) that only set ocf_series/net_income_series directly.
+    ocf_raw = list(metrics.ocf_series_fy_only or metrics.ocf_series or [])
+    pat_raw = list(metrics.net_income_series_fy_only or metrics.net_income_series or [])
     if not ocf_raw or not pat_raw:
         return [], None, None, None, 0
 
@@ -345,9 +372,7 @@ def _aligned_ocf_pat_panel(
     sum_ocf = sum(o for o, _ in pairs)
     sum_pat = sum(p for _, p in pairs)
     years_used = len(pairs)
-    if sum_pat > 0:
-        cum = sum_ocf / sum_pat
-    elif sum_pat < 0 and sum_ocf < 0:
+    if sum_pat > 0 or sum_pat < 0 and sum_ocf < 0:
         cum = sum_ocf / sum_pat
     else:
         cum = None
@@ -443,7 +468,7 @@ def assess_cash_conversion(
             ),
         )
 
-    wc_sensitive = issuer_class in {"DEFENCE_EPC_PROJECT", "UTILITY"}
+    wc_sensitive = issuer_class in {"DEFENCE_EPC_PROJECT", "EPC_PROJECT_BUSINESS", "UTILITY"}
     ctx = _ISSUER_CASHFLOW_CONTEXT.get(issuer_class, "operating business")
 
     def _pack(
@@ -561,7 +586,7 @@ def decide_next_research_action(
         return "HOLDING_MONITOR" if eligibility == "HOLDING_MONITOR_ONLY" else "NO_RESEARCH"
     if issuer in FINANCIAL_SCORECARD_ISSUERS:
         return "SECTOR_SCORECARD_FIRST"
-    if issuer == "DEFENCE_EPC_PROJECT":
+    if issuer in {"DEFENCE_EPC_PROJECT", "EPC_PROJECT_BUSINESS"}:
         if cash.status == "ESCALATED_WATCH":
             return "CHEAP_WC_RECONCILIATION_FIRST"
         if (
@@ -590,9 +615,7 @@ def fundamentals_fetch_failed(metrics: StockMetrics) -> bool:
         "timeout",
     )
     blob = " ".join(str(v).lower() for v in metrics.missing.values())
-    if any(m in blob for m in markers):
-        return True
-    return False
+    return any(m in blob for m in markers)
 
 
 def quality_override_applies(quant: QuantScreenResult) -> bool:
@@ -619,7 +642,6 @@ def decide_eligibility_route(
     cash = assess_cash_conversion(metrics, issuer)
     hard = quant.hard_filter.status
     score = quant.final_quant_score
-    c = quant.components
     override = quality_override_applies(quant)
 
     def _fin(decision: RoutingDecision) -> RoutingDecision:
@@ -750,16 +772,23 @@ def decide_eligibility_route(
                 quality_override=False,
             ))
 
-    if issuer == "DEFENCE_EPC_PROJECT" and cash.status in {"WATCH", "ESCALATED_WATCH"} and override:
+    if (
+        issuer in {"DEFENCE_EPC_PROJECT", "EPC_PROJECT_BUSINESS"}
+        and cash.status in {"WATCH", "ESCALATED_WATCH"}
+        and override
+    ):
         cum = (
             f"{cash.ocf_pat_3y:.2f}"
             if cash.ocf_pat_3y is not None
             else "n/a"
         )
+        wc_route: EligibilityRoute = (
+            "DEFENCE_WC_REVIEW" if issuer == "DEFENCE_EPC_PROJECT" else "EPC_WC_REVIEW"
+        )
         return _fin(RoutingDecision(
             issuer_class=issuer,
             cash_conversion=cash,
-            route="DEFENCE_WC_REVIEW",
+            route=wc_route,
             eligibility="SECTOR_SPECIFIC_REVIEW",
             suitable_for_deep_analysis=True,
             key_reason=(

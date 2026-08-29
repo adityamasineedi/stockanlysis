@@ -16,8 +16,14 @@ from datetime import UTC, datetime, timedelta
 from html import escape as html_escape
 from typing import Literal
 
-from stockbot.config import DATA_DIR, DB_PATH, LOGS_DIR, settings
-from stockbot.costs import _connect as connect_costs_db, month_to_date_spend
+from stockbot.config import (  # noqa: F401 - DB_PATH re-exported for tests to monkeypatch
+    DATA_DIR,
+    DB_PATH,
+    LOGS_DIR,
+    settings,
+)
+from stockbot.costs import _connect as connect_costs_db
+from stockbot.costs import month_to_date_spend
 from stockbot.storage import _connect as connect_analyses_db
 
 Severity = Literal["critical", "warning", "info"]
@@ -60,9 +66,11 @@ class HealthAuditReport:
         lines = [
             f"# stockbot health audit ({self.generated_at.date().isoformat()})",
             "",
-            f"Window: last **{self.days}** days · "
-            f"**{self.critical_count}** critical · **{self.warning_count}** warnings · "
-            f"**{len(self.findings)}** total findings",
+            (
+                f"Window: last **{self.days}** days · "
+                f"**{self.critical_count}** critical · **{self.warning_count}** warnings · "
+                f"**{len(self.findings)}** total findings"
+            ),
             "",
         ]
         if self.summary:
@@ -95,8 +103,10 @@ class HealthAuditReport:
         """Compact HTML summary for Telegram (≤4096 chars)."""
         lines = [
             f"<b>Health audit</b> ({self.generated_at.date().isoformat()})",
-            f"Last {self.days} days · "
-            f"{self.critical_count} critical · {self.warning_count} warnings",
+            (
+                f"Last {self.days} days · "
+                f"{self.critical_count} critical · {self.warning_count} warnings"
+            ),
             "",
         ]
         mtd = self.summary.get("mtd_spend_inr")
@@ -150,7 +160,7 @@ def _since_iso(days: int) -> str:
 
 
 def _parse_ts(raw: str) -> datetime:
-    ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    ts = datetime.fromisoformat(raw)
     if ts.tzinfo is None:
         return ts.replace(tzinfo=UTC)
     return ts
@@ -469,11 +479,11 @@ def _audit_logs(findings: list[Finding], days: int) -> None:
         return
     since = datetime.now(UTC) - timedelta(days=days)
     patterns = {
-        "analysis_cost_exceeded": re.compile(r"analysis_cost_exceeded|AnalysisCostExceeded", re.I),
-        "runtime_exceeded": re.compile(r"analysis_runtime_exceeded|AnalysisRuntimeExceeded", re.I),
-        "truncated": re.compile(r"truncated|TruncatedResponseError", re.I),
-        "validation_failed": re.compile(r"validation failed", re.I),
-        "render_failed": re.compile(r"render_failed|PlaceholderError", re.I),
+        "analysis_cost_exceeded": re.compile(r"analysis_cost_exceeded|AnalysisCostExceeded", re.IGNORECASE),
+        "runtime_exceeded": re.compile(r"analysis_runtime_exceeded|AnalysisRuntimeExceeded", re.IGNORECASE),
+        "truncated": re.compile(r"truncated|TruncatedResponseError", re.IGNORECASE),
+        "validation_failed": re.compile(r"validation failed", re.IGNORECASE),
+        "render_failed": re.compile(r"render_failed|PlaceholderError", re.IGNORECASE),
     }
     counts = {key: 0 for key in patterns}
     try:

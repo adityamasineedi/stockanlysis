@@ -36,11 +36,13 @@ until the thesis is reviewed.
 ## Input you receive (exact schema)
 
 The user message is JSON with this shape. Treat missing / null fields as unavailable —
-never invent them.
+never invent them. `data_timestamp` is the UTC time these metrics were fetched — treat
+it as the as-of time for every number in the payload, not today's date.
 
 ```json
 {
   "ticker": "RELIANCE",
+  "data_timestamp": "2026-08-29T09:15:00+00:00",
   "sector": "Energy",
   "industry": "Oil & Gas Refining & Marketing",
   "market_cap_cr": 150000.0,

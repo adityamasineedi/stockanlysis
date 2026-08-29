@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from stockbot.portfolio_screener.issuer_routing import (
-    FINANCIAL_SCORECARD_ISSUERS,
     assess_cash_conversion,
     classify_issuer,
     decide_eligibility_route,
     fundamentals_fetch_failed,
-    is_loss_making,
     quality_override_applies,
 )
 from stockbot.portfolio_screener.models import StockMetrics
@@ -96,6 +94,29 @@ def test_classify_prajind_non_financial_not_epc():
         ticker="PRAJIND",
         sector="Industrials",
         industry="Industrial Machinery & Equipment",
+    )
+    assert classify_issuer(m) == "NON_FINANCIAL"
+
+
+def test_classify_prajind_epc_project_not_defence():
+    """Praj Industries (bioenergy/ethanol EPC contractor) — real yfinance industry
+    triggers the generic engineering+construction fallback, but must not be
+    labeled as a defence company."""
+    m = _base_nonfin(
+        ticker="PRAJIND",
+        sector="Industrials",
+        industry="Engineering & Construction",
+    )
+    assert classify_issuer(m) == "EPC_PROJECT_BUSINESS"
+
+
+def test_classify_atlantaele_not_utility():
+    """Atlanta Electricals (power-transformer manufacturer) — 'Electrical
+    Equipment' industry must not match the UTILITY keyword on bare 'electric'."""
+    m = _base_nonfin(
+        ticker="ATLANTAELE",
+        sector="Industrials",
+        industry="Electrical Equipment & Parts",
     )
     assert classify_issuer(m) == "NON_FINANCIAL"
 
@@ -319,6 +340,26 @@ def test_bel_quality_override_review_exception():
     assert decision.suitable_for_deep_analysis is True
     assert decision.quality_override is True
     assert decision.route == "DEFENCE_WC_REVIEW"
+
+
+def test_crisil_scorecard_label_not_bank():
+    """CRISIL (rating agency) shares the BANK_SCORECARD route with actual banks,
+    but its displayed label must reflect its true issuer class, not 'Bank'."""
+    from stockbot.portfolio_screener.prescan_display import (
+        SCORECARD_ROUTE_LABELS_BY_ISSUER,
+    )
+
+    m = _base_nonfin(
+        ticker="CRISIL",
+        sector="Financial Services",
+        industry="Financial Data & Stock Exchanges",
+    )
+    quant = compute_quant_score(m, ScreenerRunConfig(skip_ai=True, dry_run=True))
+    decision = decide_eligibility_route(m, quant)
+    assert decision.issuer_class == "RATING_ANALYTICS"
+    assert decision.route == "BANK_SCORECARD"
+    label = SCORECARD_ROUTE_LABELS_BY_ISSUER[decision.issuer_class]
+    assert "bank" not in label.lower()
 
 
 def test_icici_model_not_applicable():

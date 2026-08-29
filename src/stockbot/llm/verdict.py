@@ -54,20 +54,20 @@ from stockbot.brief_enrichment import (
     format_news_summary_json,
     format_prescan_summary_json,
 )
-from stockbot.fetch.annual_report import format_ar_business_summary_json
 from stockbot.config import MASTER_PROMPT_PATH, PROMPTS_DIR, settings
+from stockbot.fetch.annual_report import format_ar_business_summary_json
 
 CONSTITUTION_PATH = PROMPTS_DIR / "quality-first-portfolio-constitution-v1.md"
 STAGE2_LITE_PROMPT_PATH = PROMPTS_DIR / "stage2-lite-v1.md"
 from stockbot.analysis_routing import Stage2Mode
 from stockbot.llm.client import call_anthropic_and_log
+from stockbot.llm.extract import ExtractionResult
+from stockbot.models import Brief
 from stockbot.order_book_signals import (
     collect_order_book_signals,
     format_order_book_signals_for_stage2,
     order_book_wc_billing_hint,
 )
-from stockbot.llm.extract import ExtractionResult
-from stockbot.models import Brief
 
 MODEL = "claude-sonnet-5"
 LITE_MODEL = "claude-haiku-4-5-20251001"
@@ -127,10 +127,16 @@ news for ownership/pledge. Note conflicts in §6.
 
 5. Use <metadata> sector/industry and <prescan_summary> issuer_class to choose \
 the sector-appropriate scorecard (bank, defence/EPC, utility, loss-making growth). \
-Use ttm_pe in metadata as a descriptive trailing multiple only — do not invent \
-forward P/E or sector median multiples. If metadata.street_consensus is present, \
-use it only as an external tension check (price vs mean target) — never as the \
-primary thesis or fair-value anchor.
+Report P/E as metadata.pe_price_eps — it is computed as this company's own price \
+÷ TTM EPS from the same FINANCIALS table you cite, so it always matches the price \
+and EPS you state elsewhere in the report. metadata.ttm_pe is Yahoo's separately \
+sourced trailing P/E snapshot and can lag or use a different EPS base; mention it \
+only as a secondary cross-check if it differs materially from pe_price_eps, never \
+as the primary reported multiple. If pe_price_eps is null (EPS unavailable or \
+non-positive), state P/E as MISSING rather than inventing one or silently \
+substituting ttm_pe. Do not invent forward P/E or sector median multiples. If \
+metadata.street_consensus is present, use it only as an external tension check \
+(price vs mean target) — never as the primary thesis or fair-value anchor.
 
 6. You may use <prescan_summary> as a starting point for routing labels \
 (e.g. DEFENCE_WC_REVIEW) and multi-year cash-conversion context, but verify \

@@ -4,8 +4,20 @@ from datetime import UTC, date, datetime
 
 import pandas as pd
 
-from stockbot.llm.extract import STAGE1_SECTION_HEADINGS, _select_stage1_sections, build_user_message
-from stockbot.models import Brief, NewsItems, PriceData, RedFlag, ReportText, Technicals, TickerInfo
+from stockbot.llm.extract import (
+    STAGE1_SECTION_HEADINGS,
+    _select_stage1_sections,
+    build_user_message,
+)
+from stockbot.models import (
+    Brief,
+    NewsItems,
+    PriceData,
+    RedFlag,
+    ReportText,
+    Technicals,
+    TickerInfo,
+)
 from stockbot.validate import try_auto_fix_report, validate_report
 
 NOW = datetime.now(UTC)
@@ -100,6 +112,6 @@ def test_auto_fix_confidence_scale():
     assert not failed.passed
     fixed = try_auto_fix_report(report, failed, brief, stage2_mode="LITE")
     assert fixed is not None
-    new_text, new_result = fixed
+    new_text, _new_result = fixed
     assert "5/10" in new_text
     assert "/7" not in new_text
