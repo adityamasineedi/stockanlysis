@@ -86,6 +86,7 @@ ISSUER_ICONS: dict[str, str] = {
     "FINTECH_PLATFORM": "💳",
     "UTILITY": "⚡",
     "DEFENCE_EPC_PROJECT": "🪖",
+    "EPC_PROJECT_BUSINESS": "🏗️",
     "AUTO_OEM": "🚗",
     "CONGLOMERATE": "🏢",
     "LOSS_MAKING_GROWTH": "🌱",
@@ -102,6 +103,7 @@ ISSUER_LABELS: dict[str, str] = {
     "FINTECH_PLATFORM": "Fintech platform",
     "UTILITY": "Utility (power, gas, etc.)",
     "DEFENCE_EPC_PROJECT": "Defence / project EPC company",
+    "EPC_PROJECT_BUSINESS": "Engineering / EPC project company (non-defence)",
     "AUTO_OEM": "Auto manufacturer",
     "CONGLOMERATE": "Conglomerate",
     "LOSS_MAKING_GROWTH": "Loss-making growth company",
@@ -117,10 +119,23 @@ ROUTE_LABELS: dict[str, str] = {
     "UTILITY_DEEP_REVIEW": "Utility-sector deep review",
     "CONGLOMERATE_SOTP_REVIEW": "Conglomerate sum-of-parts review",
     "DEFENCE_WC_REVIEW": "Defence EPC — working-capital review",
+    "EPC_WC_REVIEW": "EPC project — working-capital review",
     "EXCEPTION_DEEP_REVIEW": "Exception review (quality override)",
     "HOLDING_MONITOR": "Monitor only",
     "REJECT": "Rejected by hard filters",
     "DATA_RETRY": "Retry when data is available",
+}
+
+# "BANK_SCORECARD" is one shared route for every FINANCIAL_SCORECARD_ISSUERS member
+# (see issuer_routing.py) — this refines the displayed label by the stock's actual
+# issuer class so a rating agency or exchange isn't shown "Bank scorecard".
+SCORECARD_ROUTE_LABELS_BY_ISSUER: dict[str, str] = {
+    "BANK": "Bank scorecard (not generic ratios)",
+    "NBFC_HFC": "NBFC scorecard (not generic ratios)",
+    "INSURER": "Insurer scorecard (not generic ratios)",
+    "RATING_ANALYTICS": "Rating/analytics scorecard (not generic ratios)",
+    "MARKET_INFRA": "Market-infrastructure scorecard (not generic ratios)",
+    "FINTECH_PLATFORM": "Fintech/platform scorecard (not generic ratios)",
 }
 
 NEXT_ACTION_LABELS: dict[str, str] = {
@@ -141,11 +156,11 @@ def format_quality_growth_strength(
 ) -> str | None:
     parts: list[str] = []
     if quality is not None:
-        parts.append(f"Quality {quality:.0f}")
+        parts.append(f"Quality {quality:.1f}")
     if growth is not None:
-        parts.append(f"Growth {growth:.0f}")
+        parts.append(f"Growth {growth:.1f}")
     if strength is not None:
-        parts.append(f"Strength {strength:.0f}")
+        parts.append(f"Strength {strength:.1f}")
     if not parts:
         return None
     return " · ".join(parts)

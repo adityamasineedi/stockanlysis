@@ -169,7 +169,11 @@ def apply_hard_filters(
         )
 
     # Persistent OCF<<PAT — skip financials and WC-heavy (handled as WATCH in routing)
-    if not is_financial and issuer not in {"DEFENCE_EPC_PROJECT", "UTILITY"}:
+    if not is_financial and issuer not in {
+        "DEFENCE_EPC_PROJECT",
+        "EPC_PROJECT_BUSINESS",
+        "UTILITY",
+    }:
         ocf = series_present(metrics.ocf_series)
         if len(ocf) >= 3 and len(pat) >= 3:
             recent_pat = pat[-3:]

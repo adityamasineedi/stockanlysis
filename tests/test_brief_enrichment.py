@@ -105,6 +105,72 @@ def test_format_metadata_json_includes_sector():
     assert '"street_consensus"' in text
 
 
+def test_pe_computed_from_report_price_and_eps_not_yahoo_snapshot(monkeypatch):
+    """metadata.pe_price_eps must equal this company's own price / TTM EPS from
+    FINANCIALS, independent of whatever Yahoo's trailingPE snapshot says —
+    guarding against the two drifting apart in the rendered report."""
+    import pandas as pd
+
+    from stockbot import brief_enrichment
+    from stockbot.brief_enrichment import build_brief_metadata
+    from stockbot.models import Financials, PriceData, Technicals
+
+    monkeypatch.setattr(
+        brief_enrichment,
+        "fetch_market_metadata",
+        lambda symbol: {"sector": "Consumer Cyclical", "trailing_pe": 20.59},
+    )
+
+    ticker = TickerInfo(symbol="HEROMOTOCO", exchange="NSE", company_name="Hero MotoCorp", isin=None)
+    price = PriceData(
+        current_price_abs=5550.0,
+        price_date=date(2026, 8, 28),
+        ohlcv_adjusted=pd.DataFrame(),
+        ohlcv_unadjusted=pd.DataFrame(),
+        week52_high_abs=6246.0,
+        week52_low_abs=3971.75,
+        source="yfinance",
+        fetched_at=datetime.now(UTC),
+    )
+    technicals = Technicals(
+        sma50=None,
+        sma200=None,
+        rsi14=None,
+        support_abs=[],
+        resistance_abs=[],
+        as_of_date=date(2026, 8, 28),
+        source="test",
+        fetched_at=datetime.now(UTC),
+    )
+    pnl = pd.DataFrame(
+        {"Mar 2025": [260.0], "Mar 2026": [265.0], "TTM": [272.33]},
+        index=["EPS in Rs"],
+    )
+    fin = Financials(
+        pnl=pnl,
+        balance_sheet=pd.DataFrame(),
+        cash_flow=pd.DataFrame(),
+        ratios=pd.DataFrame(),
+        quarterly=pd.DataFrame(),
+        basis="consolidated",
+        years_available=3,
+        source="test",
+        fetched_at=datetime.now(UTC),
+    )
+
+    metadata = build_brief_metadata(ticker, price, technicals, fin)
+
+    assert metadata.ttm_eps == 272.33
+    assert metadata.pe_price_eps == round(5550.0 / 272.33, 2)
+    # Yahoo's own (possibly stale) snapshot is kept, but only as a secondary field.
+    assert metadata.ttm_pe == 20.59
+    assert metadata.pe_price_eps != metadata.ttm_pe
+
+    text = format_metadata_json(metadata)
+    assert '"pe_price_eps"' in text
+    assert '"ttm_eps": 272.33' in text
+
+
 def test_build_street_consensus_from_yfinance_metadata(monkeypatch):
     from datetime import UTC, datetime
 

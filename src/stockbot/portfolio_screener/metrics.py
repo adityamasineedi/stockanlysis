@@ -84,6 +84,32 @@ def _series_values(row: pd.Series | None) -> list[float | None]:
     return out
 
 
+def _series_values_excluding_ttm(row: pd.Series | None) -> list[float | None]:
+    """Like _series_values but drops a trailing "TTM" column by label.
+
+    Screener's P&L table often carries a TTM column that its cash-flow table
+    does not. Positionally pairing "last N" tails of two independently-parsed
+    series can then silently sum different fiscal periods. Use this only where
+    a same-fiscal-year alignment across statements is required (e.g. cumulative
+    multi-year OCF/PAT ratios) — not for "latest value" fields, where TTM is the
+    most current and desired figure.
+    """
+    if row is None:
+        return []
+    out: list[float | None] = []
+    for col, v in row.items():
+        if str(col).strip().upper() == "TTM":
+            continue
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            out.append(None)
+        else:
+            try:
+                out.append(float(v))
+            except (TypeError, ValueError):
+                out.append(None)
+    return out
+
+
 # yfinance sector/industry mislabels that break issuer routing (e.g. V-Guard → Utilities).
 _TICKER_SECTOR_OVERRIDES: dict[str, tuple[str, str]] = {
     "VGUARD": ("Consumer Cyclical", "Consumer Electronics"),
@@ -451,6 +477,7 @@ def extract_metrics(
 
     pat_row = _row(pnl, _PAT_ALIASES)
     m.net_income_series = _series_values(pat_row)
+    m.net_income_series_fy_only = _series_values_excluding_ttm(pat_row)
     m.net_income = latest(m.net_income_series)
     if m.net_income is None:
         _mark_missing(m, "net_income", "Net Profit row missing")
@@ -479,6 +506,7 @@ def extract_metrics(
 
     ocf_row = _row(cf, _OCF_ALIASES)
     m.ocf_series = _series_values(ocf_row)
+    m.ocf_series_fy_only = _series_values_excluding_ttm(ocf_row)
     m.operating_cash_flow = latest(m.ocf_series)
     if m.operating_cash_flow is None:
         _mark_missing(m, "operating_cash_flow", "Cash from Operating Activity missing")

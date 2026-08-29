@@ -10,9 +10,12 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
+import pandas as pd
+
 from stockbot.models import (
     Brief,
     BriefMetadata,
+    Financials,
     NewsItems,
     NewsSummaryItem,
     PrescanSummary,
@@ -142,12 +145,54 @@ def build_news_summary(news: NewsItems | None) -> tuple[NewsSummaryItem, ...]:
     return tuple(summary)
 
 
+_EPS_ROW_ALIASES = ("EPS in Rs", "EPS", "Earning Per Share")
+
+
+def _ttm_eps_from_financials(financials: Financials | None) -> float | None:
+    """TTM (or latest available) EPS read from the same FINANCIALS table the
+    report itself cites, so a computed P/E always matches the report's own
+    stated price/EPS — unlike Yahoo's separately-sourced trailingPE, which is
+    computed from Yahoo's own snapshot and can drift from it."""
+    if financials is None:
+        return None
+    pnl = financials.pnl
+    row = None
+    for name in _EPS_ROW_ALIASES:
+        if name in pnl.index:
+            row = pnl.loc[name]
+            break
+    if row is None:
+        return None
+    for col in row.index:
+        if str(col).strip().upper() == "TTM":
+            raw = row[col]
+            if raw is not None and not pd.isna(raw):
+                try:
+                    return float(raw)
+                except (TypeError, ValueError):
+                    pass
+    # No usable TTM column — fall back to the latest available annual column.
+    for col in reversed(list(row.index)):
+        raw = row[col]
+        if raw is not None and not pd.isna(raw):
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
 def build_brief_metadata(
     ticker: TickerInfo,
     price: PriceData,
     technicals: Technicals,
+    financials: Financials | None = None,
 ) -> BriefMetadata:
     meta = fetch_market_metadata(ticker.symbol)
+    ttm_eps = _ttm_eps_from_financials(financials)
+    pe_price_eps = (
+        round(price.current_price_abs / ttm_eps, 2) if ttm_eps and ttm_eps > 0 else None
+    )
     return BriefMetadata(
         ticker=ticker.symbol,
         company_name=ticker.company_name,
@@ -157,6 +202,8 @@ def build_brief_metadata(
         if meta.get("market_cap_cr") is not None
         else None,
         ttm_pe=float(meta["trailing_pe"]) if meta.get("trailing_pe") is not None else None,
+        ttm_eps=ttm_eps,
+        pe_price_eps=pe_price_eps,
         ttm_pb=float(meta["pb"]) if meta.get("pb") is not None else None,
         price=round(price.current_price_abs, 2),
         price_date=price.price_date.isoformat(),
@@ -251,7 +298,7 @@ def build_prescan_summary(brief: Brief) -> PrescanSummary | None:
 
 
 def enrich_brief(brief: Brief) -> Brief:
-    metadata = build_brief_metadata(brief.ticker, brief.price, brief.technicals)
+    metadata = build_brief_metadata(brief.ticker, brief.price, brief.technicals, brief.financials)
     prescan_summary = build_prescan_summary(brief)
     news_summary = build_news_summary(brief.news)
     street_consensus = build_street_consensus(brief.ticker, brief.price)
@@ -286,6 +333,8 @@ def format_metadata_json(
         "sector": metadata.sector,
         "industry": metadata.industry,
         "market_cap_cr": metadata.market_cap_cr,
+        "pe_price_eps": metadata.pe_price_eps,
+        "ttm_eps": metadata.ttm_eps,
         "ttm_pe": metadata.ttm_pe,
         "ttm_pb": metadata.ttm_pb,
         "price_stats": {

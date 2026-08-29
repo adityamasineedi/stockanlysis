@@ -125,13 +125,15 @@ class BriefMetadata:
     sector: str | None
     industry: str | None
     market_cap_cr: float | None
-    ttm_pe: float | None
+    ttm_pe: float | None  # Yahoo's own trailingPE snapshot — secondary reference only
     ttm_pb: float | None
     price: float
     price_date: str
     range_52w_low: float
     range_52w_high: float
     rsi_14: float | None
+    ttm_eps: float | None = None  # TTM EPS read from the same FINANCIALS table as the report
+    pe_price_eps: float | None = None  # price / ttm_eps — the multiple the report must quote
 
 
 @dataclass(frozen=True)

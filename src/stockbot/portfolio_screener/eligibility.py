@@ -51,6 +51,7 @@ from stockbot.portfolio_screener.prescan_display import (
     ISSUER_LABELS,
     NEXT_ACTION_LABELS,
     ROUTE_LABELS,
+    SCORECARD_ROUTE_LABELS_BY_ISSUER,
     VERDICT_ICONS,
     VERDICT_SUMMARY,
     format_quality_growth_strength,
@@ -197,7 +198,7 @@ class EligibilityResult:
         if (
             self.next_research_action == "FULL_DEEP_ANALYSIS"
             and self.cash_conversion_status == "WATCH"
-            and self.issuer_class == "DEFENCE_EPC_PROJECT"
+            and self.issuer_class in {"DEFENCE_EPC_PROJECT", "EPC_PROJECT_BUSINESS"}
         ):
             meaning = (
                 "Strong quality signals, but reported cash conversion needs explanation "
@@ -205,8 +206,28 @@ class EligibilityResult:
             )
             do_next = "Run /analyze — buy/add ranges stay blocked until cash flow is reconciled"
         elif self.next_research_action == "SECTOR_SCORECARD_FIRST":
-            meaning = "Bank, NBFC, or insurer — use a sector scorecard, not generic cash ratios."
-            do_next = "Run /analyze with the bank / financial scorecard lens"
+            scorecard_meaning = {
+                "BANK": "Bank — use a bank scorecard, not generic cash ratios.",
+                "NBFC_HFC": "NBFC / housing finance — use a sector scorecard, not generic cash ratios.",
+                "INSURER": "Insurer — use a sector scorecard, not generic cash ratios.",
+                "RATING_ANALYTICS": (
+                    "Rating / analytics firm — use a fee growth / margin / ROE lens, "
+                    "not bank or generic cash ratios."
+                ),
+                "MARKET_INFRA": (
+                    "Market infrastructure (exchange, clearing) — use a volumes / "
+                    "pricing / ROE lens, not bank or generic cash ratios."
+                ),
+                "FINTECH_PLATFORM": (
+                    "Fintech platform — use a TPV / unit-economics / burn lens, "
+                    "not bank or generic cash ratios."
+                ),
+            }
+            meaning = scorecard_meaning.get(
+                self.issuer_class or "",
+                "Bank, NBFC, or insurer — use a sector scorecard, not generic cash ratios.",
+            )
+            do_next = "Run /analyze with the sector / financial scorecard lens"
 
         issuer_icon = ISSUER_ICONS.get(self.issuer_class or "", "🏷️")
         issuer_label = ISSUER_LABELS.get(
@@ -231,7 +252,7 @@ class EligibilityResult:
 
         if self.final_score is not None:
             lines.extend(["", "📊 <b>Your scores</b>"])
-            score_bits = [f"Overall {self.final_score:.0f}/100"]
+            score_bits = [f"Overall {self.final_score:.1f}/100"]
             if self.candidate_band:
                 band_icon = BAND_ICONS.get(self.candidate_band, "📊")
                 band_label = BAND_LABELS.get(
@@ -283,6 +304,10 @@ class EligibilityResult:
             route_label = ROUTE_LABELS.get(
                 self.eligibility_route, self.eligibility_route
             )
+            if self.eligibility_route == "BANK_SCORECARD":
+                route_label = SCORECARD_ROUTE_LABELS_BY_ISSUER.get(
+                    self.issuer_class or "", route_label
+                )
             lines.append(f"🛣️ Screening path: {_esc(route_label)}")
         if self.next_research_action:
             next_label = NEXT_ACTION_LABELS.get(
@@ -417,7 +442,7 @@ class EligibilityResult:
 
         if self.final_score is not None:
             lines.extend(["", "📊 <b>Your scores</b>"])
-            score_line = f"Overall {self.final_score:.0f}/100"
+            score_line = f"Overall {self.final_score:.1f}/100"
             if self.candidate_band:
                 band_label = BAND_LABELS.get(
                     self.candidate_band, self.candidate_band
@@ -435,6 +460,10 @@ class EligibilityResult:
             route_label = ROUTE_LABELS.get(
                 self.eligibility_route, self.eligibility_route
             )
+            if self.eligibility_route == "BANK_SCORECARD":
+                route_label = SCORECARD_ROUTE_LABELS_BY_ISSUER.get(
+                    self.issuer_class or "", route_label
+                )
             lines.append(f"🛣️ Screening path: {_esc(route_label)}")
         if self.next_research_action:
             next_label = NEXT_ACTION_LABELS.get(

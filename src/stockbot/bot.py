@@ -595,7 +595,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/refresh backfill — recompute gates + expected_return on cached rows\n"
         "/spend — month-to-date cost\n"
         "/health — cost/token/quality audit (no LLM spend)\n\n"
-        "Or send: prescan BEL\n\n"
+        "Or send: /prescan BEL\n\n"
         "Educational research only — not investment advice."
     )
 
