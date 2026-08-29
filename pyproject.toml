@@ -1,6 +1,6 @@
 [project]
 name = "stockbot"
-version = "0.1.0"
+version = "0.1.1"
 description = "Read-only Telegram NSE stock analysis bot (fetch + two-stage Anthropic pipeline)"
 readme = "README.md"
 authors = [
