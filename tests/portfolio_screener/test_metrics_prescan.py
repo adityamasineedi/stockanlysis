@@ -6,7 +6,10 @@ from datetime import UTC, datetime
 
 from stockbot.models import Financials, TickerInfo
 from stockbot.portfolio_screener.issuer_routing import classify_issuer
-from stockbot.portfolio_screener.metrics import count_derived_key_ratios, extract_metrics
+from stockbot.portfolio_screener.metrics import (
+    count_derived_key_ratios,
+    extract_metrics,
+)
 
 
 def test_sector_override_for_vguard() -> None:

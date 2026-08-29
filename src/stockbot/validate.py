@@ -25,9 +25,9 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel
 
+from stockbot.analysis_routing import Stage2Mode
 from stockbot.constitution_gates import should_anti_chase
 from stockbot.expected_return import report_contains_yearly_return_ladder
-from stockbot.analysis_routing import Stage2Mode
 from stockbot.llm.verdict import (
     ValuationComputed,
     VerdictJSON,

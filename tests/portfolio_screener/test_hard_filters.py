@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from stockbot.portfolio_screener.hard_filters import apply_hard_filters
 from stockbot.portfolio_screener.models import DataValidationResult, StockMetrics
-from stockbot.portfolio_screener.scoring_config import HardFilterThresholds
 
 
 def _validation_ok() -> DataValidationResult:

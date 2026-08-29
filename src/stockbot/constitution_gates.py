@@ -60,8 +60,10 @@ def should_anti_chase(
     ):
         return (
             True,
-            f"trailing P/E {trailing_pe:.1f}x >= {ANTI_CHASE_PE_THRESHOLD:.0f}x "
-            f"with earnings_quality={verdict.earnings_quality!r}",
+            (
+                f"trailing P/E {trailing_pe:.1f}x >= {ANTI_CHASE_PE_THRESHOLD:.0f}x "
+                f"with earnings_quality={verdict.earnings_quality!r}"
+            ),
         )
 
     return False, ""
@@ -106,8 +108,10 @@ def should_anti_chase_from_dict(verdict_json: dict) -> tuple[bool, str]:
             if pe >= ANTI_CHASE_PE_THRESHOLD:
                 return (
                     True,
-                    f"P/E vs base EPS {pe:.1f}x >= {ANTI_CHASE_PE_THRESHOLD:.0f}x "
-                    f"with earnings_quality={earnings_quality!r}",
+                    (
+                        f"P/E vs base EPS {pe:.1f}x >= {ANTI_CHASE_PE_THRESHOLD:.0f}x "
+                        f"with earnings_quality={earnings_quality!r}"
+                    ),
                 )
 
     return False, ""

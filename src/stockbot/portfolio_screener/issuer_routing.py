@@ -368,9 +368,7 @@ def _aligned_ocf_pat_panel(
     sum_ocf = sum(o for o, _ in pairs)
     sum_pat = sum(p for _, p in pairs)
     years_used = len(pairs)
-    if sum_pat > 0:
-        cum = sum_ocf / sum_pat
-    elif sum_pat < 0 and sum_ocf < 0:
+    if sum_pat > 0 or sum_pat < 0 and sum_ocf < 0:
         cum = sum_ocf / sum_pat
     else:
         cum = None

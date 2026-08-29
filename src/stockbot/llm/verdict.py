@@ -54,20 +54,20 @@ from stockbot.brief_enrichment import (
     format_news_summary_json,
     format_prescan_summary_json,
 )
-from stockbot.fetch.annual_report import format_ar_business_summary_json
 from stockbot.config import MASTER_PROMPT_PATH, PROMPTS_DIR, settings
+from stockbot.fetch.annual_report import format_ar_business_summary_json
 
 CONSTITUTION_PATH = PROMPTS_DIR / "quality-first-portfolio-constitution-v1.md"
 STAGE2_LITE_PROMPT_PATH = PROMPTS_DIR / "stage2-lite-v1.md"
 from stockbot.analysis_routing import Stage2Mode
 from stockbot.llm.client import call_anthropic_and_log
+from stockbot.llm.extract import ExtractionResult
+from stockbot.models import Brief
 from stockbot.order_book_signals import (
     collect_order_book_signals,
     format_order_book_signals_for_stage2,
     order_book_wc_billing_hint,
 )
-from stockbot.llm.extract import ExtractionResult
-from stockbot.models import Brief
 
 MODEL = "claude-sonnet-5"
 LITE_MODEL = "claude-haiku-4-5-20251001"

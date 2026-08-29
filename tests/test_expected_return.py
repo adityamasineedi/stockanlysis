@@ -1,8 +1,8 @@
 """Tests for scenario CAGR ranges (not yearly return ladders)."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 
-import pytest
+import pandas as pd
 
 from stockbot.expected_return import (
     compute_expected_return,
@@ -18,11 +18,8 @@ from stockbot.llm.verdict import (
     ValuationInputs,
     VerdictJSON,
 )
-from stockbot.validate import validate_report
 from stockbot.models import Brief, PriceData, ReportText, Technicals, TickerInfo
-from datetime import UTC, datetime
-
-import pandas as pd
+from stockbot.validate import validate_report
 
 NOW = datetime.now(UTC)
 

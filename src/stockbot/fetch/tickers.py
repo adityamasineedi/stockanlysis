@@ -84,7 +84,7 @@ def _resolve_bse_only_via_yfinance(query: str) -> TickerInfo | None:
         import yfinance as yf
 
         info = yf.Ticker(f"{sym}.BO").info or {}
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort fallback resolver, return None on any failure
         return None
     price = info.get("regularMarketPrice") or info.get("currentPrice")
     if not price:

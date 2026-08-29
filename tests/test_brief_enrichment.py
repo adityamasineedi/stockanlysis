@@ -10,7 +10,13 @@ from stockbot.brief_enrichment import (
     format_metadata_json,
     stage2_mode_from_prescan,
 )
-from stockbot.models import BriefMetadata, NewsItems, NewsSummaryItem, PrescanSummary, RedFlag, TickerInfo
+from stockbot.models import (
+    BriefMetadata,
+    NewsItems,
+    PrescanSummary,
+    RedFlag,
+    TickerInfo,
+)
 
 
 def test_build_news_summary_ranks_order_book_headline():
@@ -82,7 +88,6 @@ def test_stage2_mode_from_prescan_clean_auto_deep_is_lite():
 
 
 def test_format_metadata_json_includes_sector():
-    from stockbot.models import BriefMetadata
 
     text = format_metadata_json(
         BriefMetadata(
@@ -174,9 +179,9 @@ def test_pe_computed_from_report_price_and_eps_not_yahoo_snapshot(monkeypatch):
 def test_build_street_consensus_from_yfinance_metadata(monkeypatch):
     from datetime import UTC, datetime
 
-    from stockbot.models import PriceData
-
     import pandas as pd
+
+    from stockbot.models import PriceData
 
     monkeypatch.setattr(
         "stockbot.brief_enrichment.fetch_market_metadata",

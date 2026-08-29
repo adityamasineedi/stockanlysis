@@ -10,8 +10,8 @@ from stockbot import storage as storage_module
 from stockbot.models import PriceData
 from stockbot.storage import (
     BackfillResult,
-    build_staleness_banner,
     backfill_cached_verdicts,
+    build_staleness_banner,
     get_cached,
     invalidate_cached_analyses,
     save_analysis,

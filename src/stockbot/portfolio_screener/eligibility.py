@@ -27,12 +27,12 @@ from stockbot.portfolio_screener.ai_ranker import (
 )
 from stockbot.portfolio_screener.cost_tracker import ScreenerCostTracker
 from stockbot.portfolio_screener.data_loader import fetch_universe_metrics
-from stockbot.portfolio_screener.metrics import count_derived_key_ratios
 from stockbot.portfolio_screener.issuer_routing import (
     WC_RECONCILIATION_CHECKLIST,
     decide_eligibility_route,
     fundamentals_fetch_failed,
 )
+from stockbot.portfolio_screener.metrics import count_derived_key_ratios
 from stockbot.portfolio_screener.outcome_log import (
     classify_reject,
     format_computed_metric_warnings,

@@ -107,13 +107,13 @@ def _parse_pledge_pct_from_direct_tags(xml: str) -> float | None:
     """Prefer % of shares-held tags; skip % of total-company-share tags."""
     for match in re.finditer(r":([A-Za-z0-9]+)[^>]*>([^<]+)</", xml):
         tag, raw = match.group(1), match.group(2).strip()
-        if not re.search(r"Pledge|Encumbered", tag, re.I):
+        if not re.search(r"Pledge|Encumbered", tag, re.IGNORECASE):
             continue
-        if not re.search(r"Percentage|Percent", tag, re.I):
+        if not re.search(r"Percentage|Percent", tag, re.IGNORECASE):
             continue
-        if re.search(r"TotalNumberOfShares", tag, re.I):
+        if re.search(r"TotalNumberOfShares", tag, re.IGNORECASE):
             continue
-        if not re.search(r"SharesHeld|Shareholding|Promoter", tag, re.I):
+        if not re.search(r"SharesHeld|Shareholding|Promoter", tag, re.IGNORECASE):
             continue
         try:
             value = float(raw)

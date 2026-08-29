@@ -30,14 +30,14 @@ from stockbot.analysis_routing import (
 )
 from stockbot.brief import assemble_brief, to_markdown
 from stockbot.config import settings
-from stockbot.costs import check_budget
-from stockbot.fetch.tickers import load_symbol_table, resolve_ticker
-from stockbot.llm.extract import run_stage1
 from stockbot.constitution_gates import (
     apply_constitution_overrides,
     sync_live_price_into_verdict,
 )
+from stockbot.costs import check_budget
 from stockbot.expected_return import merge_expected_return_into_verdict_json
+from stockbot.fetch.tickers import load_symbol_table, resolve_ticker
+from stockbot.llm.extract import run_stage1
 from stockbot.llm.verdict import (
     TruncatedResponseError,
     compute_valuation,
@@ -247,7 +247,7 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
         )
     except AnalysisCostExceeded as exc:
         return PipelineResult(status="analysis_cost_exceeded", spent_inr=exc.spent_inr)
-    except AnalysisRuntimeExceeded as exc:
+    except AnalysisRuntimeExceeded:
         spent_so_far = stage1_usage["cost_inr"]
         return PipelineResult(status="analysis_runtime_exceeded", spent_inr=spent_so_far)
 

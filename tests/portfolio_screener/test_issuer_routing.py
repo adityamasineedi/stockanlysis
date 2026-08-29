@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from stockbot.portfolio_screener.issuer_routing import (
-    FINANCIAL_SCORECARD_ISSUERS,
     assess_cash_conversion,
     classify_issuer,
     decide_eligibility_route,
     fundamentals_fetch_failed,
-    is_loss_making,
     quality_override_applies,
 )
 from stockbot.portfolio_screener.models import StockMetrics
@@ -347,7 +345,9 @@ def test_bel_quality_override_review_exception():
 def test_crisil_scorecard_label_not_bank():
     """CRISIL (rating agency) shares the BANK_SCORECARD route with actual banks,
     but its displayed label must reflect its true issuer class, not 'Bank'."""
-    from stockbot.portfolio_screener.prescan_display import SCORECARD_ROUTE_LABELS_BY_ISSUER
+    from stockbot.portfolio_screener.prescan_display import (
+        SCORECARD_ROUTE_LABELS_BY_ISSUER,
+    )
 
     m = _base_nonfin(
         ticker="CRISIL",

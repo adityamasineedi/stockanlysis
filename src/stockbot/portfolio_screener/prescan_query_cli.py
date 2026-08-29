@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from stockbot.config import PORTFOLIO_DIR, setup_logging
+from stockbot.config import setup_logging
 from stockbot.portfolio_screener.outcome_log import (
     OUTCOMES_PATH,
     format_prescan_table,

@@ -5,7 +5,6 @@ compliance-certificate false positive for "Independent Auditor's Report")
 was verified by hand during development — see the module docstring."""
 
 from stockbot.fetch.annual_report import (
-    BUSINESS_HEADING_PRIORITY,
     HEADING_PRIORITY,
     TOKEN_CAP,
     _build_sections,

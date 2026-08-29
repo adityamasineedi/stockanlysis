@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 from telegram import BotCommand, Update
 from telegram.constants import ParseMode
@@ -54,10 +54,11 @@ from stockbot.config import (
     settings,
     setup_logging,
 )
-from stockbot.costs import month_to_date_spend
 from stockbot.constitution_gates import should_anti_chase_from_dict
+from stockbot.costs import month_to_date_spend
 from stockbot.expected_return import format_expected_return_telegram
 from stockbot.models import AmbiguousMatch, Analysis
+from stockbot.monitor.health_audit import run_health_audit
 from stockbot.pipeline import (
     ANALYSIS_RUNTIME_CAP_SECONDS,
     PipelineResult,
@@ -69,7 +70,6 @@ from stockbot.portfolio_screener.eligibility import (
 )
 from stockbot.portfolio_screener.outcome_log import build_candidates_messages
 from stockbot.portfolio_screener.scoring_config import ScreenerRunConfig
-from stockbot.monitor.health_audit import run_health_audit
 from stockbot.storage import backfill_cached_verdicts, invalidate_cached_analyses
 
 logger = logging.getLogger(__name__)
@@ -639,7 +639,7 @@ async def handle_spend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 def _write_health_audit_file(markdown: str):
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().date().isoformat()
+    stamp = datetime.now(UTC).date().isoformat()
     path = LOGS_DIR / f"health_audit_{stamp}.md"
     path.write_text(markdown, encoding="utf-8")
     return path

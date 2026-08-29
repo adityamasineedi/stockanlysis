@@ -4,8 +4,20 @@ from datetime import UTC, date, datetime
 
 import pandas as pd
 
-from stockbot.llm.extract import STAGE1_SECTION_HEADINGS, _select_stage1_sections, build_user_message
-from stockbot.models import Brief, NewsItems, PriceData, RedFlag, ReportText, Technicals, TickerInfo
+from stockbot.llm.extract import (
+    STAGE1_SECTION_HEADINGS,
+    _select_stage1_sections,
+    build_user_message,
+)
+from stockbot.models import (
+    Brief,
+    NewsItems,
+    PriceData,
+    RedFlag,
+    ReportText,
+    Technicals,
+    TickerInfo,
+)
 from stockbot.validate import try_auto_fix_report, validate_report
 
 NOW = datetime.now(UTC)
