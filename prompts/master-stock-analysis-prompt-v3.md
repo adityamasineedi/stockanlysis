@@ -314,6 +314,17 @@ Present: {{current_price}} · {{buy_zone_low}}–{{buy_zone_high}} · Add More Z
 Good company, wrong price → say **GOOD COMPANY, BAD PRICE — WAIT.** Never force a BUY.
 Add ranges must never be justified by “price fell” alone.
 
+**Position-building plan (Power of Averaging).** When a buy range is allowed, present the four ~25% tranches from `position_building_plan` as a short table or list — tranche, allocation %, trigger — not just the raw JSON:
+
+| Tranche | Allocation | Trigger |
+|---|---|---|
+| 1 | 25% | At current price, once the quality/five-year/anti-chase gates are satisfied |
+| 2 | 25% | Price enters the Ideal Buy Zone above |
+| 3 | 25% | Price enters the Add More Zone |
+| 4 | 25% | Reserve — kept ready only for a further valuation-supported dip |
+
+State the golden rule explicitly, in plain words: *if the price rises straight after tranche 1, do not chase it — that first 25% is already working, and the remaining 75% still waits for its own trigger, never for FOMO.* Averaging like this is how you get a fair average price on a stock you believe in, without needing to catch an exact bottom. This plan only appears when a buy range is allowed at all (§13 gate above) — a WATCH/SKIP verdict states no plan, not a defaulted one.
+
 ### 14. RISK / REWARD
 
 *"If you put in ₹100 today, here is what each scenario realistically looks like."* Bear, base, bull, plus the single main risk and single main catalyst. Never guarantee returns. Prefer scenario **ranges**, not a single target price.
