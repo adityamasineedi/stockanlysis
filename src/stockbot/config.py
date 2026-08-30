@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -10,7 +11,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-DATA_DIR = PROJECT_ROOT / "data"
+# Everything under DATA_DIR is state that must survive a redeploy: the SQLite
+# analysis cache, the prescan outcome log, and the Screener/annual-report file
+# caches. On a container host (Railway et al.) the image filesystem is
+# ephemeral, so point STOCKBOT_DATA_DIR at a mounted persistent volume —
+# otherwise every deploy silently resets the bot's entire history.
+DATA_DIR = Path(os.environ.get("STOCKBOT_DATA_DIR") or (PROJECT_ROOT / "data"))
 SYMBOLS_DIR = DATA_DIR / "symbols"
 PORTFOLIO_DIR = DATA_DIR / "portfolio"
 WATCHLIST_PATH = PORTFOLIO_DIR / "watchlist.txt"

@@ -128,4 +128,5 @@ def compute_quant_score(
         sector=metrics.sector,
         industry=metrics.industry,
         data_timestamp=metrics.data_timestamp,
+        current_price_abs=metrics.current_price_abs,
     )

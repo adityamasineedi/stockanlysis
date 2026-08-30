@@ -195,6 +195,9 @@ class QuantScreenResult:
     sector: str | None
     industry: str | None
     data_timestamp: datetime | None = None
+    # Price the scan saw, carried so screening records can be measured forward
+    # (realized return since scan) rather than only compared against each other.
+    current_price_abs: float | None = None
 
 
 @dataclass
@@ -256,6 +259,11 @@ class StockScreenRecord:
 
     sent_to_ai: bool = False
     ai_detail: AIRankResult | None = None
+
+    # Entry snapshot — without these a screening record can never be scored
+    # against what the stock actually did afterwards.
+    price_at_scan: float | None = None
+    scanned_at: datetime | None = None
 
 
 @dataclass

@@ -131,6 +131,10 @@ class EligibilityResult:
     ai_score: float | None = None
     final_score: float | None = None
     candidate_band: str | None = None
+    # Price at scan time — paired with checked_at, this is what makes a prescan
+    # measurable forward (realized return since the scan) instead of a score
+    # with no outcome attached.
+    price_at_scan: float | None = None
     hard_filter_status: str | None = None
     hard_filter_reasons: list[str] = field(default_factory=list)
     sector: str | None = None
@@ -1027,6 +1031,9 @@ def check_deep_analysis_eligibility(
         ai_score=round(ai_score, 2) if ai_score is not None else None,
         final_score=round(final, 2),
         candidate_band=band,
+        price_at_scan=(
+            round(m.current_price_abs, 2) if m.current_price_abs is not None else None
+        ),
         hard_filter_status=quant.hard_filter.status,
         hard_filter_reasons=list(quant.hard_filter.reasons),
         sector=quant.sector,
@@ -1108,6 +1115,9 @@ def check_deep_analysis_eligibility(
             "hard_filter_reasons": list(quant.hard_filter.reasons),
             "quant_score": round(quant.final_quant_score, 2),
             "candidate_band": band,
+            "price_at_scan": (
+                round(m.current_price_abs, 2) if m.current_price_abs is not None else None
+            ),
             "reject_class": classify_reject(
                 hard_status=quant.hard_filter.status,
                 verdict=verdict,
