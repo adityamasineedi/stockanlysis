@@ -98,9 +98,9 @@ def test_format_comparison_table_truncates_long_values():
 
 def test_deepseek_call_reports_missing_api_key(monkeypatch):
     from stockbot import ab_test
-    from stockbot.config import settings
 
-    monkeypatch.setattr(settings, "deepseek_api_key", "")
+    # Patch where _call_deepseek reads settings (stale if config was reloaded).
+    monkeypatch.setattr(ab_test.settings, "deepseek_api_key", "")
     attempt = ab_test._call_deepseek("some user message", "deepseek-v4-flash")
     assert attempt.result is None
     assert "DEEPSEEK_API_KEY" in attempt.error

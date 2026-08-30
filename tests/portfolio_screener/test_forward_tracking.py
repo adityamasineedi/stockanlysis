@@ -112,4 +112,7 @@ def test_data_dir_defaults_to_repo_data_when_unset(monkeypatch) -> None:
 
     monkeypatch.delenv("STOCKBOT_DATA_DIR", raising=False)
     reloaded = importlib.reload(config)
-    assert reloaded.DATA_DIR == reloaded.PROJECT_ROOT / "data"
+    try:
+        assert reloaded.DATA_DIR == reloaded.PROJECT_ROOT / "data"
+    finally:
+        importlib.reload(config)
