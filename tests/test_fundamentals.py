@@ -6,6 +6,7 @@ RELIANCE, IDEA, and JYOTHYLAB during development."""
 from unittest.mock import MagicMock
 
 import pandas as pd
+import pytest
 from bs4 import BeautifulSoup
 
 from stockbot.fetch import fundamentals
@@ -275,4 +276,95 @@ def test_http_get_screener_retries_transient_failure(monkeypatch):
     response = fundamentals._http_get_screener("https://www.screener.in/company/RELIANCE/consolidated/")
     assert response is fake_response
     assert fake_client.__enter__.return_value.get.call_count == 2
+
+
+def _yf_frame(rows: dict[str, list[float]], years: list[str]) -> pd.DataFrame:
+    cols = [pd.Timestamp(f"{y}-03-31") for y in years]
+    data = {col: [rows[row_name][i] for row_name in rows] for i, col in enumerate(cols)}
+    return pd.DataFrame(data, index=list(rows.keys()))
+
+
+def test_fetch_fundamentals_falls_back_to_yfinance_when_screener_history_too_short(
+    monkeypatch,
+):
+    stale_html = _section_html(
+        "profit-loss",
+        ["Mar 2015", "Mar 2016"],
+        [("Sales", ["100", "110"]), ("Net Profit", ["10", "12"])],
+    ) + _section_html(
+        "balance-sheet",
+        ["Mar 2015", "Mar 2016"],
+        [("Total Assets", ["500", "550"])],
+    ) + _section_html(
+        "cash-flow",
+        ["Mar 2015", "Mar 2016"],
+        [
+            ("Cash from Operating Activity", ["5", "6"]),
+            ("Cash from Investing Activity", ["-2", "-2"]),
+            ("Cash from Financing Activity", ["-1", "-1"]),
+            ("Net Cash Flow", ["2", "3"]),
+        ],
+    ) + _section_html(
+        "ratios",
+        ["Mar 2015", "Mar 2016"],
+        [("ROCE %", ["10%", "11%"])],
+    ) + _section_html(
+        "quarters",
+        ["Mar 2015", "Dec 2015", "Mar 2016"],
+        [("Sales", ["25", "26", "27"])],
+    ) + "<div>Consolidated Figures in Rs. Crores</div>"
+
+    monkeypatch.setattr(fundamentals, "fetch_screener_page", lambda symbol, basis: stale_html)
+
+    years = ["2022", "2023", "2024"]
+    pnl = _yf_frame(
+        {
+            "Total Revenue": [100e7, 110e7, 120e7],
+            "Operating Income": [20e7, 22e7, 24e7],
+            "Reconciled Depreciation": [2e7, 2e7, 2e7],
+            "Interest Expense": [1e7, 1e7, 1e7],
+            "Net Income": [10e7, 12e7, 14e7],
+            "Basic EPS": [5.0, 6.0, 7.0],
+        },
+        years,
+    )
+    bs = _yf_frame(
+        {
+            "Total Assets": [500e7, 550e7, 600e7],
+            "Total Debt": [100e7, 90e7, 80e7],
+            "Cash And Cash Equivalents": [20e7, 25e7, 30e7],
+            "Stockholders Equity": [200e7, 220e7, 240e7],
+        },
+        years,
+    )
+    cf = _yf_frame(
+        {
+            "Operating Cash Flow": [15e7, 16e7, 17e7],
+            "Investing Cash Flow": [-5e7, -5e7, -5e7],
+            "Financing Cash Flow": [-3e7, -3e7, -3e7],
+            "Free Cash Flow": [10e7, 11e7, 12e7],
+        },
+        years,
+    )
+
+    class FakeTicker:
+        financials = pnl
+        balance_sheet = bs
+        cashflow = cf
+        quarterly_financials = pnl
+
+    monkeypatch.setattr(fundamentals.yf, "Ticker", lambda symbol: FakeTicker())
+
+    fin = fundamentals.fetch_fundamentals("PRECWIRE")
+    assert fin.source == "yfinance:ns"
+    assert fin.years_available == 3
+    assert fin.pnl.loc["Sales", "Mar 2024"] == 120.0
+    assert "Net Cash Flow" in fin.cash_flow.index
+
+
+def test_build_yf_statement_converts_inr_to_crore():
+    raw = _yf_frame({"Total Revenue": [53202682000.0, 39266251000.0]}, ["2024", "2025"])
+    pnl = fundamentals._build_yf_statement(raw, fundamentals._YF_PNL_ROWS)
+    assert pnl.loc["Sales", "Mar 2024"] == pytest.approx(5320.2682)
+    assert pnl.loc["Sales", "Mar 2025"] == pytest.approx(3926.6251)
 
