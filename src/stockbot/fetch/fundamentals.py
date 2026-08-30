@@ -22,6 +22,8 @@ writing this parser):
 
 from __future__ import annotations
 
+import logging
+import math
 import re
 import time
 from datetime import UTC, datetime
@@ -29,11 +31,14 @@ from pathlib import Path
 
 import httpx
 import pandas as pd
+import yfinance as yf
 from bs4 import BeautifulSoup
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from stockbot.config import HTTP_USER_AGENT, SCREENER_CACHE_DIR
 from stockbot.models import Financials
+
+logger = logging.getLogger(__name__)
 
 USER_AGENT = HTTP_USER_AGENT
 CACHE_MAX_AGE_HOURS = 24
@@ -255,8 +260,210 @@ def _validate_schema(
         )
 
 
+_CRORE = 1e7
+
+_YF_PNL_ROWS: dict[str, tuple[str, ...]] = {
+    "Sales": ("Total Revenue", "Operating Revenue"),
+    "Operating Profit": ("Operating Income",),
+    "Depreciation": ("Reconciled Depreciation", "Depreciation Income Statement"),
+    "Interest": ("Interest Expense", "Interest Expense Non Operating"),
+    "Net Profit": ("Net Income", "Net Income Common Stockholders"),
+    "EPS in Rs": ("Basic EPS", "Diluted EPS"),
+}
+
+_YF_BS_ROWS: dict[str, tuple[str, ...]] = {
+    "Total Assets": ("Total Assets",),
+    "Borrowings": ("Total Debt",),
+    "Cash Equivalents": (
+        "Cash And Cash Equivalents",
+        "Cash Cash Equivalents And Short Term Investments",
+    ),
+    "Shareholders Funds": (
+        "Stockholders Equity",
+        "Common Stock Equity",
+        "Total Equity Gross Minority Interest",
+    ),
+}
+
+_YF_CF_ROWS: dict[str, tuple[str, ...]] = {
+    "Cash from Operating Activity": ("Operating Cash Flow",),
+    "Cash from Investing Activity": ("Investing Cash Flow",),
+    "Cash from Financing Activity": ("Financing Cash Flow",),
+    "Free Cash Flow": ("Free Cash Flow",),
+}
+
+
+def _yf_first_row(df: pd.DataFrame, *substrings: str) -> pd.Series | None:
+    for sub in substrings:
+        needle = sub.lower()
+        for idx in df.index:
+            if str(idx).lower() == needle:
+                return df.loc[idx]
+        matches = [idx for idx in df.index if needle in str(idx).lower()]
+        if matches:
+            # Prefer the tightest label — avoids "Other Non Operating Income Expenses"
+            # winning over "Operating Income", etc.
+            best = min(matches, key=lambda label: len(str(label)))
+            return df.loc[best]
+    return None
+
+
+def _yf_sorted_columns(df: pd.DataFrame) -> list[object]:
+    return sorted(df.columns, key=lambda c: pd.Timestamp(c))
+
+
+def _yf_period_label(column: object) -> str:
+    return pd.Timestamp(column).strftime("%b %Y")
+
+
+def _to_crore(value: object) -> float | None:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    try:
+        return float(value) / _CRORE
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_yf_statement(
+    yf_df: pd.DataFrame,
+    row_map: dict[str, tuple[str, ...]],
+) -> pd.DataFrame:
+    if yf_df is None or yf_df.empty:
+        return pd.DataFrame()
+    col_order = _yf_sorted_columns(yf_df)
+    labels = [_yf_period_label(c) for c in col_order]
+    rows: dict[str, list[float | None]] = {}
+    for screener_label, yf_names in row_map.items():
+        series = _yf_first_row(yf_df, *yf_names)
+        if series is None:
+            continue
+        rows[screener_label] = [_to_crore(series[c]) for c in col_order]
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame.from_dict(rows, orient="index", columns=labels)
+
+
+def _append_net_cash_flow(cf: pd.DataFrame) -> pd.DataFrame:
+    if cf.empty:
+        return cf
+    parts = (
+        "Cash from Operating Activity",
+        "Cash from Investing Activity",
+        "Cash from Financing Activity",
+    )
+    if not all(row in cf.index for row in parts):
+        return cf
+    net: list[float | None] = []
+    for col in cf.columns:
+        values = [cf.loc[row, col] for row in parts]
+        if any(v is None for v in values):
+            net.append(None)
+        else:
+            net.append(float(sum(values)))
+    cf = cf.copy()
+    cf.loc["Net Cash Flow"] = net
+    return cf
+
+
+def _build_yf_ratios(pnl: pd.DataFrame, balance_sheet: pd.DataFrame) -> pd.DataFrame:
+    cols = list(pnl.columns)
+    roe_vals: list[float | None] = []
+    roce_vals: list[float | None] = []
+    for col in cols:
+        pat = pnl.loc["Net Profit", col] if "Net Profit" in pnl.index else None
+        equity = (
+            balance_sheet.loc["Shareholders Funds", col]
+            if "Shareholders Funds" in balance_sheet.index
+            else None
+        )
+        op = pnl.loc["Operating Profit", col] if "Operating Profit" in pnl.index else None
+        debt = balance_sheet.loc["Borrowings", col] if "Borrowings" in balance_sheet.index else None
+        if pat is not None and equity is not None and equity > 0:
+            roe_vals.append((pat / equity) * 100.0)
+        else:
+            roe_vals.append(None)
+        capital = None
+        if equity is not None and debt is not None:
+            capital = equity + debt
+        if op is not None and capital is not None and capital > 0:
+            roce_vals.append((op / capital) * 100.0)
+        else:
+            roce_vals.append(None)
+    return pd.DataFrame({"ROE %": roe_vals, "ROCE %": roce_vals}, index=cols).T
+
+
+def _fetch_yfinance_fundamentals(
+    symbol: str,
+    *,
+    business_description: str | None = None,
+) -> Financials:
+    """Build Screener-shaped statements from yfinance when Screener is stale or empty."""
+    last_error: str | None = None
+    for suffix in (".NS", ".BO"):
+        yf_symbol = f"{symbol}{suffix}"
+        try:
+            ticker = yf.Ticker(yf_symbol)
+            pnl_raw = ticker.financials
+            bs_raw = ticker.balance_sheet
+            cf_raw = ticker.cashflow
+            if pnl_raw is None or pnl_raw.empty:
+                last_error = f"{yf_symbol}: empty financials"
+                continue
+            if bs_raw is None or bs_raw.empty:
+                last_error = f"{yf_symbol}: empty balance sheet"
+                continue
+            if cf_raw is None or cf_raw.empty:
+                last_error = f"{yf_symbol}: empty cash flow"
+                continue
+
+            pnl = _build_yf_statement(pnl_raw, _YF_PNL_ROWS)
+            balance_sheet = _build_yf_statement(bs_raw, _YF_BS_ROWS)
+            cash_flow = _append_net_cash_flow(_build_yf_statement(cf_raw, _YF_CF_ROWS))
+            ratios = _build_yf_ratios(pnl, balance_sheet)
+            quarterly_raw = ticker.quarterly_financials
+            quarterly = (
+                _build_yf_statement(quarterly_raw, _YF_PNL_ROWS)
+                if quarterly_raw is not None and not quarterly_raw.empty
+                else pnl.copy()
+            )
+            _validate_schema(pnl, balance_sheet, cash_flow, ratios)
+        except FundamentalsSchemaError as exc:
+            last_error = f"{yf_symbol}: {exc}"
+            continue
+        except Exception as exc:  # noqa: BLE001 - try next suffix
+            last_error = f"{yf_symbol}: {type(exc).__name__}: {exc}"
+            continue
+
+        years_available = sum(1 for c in pnl.columns if _PERIOD_RE.match(c))
+        logger.info(
+            "Fundamentals fallback to yfinance for %s via %s (%d fiscal years)",
+            symbol,
+            yf_symbol,
+            years_available,
+        )
+        return Financials(
+            pnl=pnl,
+            balance_sheet=balance_sheet,
+            cash_flow=cash_flow,
+            ratios=ratios,
+            quarterly=quarterly,
+            basis="consolidated",
+            years_available=years_available,
+            source=f"yfinance:{suffix.removeprefix('.').lower()}",
+            fetched_at=datetime.now(UTC),
+            business_description=business_description,
+        )
+
+    raise FundamentalsSchemaError(
+        f"yfinance fallback failed for {symbol!r}"
+        + (f" ({last_error})" if last_error else "")
+    )
+
+
 def fetch_fundamentals(symbol: str) -> Financials:
     basis_tried: list[str] = []
+    business_description: str | None = None
     for basis in ("consolidated", "standalone"):
         basis_tried.append(basis)
         try:
@@ -265,6 +472,8 @@ def fetch_fundamentals(symbol: str) -> Financials:
             continue
 
         soup = BeautifulSoup(html, "lxml")
+        if business_description is None:
+            business_description = fetch_business_description(soup)
         detected_basis = detect_basis(soup)
         if detected_basis is None:
             continue
@@ -277,9 +486,7 @@ def fetch_fundamentals(symbol: str) -> Financials:
             quarterly = parse_screener_table(soup, "quarters")
             _validate_schema(pnl, balance_sheet, cash_flow, ratios)
         except FundamentalsSchemaError:
-            if basis == "consolidated":
-                continue
-            raise
+            continue
 
         years_available = sum(1 for c in pnl.columns if _PERIOD_RE.match(c))
 
@@ -297,10 +504,16 @@ def fetch_fundamentals(symbol: str) -> Financials:
             years_available=years_available,
             source=f"screener:{basis}",
             fetched_at=datetime.now(UTC),
-            business_description=fetch_business_description(soup),
+            business_description=business_description,
         )
 
-    raise FundamentalsSchemaError(
-        f"Could not fetch usable fundamentals for {symbol!r} from Screener "
-        f"(tried: {', '.join(basis_tried)})"
-    )
+    try:
+        return _fetch_yfinance_fundamentals(
+            symbol,
+            business_description=business_description,
+        )
+    except FundamentalsSchemaError as exc:
+        raise FundamentalsSchemaError(
+            f"Could not fetch usable fundamentals for {symbol!r} from Screener "
+            f"(tried: {', '.join(basis_tried)}) or yfinance ({exc})"
+        ) from exc
