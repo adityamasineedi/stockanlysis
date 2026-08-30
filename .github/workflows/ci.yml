@@ -19,3 +19,15 @@ jobs:
         run: uv run ruff check src tests
       - name: Pytest
         run: uv run pytest
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    container: ghcr.io/railwayapp/cli:latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Railway (production)
+        run: railway up --service stockanlysis --detach
