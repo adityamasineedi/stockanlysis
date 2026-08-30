@@ -122,7 +122,7 @@ def test_format_prescan_telegram_chunks_includes_ticker() -> None:
     assert "Cash flow OK" in chunks[0]
 
 
-def test_format_prescan_telegram_chunks_missing_qgs() -> None:
+def test_format_prescan_telegram_chunks_missing_qgs(monkeypatch) -> None:
     rows = [
         {
             "ticker": "HEROMOTOCO",
@@ -132,9 +132,53 @@ def test_format_prescan_telegram_chunks_missing_qgs() -> None:
             "verdict": "AUTO_DEEP_ANALYSIS",
         }
     ]
+    monkeypatch.setattr(
+        "stockbot.portfolio_screener.outcome_log.backfill_rows_qgs",
+        lambda matched, persist=True: matched,
+    )
     chunks = format_prescan_telegram_chunks(rows, title="Strong")
-    assert "Quality/Growth/Strength not logged" in chunks[0]
-    assert "re-run /prescan" in chunks[0]
+    assert "Pillar scores unavailable" in chunks[0]
+
+
+def test_backfill_row_qgs_persists_scores(monkeypatch, tmp_path: Path) -> None:
+    from stockbot.portfolio_screener import outcome_log
+
+    monkeypatch.setattr(outcome_log, "OUTCOMES_PATH", tmp_path / "prescan_outcomes.jsonl")
+
+    import stockbot.fetch.tickers as tickers_mod
+    import stockbot.portfolio_screener.data_loader as data_loader_mod
+    import stockbot.portfolio_screener.quant_engine as quant_engine_mod
+
+    class FakeComponents:
+        business_quality = 77.9
+        growth = 68.0
+        financial_strength = 84.1
+
+    class FakeQuant:
+        components = FakeComponents()
+
+    monkeypatch.setattr(
+        tickers_mod,
+        "resolve_ticker",
+        lambda query, table: type("T", (), {"symbol": "HEROMOTOCO"})(),
+    )
+    monkeypatch.setattr(tickers_mod, "load_symbol_table", lambda: None)
+    monkeypatch.setattr(data_loader_mod, "fetch_universe_metrics", lambda tickers: [object()])
+    monkeypatch.setattr(quant_engine_mod, "compute_quant_score", lambda m, cfg: FakeQuant())
+
+    row = {
+        "ticker": "HEROMOTOCO",
+        "quant_score": 82.0,
+        "verdict": "AUTO_DEEP_ANALYSIS",
+        "hard_filter_status": "PASS",
+        "candidate_band": "STRONG_CANDIDATE",
+        "cash_conversion_status": "PASS",
+    }
+    enriched = outcome_log.backfill_row_qgs(row, persist=True)
+    assert enriched["quality_score"] == 77.9
+    assert enriched["growth_score"] == 68.0
+    assert enriched["strength_score"] == 84.1
+    assert (tmp_path / "prescan_outcomes.jsonl").exists()
 
 
 def test_build_candidates_messages_empty_log(tmp_path: Path) -> None:

@@ -180,4 +180,4 @@ def format_qgs_from_row(row: dict[str, Any]) -> str:
     )
     if text:
         return text
-    return "Quality/Growth/Strength not logged — re-run /prescan"
+    return "Pillar scores unavailable"
