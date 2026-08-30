@@ -35,6 +35,11 @@ def extract_beginner_summary(report_md: str, *, max_chars: int = ATTACHMENT_BEGI
     if not report_md or _BEGINNER_NEEDLE not in report_md:
         return ""
     start = report_md.find(_BEGINNER_NEEDLE)
+    # The needle is bare text, but the report writes the heading as markup —
+    # "**SHOULD I BUY?**" in the v3 prompt. Slicing at the needle itself cut
+    # the opening "**" and kept the closing one, so the digest opened with a
+    # bare "SHOULD I BUY?**". Back up to the start of the line to keep it.
+    start = report_md.rfind("\n", 0, start) + 1
     tail = report_md[start:]
     json_match = _JSON_FENCE_RE.search(tail)
     if json_match:
