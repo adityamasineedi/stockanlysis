@@ -354,3 +354,46 @@ def test_consume_awaiting_symbol():
     assert _consume_awaiting(ctx, AWAITING_PRESCAN_SYMBOL) is True
     assert AWAITING_PRESCAN_SYMBOL not in ctx.user_data
     assert _consume_awaiting(ctx, AWAITING_PRESCAN_SYMBOL) is False
+
+
+def test_buy_range_names_the_five_year_gate_like_add_more_does():
+    """Live JYOTHYLAB card: add-more said "(five-year: UNCERTAIN)" while the
+    buy line — blocked by that same gate — printed a bare "not issued", so the
+    card could not explain its own suppression."""
+    from stockbot.bot import _format_add_more_range_line, _format_buy_range_line
+
+    verdict = {
+        "buy_zone_abs": None,
+        "buy_range_allowed": False,
+        "add_range_allowed": False,
+        "five_year_business_test": {"answer": "UNCERTAIN"},
+        "thesis_status": "THESIS_UNDER_REVIEW",
+    }
+    assert _format_buy_range_line(verdict) == "Buy range: not issued (five-year: UNCERTAIN)"
+    assert _format_add_more_range_line(verdict) == "Add-more range: not issued (five-year: UNCERTAIN)"
+
+
+def test_buy_range_keeps_existing_gate_wording():
+    from stockbot.bot import _format_buy_range_line
+
+    assert _format_buy_range_line({"anti_chase_flag": True}) == (
+        "Buy range: not issued (anti-chase: pause new capital)"
+    )
+    assert _format_buy_range_line({"wc_gap_classification": "WORKING_CAPITAL_STRESS"}) == (
+        "Buy range: not issued (WC: WORKING_CAPITAL_STRESS)"
+    )
+    # No identifiable gate still yields the bare line.
+    assert _format_buy_range_line({"buy_range_allowed": False}) == "Buy range: not issued"
+
+
+def test_buy_range_display_does_not_start_suppressing_on_five_year():
+    """This change names the gate; it must not change what gets suppressed.
+    A model-issued zone still displays even with five-year UNCERTAIN."""
+    from stockbot.bot import _format_buy_range_line
+
+    verdict = {
+        "buy_zone_abs": [100.0, 110.0],
+        "buy_range_allowed": True,
+        "five_year_business_test": {"answer": "UNCERTAIN"},
+    }
+    assert _format_buy_range_line(verdict) == "Buy range: ₹100.00–₹110.00"

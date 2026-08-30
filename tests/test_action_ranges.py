@@ -62,3 +62,24 @@ def test_add_more_blocked_on_thesis_broken():
         "wc_gap_classification": None,
     }
     assert add_more_range_blocked_reason(verdict) == "thesis: THESIS_BROKEN"
+
+
+def test_capital_range_reason_covers_shared_gates_only():
+    """The shared gate set must stop at the three that block any new capital.
+    Thesis and add_range_allowed are add-more-specific and must not leak into
+    the buy line."""
+    from stockbot.action_ranges import capital_range_blocked_reason
+
+    assert (
+        capital_range_blocked_reason({"five_year_business_test": {"answer": "UNCERTAIN"}})
+        == "five-year test: UNCERTAIN"
+    )
+    assert (
+        capital_range_blocked_reason({"wc_gap_classification": "WORKING_CAPITAL_STRESS"})
+        == "WC: WORKING_CAPITAL_STRESS"
+    )
+    assert capital_range_blocked_reason({"anti_chase_flag": True}) == "anti-chase: pause new capital"
+    # Add-more-only gates are invisible here, but still block add-more.
+    thesis_only = {"add_range_allowed": True, "thesis_status": "THESIS_BROKEN"}
+    assert capital_range_blocked_reason(thesis_only) is None
+    assert add_more_range_blocked_reason(thesis_only) == "thesis: THESIS_BROKEN"

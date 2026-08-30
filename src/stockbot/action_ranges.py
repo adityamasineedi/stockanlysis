@@ -48,8 +48,15 @@ def compute_add_more_zone_abs(
     return (round(add_low, 2), round(add_high, 2))
 
 
-def add_more_range_blocked_reason(verdict_json: dict) -> str | None:
-    """Return a short reason when constitution gates block add-more display."""
+def capital_range_blocked_reason(verdict_json: dict) -> str | None:
+    """Gates that block *any* new capital — the buy range and add-more alike.
+
+    Split out of ``add_more_range_blocked_reason`` so the buy line can name
+    the same reasons. The buy line used to hand-roll only the anti-chase and
+    WC checks, so a five-year test of NO/UNCERTAIN — a primary buy-zone
+    blocker per the v3 prompt — printed a bare "not issued" with no reason,
+    while the add-more line on the very same card said "(five-year: …)".
+    """
     from stockbot.constitution_gates import (
         should_anti_chase_from_dict,
         wc_gap_blocks_buy_zone,
@@ -67,6 +74,15 @@ def add_more_range_blocked_reason(verdict_json: dict) -> str | None:
     answer = str(five_year.get("answer") or "").strip().upper() if isinstance(five_year, dict) else ""
     if answer and answer != "YES":
         return f"five-year test: {answer}"
+
+    return None
+
+
+def add_more_range_blocked_reason(verdict_json: dict) -> str | None:
+    """Return a short reason when constitution gates block add-more display."""
+    shared = capital_range_blocked_reason(verdict_json)
+    if shared is not None:
+        return shared
 
     thesis = str(verdict_json.get("thesis_status") or "").strip().upper()
     if thesis in _THESIS_BLOCKS_ADD:

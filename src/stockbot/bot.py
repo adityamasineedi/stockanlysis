@@ -53,6 +53,7 @@ from telegram.ext import (
 
 from stockbot.action_ranges import (
     add_more_range_blocked_reason,
+    capital_range_blocked_reason,
     resolve_add_more_zone_abs,
 )
 from stockbot.bot_suggestions import (
@@ -275,10 +276,31 @@ def _capital_range_gate_context(verdict_json: dict) -> tuple[bool, bool, str | N
     return anti_chase, cash_gap_blocks, wc_gap_norm
 
 
+def _range_block_label(reason: str | None) -> str:
+    """Card label for a blocked capital range.
+
+    Shared by the buy and add-more lines so the two cannot describe the same
+    gate differently — or, as before, so one cannot stay silent about a gate
+    the other names.
+    """
+    if not reason:
+        return ""
+    if reason.startswith("anti-chase"):
+        return "anti-chase: pause new capital"
+    for prefix, label in (
+        ("WC:", "WC"),
+        ("five-year test:", "five-year"),
+        ("thesis:", "thesis"),
+    ):
+        if reason.startswith(prefix):
+            return f"{label}: {esc(reason.removeprefix(prefix).strip())}"
+    return ""
+
+
 def _format_buy_range_line(verdict_json: dict) -> str:
     buy_zone = _money_pair(verdict_json.get("buy_zone_abs"))
     buy_range_allowed = verdict_json.get("buy_range_allowed")
-    anti_chase, cash_gap_blocks, wc_gap_norm = _capital_range_gate_context(verdict_json)
+    anti_chase, cash_gap_blocks, _wc_gap_norm = _capital_range_gate_context(verdict_json)
     buy_zone_ok = (
         buy_zone is not None
         and buy_range_allowed is True
@@ -287,10 +309,11 @@ def _format_buy_range_line(verdict_json: dict) -> str:
     )
     if buy_zone_ok:
         return f"Buy range: ₹{buy_zone[0]}–₹{buy_zone[1]}"
-    if anti_chase:
-        return "Buy range: not issued (anti-chase: pause new capital)"
-    if cash_gap_blocks and wc_gap_norm:
-        return f"Buy range: not issued (WC: {esc(wc_gap_norm)})"
+    # Suppression itself is unchanged above; this only names the gate that
+    # caused it, including the five-year test the old branch chain missed.
+    label = _range_block_label(capital_range_blocked_reason(verdict_json))
+    if label:
+        return f"Buy range: not issued ({label})"
     return "Buy range: not issued"
 
 
@@ -304,18 +327,8 @@ def _format_sell_range_line(verdict_json: dict) -> str:
 def _format_add_more_range_line(verdict_json: dict) -> str:
     block_reason = add_more_range_blocked_reason(verdict_json)
     if block_reason:
-        if block_reason.startswith("anti-chase"):
-            return "Add-more range: not issued (anti-chase: pause new capital)"
-        if block_reason.startswith("WC:"):
-            wc_label = block_reason.removeprefix("WC: ").strip()
-            return f"Add-more range: not issued (WC: {esc(wc_label)})"
-        if block_reason.startswith("five-year test:"):
-            label = block_reason.removeprefix("five-year test: ").strip()
-            return f"Add-more range: not issued (five-year: {esc(label)})"
-        if block_reason.startswith("thesis:"):
-            label = block_reason.removeprefix("thesis: ").strip()
-            return f"Add-more range: not issued (thesis: {esc(label)})"
-        return "Add-more range: not issued"
+        label = _range_block_label(block_reason)
+        return f"Add-more range: not issued ({label})" if label else "Add-more range: not issued"
 
     add_zone = resolve_add_more_zone_abs(verdict_json)
     if add_zone is None:
