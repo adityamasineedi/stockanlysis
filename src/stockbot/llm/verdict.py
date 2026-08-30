@@ -159,8 +159,12 @@ reported cash conversion (e.g. 3y ΣCFO/ΣPAT < 0.25, or sharply negative OCF \
 vs profit), set wc_gap_classification and withhold buy/add ranges unless the \
 classification is TEMPORARY_BILLING_CYCLE with a year-by-year CFO-to-PAT \
 reconciliation in the report. A lower price alone never creates an add. \
-Later tranches are conditional. Anti-chase pauses new capital after abnormal \
-short-term surges. Profit review = rebalancing review, not an exact top.
+When a buy range is allowed, present the position_building_plan as a \
+4-tranche table per §13 — tranche 1 may deploy at current price once the \
+quality/five-year/anti-chase gates pass; tranches 2-4 stay valuation-gated \
+and conditional, never automatic solely because price fell. Anti-chase \
+pauses new capital (including tranche 1) after abnormal short-term surges. \
+Profit review = rebalancing review, not an exact top.
 
 At the very end of your report, after the Final Beginner Summary, include a \
 fenced ```json code block containing exactly these fields. Output only valid \

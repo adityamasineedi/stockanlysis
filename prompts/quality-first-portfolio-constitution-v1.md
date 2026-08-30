@@ -32,8 +32,10 @@ growth, valuation multiples, buy levels, or target prices.
    thesis-invalidation trigger is active.
 
 3. **Build positions in phases.** Do not deploy all intended capital at once.
-   Use pre-defined tranches; later tranches are **conditional**, never automatic
-   solely because price fell.
+   Use pre-defined tranches. The first tranche may deploy at current price once
+   the quality gate, five-year test, and anti-chase check are satisfied —
+   averaging in, not timing the entry. Every later tranche is **conditional**,
+   never automatic solely because price fell.
 
 4. **Treat market declines as opportunities only for verified quality.**
    General market fear is not a reason to buy businesses with weakening
@@ -92,9 +94,16 @@ If five_year_business_test.answer != YES:
 
 ## Conditional phased capital (illustrative framework — not auto-execution)
 
-Intended position is built in up to four ~25% tranches. Later tranches require
-thesis intact, refreshed valuation after results, no invalidation, and
-concentration limits. Price decline alone never unlocks a tranche.
+Intended position is built in four ~25% tranches — averaging in over time
+instead of timing a single entry. The first tranche may deploy at current
+price once the quality/five-year/anti-chase gates are satisfied; every later
+tranche stays valuation-gated and conditional. Price decline alone never
+unlocks a tranche.
+
+**If the price rises straight after tranche 1, do not chase it.** Tranche 1
+alone already has you in the position; a rising price after that is itself
+the reward, not a reason to rush the remaining tranches in. The remaining
+75% still waits for its own validated trigger — never for FOMO.
 
 Illustrative shape (limits come from user risk policy, not invented by the bot):
 
@@ -104,26 +113,26 @@ Illustrative shape (limits come from user risk policy, not invented by the bot):
     "maximum_intended_position_pct": null,
     "tranche_1": {
       "allocation_pct_of_intended_position": 25,
-      "trigger": "Price enters validated initial buy range",
+      "trigger": "Immediate, at current market price",
       "required_conditions": [
-        "THESIS_CONFIRMING or THESIS_UNDER_REVIEW",
+        "five_year_business_test.answer == YES",
         "No severe governance or accounting flag",
-        "Valuation support is valid",
-        "No material balance-sheet deterioration"
+        "anti_chase_flag is not active (no abnormal short-term price surge)",
+        "THESIS_CONFIRMING or THESIS_UNDER_REVIEW"
       ]
     },
     "tranche_2": {
       "allocation_pct_of_intended_position": 25,
-      "trigger": "Validated buy-zone or scheduled thesis review",
+      "trigger": "Price enters the validated Ideal Buy Zone",
       "required_conditions": [
-        "All initial conditions remain valid",
+        "All tranche_1 conditions remain valid",
         "Latest results have not weakened the thesis",
         "Position is below the maximum intended allocation"
       ]
     },
     "tranche_3": {
       "allocation_pct_of_intended_position": 25,
-      "trigger": "Validated add-on range",
+      "trigger": "Validated Add More range",
       "required_conditions": [
         "Price decline is valuation-driven rather than thesis-break-driven",
         "Cash conversion, debt, and governance remain acceptable",
@@ -133,7 +142,7 @@ Illustrative shape (limits come from user risk policy, not invented by the bot):
     },
     "tranche_4": {
       "allocation_pct_of_intended_position": 25,
-      "trigger": "Further valuation-supported decline or post-results confirmation",
+      "trigger": "Reserve — further valuation-supported decline or post-results confirmation",
       "required_conditions": [
         "THESIS_CONFIRMING only",
         "No rising leverage, liquidity, or governance concern",
