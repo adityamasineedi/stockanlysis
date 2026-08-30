@@ -143,23 +143,55 @@ def test_format_verdict_reply_shows_anti_chase_when_price_above_base_fv():
     assert "Anti-chase" in text
 
 
-def test_format_verdict_reply_hides_buy_zone_for_legacy_cash_gap_cache():
-    """Mazdock-style cache: buy_range_allowed True but unresolved OCF gap."""
+def test_card_does_not_suppress_buy_zone_on_descriptive_cash_prose():
+    """Prose mentioning cash conversion must not withhold a valid buy zone.
+
+    The card used to fall back to substring-matching report text when
+    wc_gap_classification was null, so a report *praising* cash conversion
+    tripped the same markers as one reporting a gap — the card announced
+    "not issued (WC: RECONCILIATION_REQUIRED)" while the full report printed
+    the zone. Suppression is now driven only by the structured field, so the
+    two agree. The genuinely dangerous case (extreme reported cash conversion
+    with no classification) is caught deterministically at generation time by
+    validate._check_wc_buy_gate, which reads FINANCIALS rather than prose —
+    see test_validate.test_wc_gate_blocks_buy_zone_when_extreme_and_classification_missing.
+    """
     analysis = _analysis()
     analysis.verdict_json["buy_range_allowed"] = True
     analysis.verdict_json["wc_gap_classification"] = None
-    analysis.verdict_json["reasons_avoid"] = [
-        "FY26 operating cash flow was sharply negative despite strong reported profit",
+    analysis.verdict_json["reasons_buy"] = [
+        "Cash conversion is strong — 3-year cumulative OCF/PAT of ~1.26x",
     ]
     analysis.verdict_json["five_year_business_test"] = {
         "answer": "YES",
         "confidence": "MEDIUM",
-        "evidence_for": ["growth"],
-        "evidence_against": ["Cumulative ΣCFO/ΣPAT over the last 3 years is roughly 0.02"],
+        "evidence_for": ["Cumulative ΣCFO/ΣPAT comfortably above 1.0"],
+        "evidence_against": [],
     }
     text = format_verdict_reply(analysis)
+    assert "330.00" in text
+    assert "RECONCILIATION_REQUIRED" not in text
+
+
+def test_card_and_report_agree_on_suppressed_buy_zone():
+    """The card must not claim a zone the constitution gates already nulled."""
+    import dataclasses
+
+    from stockbot.constitution_gates import refresh_constitution_fields
+
+    analysis = _analysis()
+    analysis.verdict_json["buy_range_allowed"] = True
+    analysis.verdict_json["wc_gap_classification"] = "WORKING_CAPITAL_STRESS"
+
+    # What render.py reads for the full report, after the gates run.
+    gated = refresh_constitution_fields(dict(analysis.verdict_json))
+    assert gated["buy_zone_abs"] is None
+    assert gated["buy_range_allowed"] is False
+
+    # What the Telegram card shows for the same verdict.
+    text = format_verdict_reply(dataclasses.replace(analysis, verdict_json=gated))
     assert "Buy Zone: not issued" in text
-    assert "RECONCILIATION_REQUIRED" in text
+    assert "WC: WORKING_CAPITAL_STRESS" in text
     assert "330.00" not in text
 
 

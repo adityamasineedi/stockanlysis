@@ -72,6 +72,8 @@ def build_screen_record(
         key_risks=list(quant.hard_filter.reasons),
         sent_to_ai=ai is not None,
         ai_detail=ai,
+        price_at_scan=quant.current_price_abs,
+        scanned_at=quant.data_timestamp,
     )
     if corr is not None:
         rec.correlation_risk = corr.correlation_risk
