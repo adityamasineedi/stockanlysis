@@ -3,8 +3,9 @@ web server, no public IP. python-telegram-bot v22 (confirmed installed;
 CommandHandler/MessageHandler/Application.run_polling signatures verified
 against the installed package before writing this).
 
-Reply formatting reads verdict_json only, never report_md — the full
-report goes out as a .md file attachment instead. HTML parse mode (not
+Reply formatting reads verdict_json for the in-chat card (compact by
+default). The attached ``.md`` is a reading digest extracted from the full
+Stage 2 report — generation and DB storage are unchanged (no token savings). HTML parse mode (not
 MarkdownV2 — ₹ and decimals break MarkdownV2's escaping rules), so any
 LLM-generated text interpolated into a tag is escaped via html.escape
 first, or a stray '<'/'>'/'&' in the model's own output breaks the whole
@@ -50,6 +51,7 @@ from telegram.ext import (
     filters,
 )
 
+from stockbot.action_ranges import add_more_range_blocked_reason, resolve_add_more_zone_abs
 from stockbot.bot_suggestions import (
     build_inline_query_results,
     build_symbol_pick_keyboard,
@@ -63,6 +65,15 @@ from stockbot.config import (
     parse_telegram_allowed_chat_ids,
     settings,
     setup_logging,
+)
+from stockbot.report_digest import (
+    TELEGRAM_MAX_MISSING,
+    TELEGRAM_MAX_REASON_CHARS,
+    TELEGRAM_MAX_REASONS,
+    TELEGRAM_MAX_WATCH_CHARS,
+    _clip,
+    _compact_context_flags_line,
+    build_compact_attachment_md,
 )
 from stockbot.constitution_gates import (
     should_anti_chase_from_dict,
@@ -220,13 +231,13 @@ def _format_price_abs(value: object) -> str:
         return str(value)
 
 
-def _resolve_base_fair_value(verdict_json: dict) -> tuple[str, str] | None:
-    """Headline FV is always the BASE range — never bear-low–bull-high.
-
-    Prefer the Python-merged fair_value_base_abs; if missing (older saved
-    analyses), recompute from valuation_inputs, then legacy fair_value_abs.
-    """
-    formatted = _money_pair(verdict_json.get("fair_value_base_abs"))
+def _resolve_scenario_fair_value(
+    verdict_json: dict,
+    scenario: str,
+) -> tuple[str, str] | None:
+    """Fair-value band for bear / base / bull — never bear-low–bull-high combined."""
+    key = f"fair_value_{scenario}_abs"
+    formatted = _money_pair(verdict_json.get(key))
     if formatted is not None:
         return formatted
 
@@ -236,11 +247,95 @@ def _resolve_base_fair_value(verdict_json: dict) -> tuple[str, str] | None:
             from stockbot.llm.verdict import ValuationInputs, compute_valuation
 
             valuation = compute_valuation(ValuationInputs.model_validate(raw_inputs))
-            return _money_pair(valuation.fair_value_base_abs)
+            return _money_pair(getattr(valuation, key))
         except Exception:
-            logger.exception("Could not recompute fair_value_base_abs for Telegram card")
+            logger.exception("Could not recompute %s for Telegram card", key)
 
-    return _money_pair(verdict_json.get("fair_value_abs"))
+    if scenario == "base":
+        return _money_pair(verdict_json.get("fair_value_abs"))
+    return None
+
+
+def _resolve_base_fair_value(verdict_json: dict) -> tuple[str, str] | None:
+    """Headline FV is always the BASE range — never bear-low–bull-high."""
+    return _resolve_scenario_fair_value(verdict_json, "base")
+
+
+def _capital_range_gate_context(verdict_json: dict) -> tuple[bool, bool, str | None]:
+    """Shared constitution gates for buy/add range display."""
+    wc_gap = verdict_json.get("wc_gap_classification")
+    wc_gap_norm = str(wc_gap).strip().upper() if wc_gap else None
+    cash_gap_blocks = wc_gap_blocks_buy_zone(wc_gap)
+    anti_chase = bool(verdict_json.get("anti_chase_flag")) or should_anti_chase_from_dict(
+        verdict_json
+    )[0]
+    return anti_chase, cash_gap_blocks, wc_gap_norm
+
+
+def _format_buy_range_line(verdict_json: dict) -> str:
+    buy_zone = _money_pair(verdict_json.get("buy_zone_abs"))
+    buy_range_allowed = verdict_json.get("buy_range_allowed")
+    anti_chase, cash_gap_blocks, wc_gap_norm = _capital_range_gate_context(verdict_json)
+    buy_zone_ok = (
+        buy_zone is not None
+        and buy_range_allowed is True
+        and not cash_gap_blocks
+        and not anti_chase
+    )
+    if buy_zone_ok:
+        return f"Buy range: ₹{buy_zone[0]}–₹{buy_zone[1]}"
+    if anti_chase:
+        return "Buy range: not issued (anti-chase: pause new capital)"
+    if cash_gap_blocks and wc_gap_norm:
+        return f"Buy range: not issued (WC: {esc(wc_gap_norm)})"
+    return "Buy range: not issued"
+
+
+def _format_sell_range_line(verdict_json: dict) -> str:
+    base_fv = _resolve_scenario_fair_value(verdict_json, "base")
+    if base_fv is not None:
+        return f"Sell range: ₹{base_fv[0]}–₹{base_fv[1]}"
+    return "Sell range: unavailable"
+
+
+def _format_add_more_range_line(verdict_json: dict) -> str:
+    block_reason = add_more_range_blocked_reason(verdict_json)
+    if block_reason:
+        if block_reason.startswith("anti-chase"):
+            return "Add-more range: not issued (anti-chase: pause new capital)"
+        if block_reason.startswith("WC:"):
+            wc_label = block_reason.removeprefix("WC: ").strip()
+            return f"Add-more range: not issued (WC: {esc(wc_label)})"
+        if block_reason.startswith("five-year test:"):
+            label = block_reason.removeprefix("five-year test: ").strip()
+            return f"Add-more range: not issued (five-year: {esc(label)})"
+        if block_reason.startswith("thesis:"):
+            label = block_reason.removeprefix("thesis: ").strip()
+            return f"Add-more range: not issued (thesis: {esc(label)})"
+        return "Add-more range: not issued"
+
+    add_zone = resolve_add_more_zone_abs(verdict_json)
+    if add_zone is None:
+        return "Add-more range: unavailable"
+    low, high = f"{add_zone[0]:.2f}", f"{add_zone[1]:.2f}"
+    return f"Add-more range: ₹{low}–₹{high} (on-dip · bear FV)"
+
+
+def _format_take_profit_targets_line(verdict_json: dict) -> str:
+    bull_fv = _resolve_scenario_fair_value(verdict_json, "bull")
+    if bull_fv is not None:
+        return f"Take-profit targets: ₹{bull_fv[0]}–₹{bull_fv[1]}"
+    return "Take-profit targets: unavailable"
+
+
+def _format_profit_review_line(verdict_json: dict) -> str | None:
+    profit_review = verdict_json.get("profit_review")
+    if not isinstance(profit_review, dict):
+        return None
+    status = str(profit_review.get("status") or "").strip().upper()
+    if status != "REVIEW_FOR_REBALANCING":
+        return None
+    return "Profit review: rebalance review triggered (not an automatic sell)"
 
 
 def _format_stage2_mode_line(verdict_json: dict) -> str | None:
@@ -258,34 +353,10 @@ def format_verdict_reply(
     analysis: Analysis,
     *,
     staleness_banner: str | None = None,
+    compact: bool = True,
 ) -> str:
     v = analysis.verdict_json
-    buy_zone = _money_pair(v.get("buy_zone_abs"))
-    buy_range_allowed = v.get("buy_range_allowed")
-    wc_gap = v.get("wc_gap_classification")
-    wc_gap_norm = str(wc_gap).strip().upper() if wc_gap else None
-    # Same deterministic rule the report was rendered under — see
-    # constitution_gates.wc_gap_blocks_buy_zone.
-    cash_gap_blocks = wc_gap_blocks_buy_zone(wc_gap)
-    anti_chase = bool(v.get("anti_chase_flag")) or should_anti_chase_from_dict(v)[0]
-    buy_zone_ok = (
-        buy_zone is not None
-        and buy_range_allowed is True
-        and not cash_gap_blocks
-        and not anti_chase
-    )
-    if buy_zone_ok:
-        buy_zone_line = f"Buy Zone: ₹{buy_zone[0]}–₹{buy_zone[1]}"
-    elif anti_chase:
-        buy_zone_line = "Buy Zone: not issued (anti-chase: pause new capital)"
-    elif cash_gap_blocks and wc_gap_norm:
-        buy_zone_line = f"Buy Zone: not issued (WC: {esc(wc_gap_norm)})"
-    else:
-        buy_zone_line = "Buy Zone: not issued"
-    # fair_value_base_abs is Python-computed (compute_valuation, from the
-    # model's valuation_inputs) and merged into verdict_json by
-    # pipeline.py — not a field the model states directly under v3.
-    fair_value = _resolve_base_fair_value(v) or ("?", "?")
+    anti_chase, cash_gap_blocks, wc_gap_norm = _capital_range_gate_context(v)
 
     lines: list[str] = []
     if staleness_banner:
@@ -295,31 +366,54 @@ def format_verdict_reply(
     five_year = v.get("five_year_business_test") or {}
     five_year_answer = five_year.get("answer") if isinstance(five_year, dict) else None
 
+    action_range_lines = [
+        _format_buy_range_line(v),
+        _format_sell_range_line(v),
+        _format_add_more_range_line(v),
+        _format_take_profit_targets_line(v),
+    ]
+    profit_review_line = _format_profit_review_line(v)
+    if profit_review_line:
+        action_range_lines.append(profit_review_line)
+
     lines.extend(
         [
             f"<b>{esc(v.get('verdict', '?'))}</b> — {esc(analysis.ticker)}",
+            *action_range_lines,
             f"Price: ₹{_format_price_abs(v.get('current_price_abs'))} (as of {esc(v.get('price_date', '?'))})",
-            buy_zone_line,
-            f"Fair Value (base): ₹{fair_value[0]}–₹{fair_value[1]}",
             f"Risk: {esc(v.get('risk', '?'))} · Confidence: {v.get('confidence', '?')}/10",
             f"Holding Period: {esc(v.get('holding_period', '?'))}",
         ]
     )
-    stage2_line = _format_stage2_mode_line(v)
-    if stage2_line:
-        lines.append(stage2_line)
-    if five_year_answer:
-        lines.append(f"5y business test: {esc(str(five_year_answer))}")
-    if wc_gap_norm:
-        lines.append(f"WC gap: {esc(wc_gap_norm)}")
-    if anti_chase:
-        lines.append("Anti-chase: pause new capital — valuation recheck")
     tension = v.get("external_valuation_tension")
-    if tension and str(tension).upper() not in ("NONE", ""):
-        lines.append(f"Valuation tension: {esc(str(tension))}")
-    if v.get("thesis_status"):
-        lines.append(f"Thesis: {esc(str(v.get('thesis_status')))}")
-    for er_line in format_expected_return_telegram(v.get("expected_return") or {}):
+    stage2_line = _format_stage2_mode_line(v)
+    if compact:
+        flags_line = _compact_context_flags_line(
+            five_year_answer=str(five_year_answer) if five_year_answer else None,
+            wc_gap_norm=wc_gap_norm,
+            anti_chase=anti_chase,
+            tension=tension,
+            thesis_status=v.get("thesis_status"),
+        )
+        if flags_line:
+            lines.append(esc(flags_line))
+    else:
+        if stage2_line:
+            lines.append(stage2_line)
+        if five_year_answer:
+            lines.append(f"5y business test: {esc(str(five_year_answer))}")
+        if wc_gap_norm:
+            lines.append(f"WC gap: {esc(wc_gap_norm)}")
+        if anti_chase:
+            lines.append("Anti-chase: pause new capital — valuation recheck")
+        if tension and str(tension).upper() not in ("NONE", ""):
+            lines.append(f"Valuation tension: {esc(str(tension))}")
+        if v.get("thesis_status"):
+            lines.append(f"Thesis: {esc(str(v.get('thesis_status')))}")
+    for er_line in format_expected_return_telegram(
+        v.get("expected_return") or {},
+        compact=compact,
+    ):
         lines.append(esc(er_line))
     lines.extend(
         [
@@ -327,20 +421,41 @@ def format_verdict_reply(
             "<b>Why buy</b>",
         ]
     )
-    for reason in v.get("reasons_buy") or []:
-        lines.append(f"• {esc(reason)}")
+    reasons_buy = v.get("reasons_buy") or []
+    if compact:
+        reasons_buy = reasons_buy[:TELEGRAM_MAX_REASONS]
+    for reason in reasons_buy:
+        text = _clip(reason, TELEGRAM_MAX_REASON_CHARS) if compact else str(reason)
+        lines.append(f"• {esc(text)}")
     lines.append("")
     lines.append("<b>Why avoid</b>")
-    for reason in v.get("reasons_avoid") or []:
-        lines.append(f"• {esc(reason)}")
+    reasons_avoid = v.get("reasons_avoid") or []
+    if compact:
+        reasons_avoid = reasons_avoid[:TELEGRAM_MAX_REASONS]
+    for reason in reasons_avoid:
+        text = _clip(reason, TELEGRAM_MAX_REASON_CHARS) if compact else str(reason)
+        lines.append(f"• {esc(text)}")
     lines.append("")
-    lines.append(f"<b>Biggest watch:</b> {esc(v.get('biggest_watch', '?'))}")
+    watch = v.get("biggest_watch", "?")
+    if compact:
+        watch = _clip(watch, TELEGRAM_MAX_WATCH_CHARS)
+    lines.append(f"<b>Biggest watch:</b> {esc(watch)}")
 
-    for item in analysis.missing:
-        lines.append(f"⚠️ {esc(item)}")
+    missing = analysis.missing
+    if compact and len(missing) > TELEGRAM_MAX_MISSING:
+        for item in missing[:TELEGRAM_MAX_MISSING]:
+            lines.append(f"⚠️ {esc(item)}")
+        lines.append(f"⚠️ … +{len(missing) - TELEGRAM_MAX_MISSING} more data gaps")
+    else:
+        for item in missing:
+            lines.append(f"⚠️ {esc(item)}")
 
     lines.append("")
     lines.append(DISCLAIMER)
+    if compact:
+        lines.append(
+            "<i>Digest attached; full §1–§16 report stored internally (same LLM run).</i>"
+        )
 
     text = "\n".join(lines)
     if len(text) > TELEGRAM_MAX_MESSAGE_LENGTH:
@@ -422,10 +537,16 @@ async def _deliver_result(update: Update, result: PipelineResult, status_message
     await _send_report_attachment(update, analysis)
 
 
-def _write_report_file(analysis: Analysis):
+def _write_report_file(analysis: Analysis, *, compact: bool = True):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = REPORTS_DIR / f"{analysis.ticker}_{analysis.run_date.isoformat()}.md"
-    report_path.write_text(analysis.report_md, encoding="utf-8")
+    suffix = "digest" if compact else "full"
+    report_path = REPORTS_DIR / f"{analysis.ticker}_{analysis.run_date.isoformat()}_{suffix}.md"
+    body = (
+        build_compact_attachment_md(analysis)
+        if compact
+        else analysis.report_md
+    )
+    report_path.write_text(body, encoding="utf-8")
     return report_path
 
 

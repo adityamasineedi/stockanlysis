@@ -164,7 +164,11 @@ def format_cagr_range(pair: tuple[float, float] | list[float]) -> str:
     return f"{low:.1f}%–{high:.1f}%"
 
 
-def format_expected_return_telegram(expected_return: dict) -> list[str]:
+def format_expected_return_telegram(
+    expected_return: dict,
+    *,
+    compact: bool = False,
+) -> list[str]:
     """HTML lines for the Telegram verdict card."""
     if not isinstance(expected_return, dict):
         return []
@@ -174,6 +178,16 @@ def format_expected_return_telegram(expected_return: dict) -> list[str]:
     bull = expected_return.get("bull_cagr_range_pct")
     if not all(isinstance(x, (list, tuple)) and len(x) >= 2 for x in (bear, base, bull)):
         return []
+
+    cagr_line = (
+        f"Expected {horizon}y CAGR: Bear {format_cagr_range(bear)} · "
+        f"Base {format_cagr_range(base)} · Bull {format_cagr_range(bull)}"
+    )
+    if compact:
+        mode = expected_return.get("display_mode")
+        if mode == "EDUCATIONAL_ONLY":
+            cagr_line += " (educational only)"
+        return [cagr_line]
 
     lines = [
         f"Expected {horizon}y CAGR (scenarios, not guaranteed):",

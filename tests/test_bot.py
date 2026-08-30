@@ -75,14 +75,50 @@ def test_format_verdict_reply_contains_key_fields():
     assert "WATCH" in text
     assert "412.5" in text
     assert "330.00" in text and "355.00" in text
-    assert "Fair Value (base): ₹420.00–₹470.00" in text
+    assert "Buy range: ₹330.00–₹355.00" in text
+    assert "Sell range: ₹420.00–₹470.00" in text
+    assert "Take-profit targets: ₹540.00–₹600.00" in text
     assert "MEDIUM" in text
+
+
+def test_format_verdict_reply_action_ranges_before_price():
+    text = format_verdict_reply(_analysis())
+    headline = text.find("— TEST")
+    buy = text.find("Buy range:")
+    sell = text.find("Sell range:")
+    add_more = text.find("Add-more range:")
+    take_profit = text.find("Take-profit targets:")
+    price = text.find("Price:")
+    assert headline < buy < sell < add_more < take_profit < price
+
+
+def test_format_verdict_reply_shows_add_more_range_when_allowed():
+    analysis = _analysis()
+    analysis.verdict_json["add_range_allowed"] = True
+    text = format_verdict_reply(analysis)
+    assert "Add-more range: ₹300.00–₹330.00 (on-dip · bear FV)" in text
+
+
+def test_format_verdict_reply_compact_limits_reason_bullets():
+    analysis = _analysis()
+    analysis.verdict_json["reasons_buy"] = ["Reason A", "Reason B", "Reason C"]
+    text = format_verdict_reply(analysis, compact=True)
+    assert "Reason A" in text
+    assert "Reason B" in text
+    assert "Reason C" not in text
+
+
+def test_format_verdict_reply_full_shows_all_reasons():
+    analysis = _analysis()
+    analysis.verdict_json["reasons_buy"] = ["Reason A", "Reason B", "Reason C"]
+    text = format_verdict_reply(analysis, compact=False)
+    assert "Reason C" in text
 
 
 def test_format_verdict_reply_shows_stage2_mode():
     analysis = _analysis()
     analysis.verdict_json["stage2_mode"] = "LITE"
-    text = format_verdict_reply(analysis)
+    text = format_verdict_reply(analysis, compact=False)
     assert "Stage 2:" in text
     assert "LITE" in text
     assert "Haiku compact report" in text
@@ -92,7 +128,7 @@ def test_format_verdict_reply_shows_forced_full_override():
     analysis = _analysis()
     analysis.verdict_json["stage2_mode"] = "FULL"
     analysis.verdict_json["stage2_mode_forced"] = True
-    text = format_verdict_reply(analysis)
+    text = format_verdict_reply(analysis, compact=False)
     assert "Stage 2:" in text
     assert "FULL" in text
     assert "config override" in text
@@ -118,8 +154,7 @@ def test_format_verdict_reply_shows_expected_return_scenarios():
     }
     text = format_verdict_reply(analysis)
     assert "Expected 3y CAGR" in text
-    assert "Educational scenario ranges only" in text
-    assert "8.0%" in text or "8.0%–12.0%" in text
+    assert "educational only" in text.lower()
 
 
 def test_format_verdict_reply_hides_buy_zone_when_wc_not_temporary():
@@ -127,7 +162,7 @@ def test_format_verdict_reply_hides_buy_zone_when_wc_not_temporary():
     analysis.verdict_json["buy_range_allowed"] = True
     analysis.verdict_json["wc_gap_classification"] = "INCONCLUSIVE"
     text = format_verdict_reply(analysis)
-    assert "Buy Zone: not issued" in text
+    assert "Buy range: not issued" in text
     assert "WC: INCONCLUSIVE" in text
     assert "330.00" not in text
 
@@ -143,7 +178,7 @@ def test_format_verdict_reply_shows_anti_chase_when_price_above_base_fv():
         "eps_bull": 88.0, "multiple_bull": [36.0, 40.0],
     }
     text = format_verdict_reply(analysis)
-    assert "Anti-chase" in text
+    assert "anti-chase" in text.lower()
 
 
 def test_card_does_not_suppress_buy_zone_on_descriptive_cash_prose():
@@ -193,7 +228,7 @@ def test_card_and_report_agree_on_suppressed_buy_zone():
 
     # What the Telegram card shows for the same verdict.
     text = format_verdict_reply(dataclasses.replace(analysis, verdict_json=gated))
-    assert "Buy Zone: not issued" in text
+    assert "Buy range: not issued" in text
     assert "WC: WORKING_CAPITAL_STRESS" in text
     assert "330.00" not in text
 
@@ -207,7 +242,7 @@ def test_format_verdict_reply_recomputes_base_fv_when_abs_missing():
     del analysis.verdict_json["fair_value_bull_abs"]
     text = format_verdict_reply(analysis)
     # 25 × [16, 18] = 400–450
-    assert "Fair Value (base): ₹400.00–₹450.00" in text
+    assert "Sell range: ₹400.00–₹450.00" in text
     assert "₹300.00" not in text  # must not fall through to bear
 
 
@@ -218,7 +253,7 @@ def test_format_verdict_reply_falls_back_to_legacy_fair_value_abs():
     analysis.verdict_json.pop("valuation_inputs", None)
     analysis.verdict_json["fair_value_abs"] = [330.0, 380.0]
     text = format_verdict_reply(analysis)
-    assert "Fair Value (base): ₹330.00–₹380.00" in text
+    assert "Sell range: ₹330.00–₹380.00" in text
 
 
 def test_format_verdict_reply_rounds_display_price():
