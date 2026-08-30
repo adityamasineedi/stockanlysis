@@ -220,13 +220,13 @@ def _format_price_abs(value: object) -> str:
         return str(value)
 
 
-def _resolve_base_fair_value(verdict_json: dict) -> tuple[str, str] | None:
-    """Headline FV is always the BASE range — never bear-low–bull-high.
-
-    Prefer the Python-merged fair_value_base_abs; if missing (older saved
-    analyses), recompute from valuation_inputs, then legacy fair_value_abs.
-    """
-    formatted = _money_pair(verdict_json.get("fair_value_base_abs"))
+def _resolve_scenario_fair_value(
+    verdict_json: dict,
+    scenario: str,
+) -> tuple[str, str] | None:
+    """Fair-value band for bear / base / bull — never bear-low–bull-high combined."""
+    key = f"fair_value_{scenario}_abs"
+    formatted = _money_pair(verdict_json.get(key))
     if formatted is not None:
         return formatted
 
@@ -236,11 +236,94 @@ def _resolve_base_fair_value(verdict_json: dict) -> tuple[str, str] | None:
             from stockbot.llm.verdict import ValuationInputs, compute_valuation
 
             valuation = compute_valuation(ValuationInputs.model_validate(raw_inputs))
-            return _money_pair(valuation.fair_value_base_abs)
+            return _money_pair(getattr(valuation, key))
         except Exception:
-            logger.exception("Could not recompute fair_value_base_abs for Telegram card")
+            logger.exception("Could not recompute %s for Telegram card", key)
 
-    return _money_pair(verdict_json.get("fair_value_abs"))
+    if scenario == "base":
+        return _money_pair(verdict_json.get("fair_value_abs"))
+    return None
+
+
+def _resolve_base_fair_value(verdict_json: dict) -> tuple[str, str] | None:
+    """Headline FV is always the BASE range — never bear-low–bull-high."""
+    return _resolve_scenario_fair_value(verdict_json, "base")
+
+
+def _capital_range_gate_context(verdict_json: dict) -> tuple[bool, bool, str | None]:
+    """Shared constitution gates for buy/add range display."""
+    wc_gap = verdict_json.get("wc_gap_classification")
+    wc_gap_norm = str(wc_gap).strip().upper() if wc_gap else None
+    cash_gap_blocks = wc_gap_blocks_buy_zone(wc_gap)
+    anti_chase = bool(verdict_json.get("anti_chase_flag")) or should_anti_chase_from_dict(
+        verdict_json
+    )[0]
+    return anti_chase, cash_gap_blocks, wc_gap_norm
+
+
+def _format_buy_range_line(verdict_json: dict) -> str:
+    buy_zone = _money_pair(verdict_json.get("buy_zone_abs"))
+    buy_range_allowed = verdict_json.get("buy_range_allowed")
+    anti_chase, cash_gap_blocks, wc_gap_norm = _capital_range_gate_context(verdict_json)
+    buy_zone_ok = (
+        buy_zone is not None
+        and buy_range_allowed is True
+        and not cash_gap_blocks
+        and not anti_chase
+    )
+    if buy_zone_ok:
+        return f"Buy range: ₹{buy_zone[0]}–₹{buy_zone[1]}"
+    if anti_chase:
+        return "Buy range: not issued (anti-chase: pause new capital)"
+    if cash_gap_blocks and wc_gap_norm:
+        return f"Buy range: not issued (WC: {esc(wc_gap_norm)})"
+    return "Buy range: not issued"
+
+
+def _format_sell_range_line(verdict_json: dict) -> str:
+    base_fv = _resolve_scenario_fair_value(verdict_json, "base")
+    if base_fv is not None:
+        return f"Sell range: ₹{base_fv[0]}–₹{base_fv[1]}"
+    return "Sell range: unavailable"
+
+
+def _format_add_more_range_line(verdict_json: dict) -> str:
+    anti_chase, cash_gap_blocks, wc_gap_norm = _capital_range_gate_context(verdict_json)
+    bear_fv = _resolve_scenario_fair_value(verdict_json, "bear")
+    add_range_allowed = verdict_json.get("add_range_allowed")
+    if (
+        add_range_allowed is True
+        and bear_fv is not None
+        and not cash_gap_blocks
+        and not anti_chase
+    ):
+        return f"Add-more range: ₹{bear_fv[0]}–₹{bear_fv[1]}"
+    if anti_chase:
+        return "Add-more range: not issued (anti-chase: pause new capital)"
+    if cash_gap_blocks and wc_gap_norm:
+        return f"Add-more range: not issued (WC: {esc(wc_gap_norm)})"
+    if add_range_allowed is not True:
+        return "Add-more range: not issued"
+    if bear_fv is None:
+        return "Add-more range: unavailable"
+    return "Add-more range: not issued"
+
+
+def _format_take_profit_targets_line(verdict_json: dict) -> str:
+    bull_fv = _resolve_scenario_fair_value(verdict_json, "bull")
+    if bull_fv is not None:
+        return f"Take-profit targets: ₹{bull_fv[0]}–₹{bull_fv[1]}"
+    return "Take-profit targets: unavailable"
+
+
+def _format_profit_review_line(verdict_json: dict) -> str | None:
+    profit_review = verdict_json.get("profit_review")
+    if not isinstance(profit_review, dict):
+        return None
+    status = str(profit_review.get("status") or "").strip().upper()
+    if status != "REVIEW_FOR_REBALANCING":
+        return None
+    return "Profit review: rebalance review triggered (not an automatic sell)"
 
 
 def _format_stage2_mode_line(verdict_json: dict) -> str | None:
@@ -260,32 +343,7 @@ def format_verdict_reply(
     staleness_banner: str | None = None,
 ) -> str:
     v = analysis.verdict_json
-    buy_zone = _money_pair(v.get("buy_zone_abs"))
-    buy_range_allowed = v.get("buy_range_allowed")
-    wc_gap = v.get("wc_gap_classification")
-    wc_gap_norm = str(wc_gap).strip().upper() if wc_gap else None
-    # Same deterministic rule the report was rendered under — see
-    # constitution_gates.wc_gap_blocks_buy_zone.
-    cash_gap_blocks = wc_gap_blocks_buy_zone(wc_gap)
-    anti_chase = bool(v.get("anti_chase_flag")) or should_anti_chase_from_dict(v)[0]
-    buy_zone_ok = (
-        buy_zone is not None
-        and buy_range_allowed is True
-        and not cash_gap_blocks
-        and not anti_chase
-    )
-    if buy_zone_ok:
-        buy_zone_line = f"Buy Zone: ₹{buy_zone[0]}–₹{buy_zone[1]}"
-    elif anti_chase:
-        buy_zone_line = "Buy Zone: not issued (anti-chase: pause new capital)"
-    elif cash_gap_blocks and wc_gap_norm:
-        buy_zone_line = f"Buy Zone: not issued (WC: {esc(wc_gap_norm)})"
-    else:
-        buy_zone_line = "Buy Zone: not issued"
-    # fair_value_base_abs is Python-computed (compute_valuation, from the
-    # model's valuation_inputs) and merged into verdict_json by
-    # pipeline.py — not a field the model states directly under v3.
-    fair_value = _resolve_base_fair_value(v) or ("?", "?")
+    anti_chase, cash_gap_blocks, wc_gap_norm = _capital_range_gate_context(v)
 
     lines: list[str] = []
     if staleness_banner:
@@ -295,12 +353,21 @@ def format_verdict_reply(
     five_year = v.get("five_year_business_test") or {}
     five_year_answer = five_year.get("answer") if isinstance(five_year, dict) else None
 
+    action_range_lines = [
+        _format_buy_range_line(v),
+        _format_sell_range_line(v),
+        _format_add_more_range_line(v),
+        _format_take_profit_targets_line(v),
+    ]
+    profit_review_line = _format_profit_review_line(v)
+    if profit_review_line:
+        action_range_lines.append(profit_review_line)
+
     lines.extend(
         [
             f"<b>{esc(v.get('verdict', '?'))}</b> — {esc(analysis.ticker)}",
+            *action_range_lines,
             f"Price: ₹{_format_price_abs(v.get('current_price_abs'))} (as of {esc(v.get('price_date', '?'))})",
-            buy_zone_line,
-            f"Fair Value (base): ₹{fair_value[0]}–₹{fair_value[1]}",
             f"Risk: {esc(v.get('risk', '?'))} · Confidence: {v.get('confidence', '?')}/10",
             f"Holding Period: {esc(v.get('holding_period', '?'))}",
         ]
