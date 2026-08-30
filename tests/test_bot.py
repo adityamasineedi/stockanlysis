@@ -354,3 +354,21 @@ def test_consume_awaiting_symbol():
     assert _consume_awaiting(ctx, AWAITING_PRESCAN_SYMBOL) is True
     assert AWAITING_PRESCAN_SYMBOL not in ctx.user_data
     assert _consume_awaiting(ctx, AWAITING_PRESCAN_SYMBOL) is False
+
+
+def test_analysis_lock_allows_one_run_at_a_time():
+    import asyncio
+
+    from stockbot.bot import _active_analysis_query, _end_analysis, _try_begin_analysis
+
+    async def scenario() -> None:
+        await _end_analysis()
+        assert await _try_begin_analysis("TCS") is True
+        assert await _active_analysis_query() == "TCS"
+        assert await _try_begin_analysis("INFY") is False
+        await _end_analysis()
+        assert await _active_analysis_query() is None
+        assert await _try_begin_analysis("INFY") is True
+        await _end_analysis()
+
+    asyncio.run(scenario())
