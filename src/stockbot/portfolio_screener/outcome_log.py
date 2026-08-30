@@ -416,10 +416,7 @@ from stockbot.portfolio_screener.prescan_display import (
     BAND_ICONS,
     BAND_LABELS,
     CASH_ICONS,
-    CASH_LABELS,
     VERDICT_ICONS,
-    VERDICT_LABELS,
-    format_qgs_from_row,
 )
 
 CANDIDATES_USAGE = (
@@ -430,8 +427,8 @@ CANDIDATES_USAGE = (
     "/candidates watchlist — watchlist (score 60–69)\n"
     "/candidates quality 65 — Quality score ≥65 and analyze-ready\n"
     "/candidates all — every logged prescan (latest per symbol)\n\n"
-    "Each line shows: tier · overall score · Quality/Growth/Strength · "
-    "cash-flow gate · whether /analyze is OK.\n"
+    "Names are grouped by tier, best first. Each row shows: symbol · overall "
+    "score · Q/G/S pillars · status icons (explained under the list).\n"
     "Run <code>/prescan SYMBOL</code> first to build the list."
 )
 
@@ -494,45 +491,64 @@ def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
     )
 
 
-def _format_qgs(row: dict[str, Any]) -> str:
-    text = format_qgs_from_row(row)
-    if text == "Pillar scores unavailable":
-        return text
-    labels = (
-        ("quality_score", "Quality"),
-        ("growth_score", "Growth"),
-        ("strength_score", "Strength"),
-    )
-    present = sum(
-        1 for key, _ in labels if isinstance(row.get(key), (int, float))
-    )
-    if present < 3:
-        return text + " (partial — re-run /prescan for full scores)"
-    return text
+# Tier order for the grouped list — best first, matching the Overall sort.
+_BAND_ORDER = ("STRONG_CANDIDATE", "CANDIDATE", "WATCHLIST", "REMOVE")
+
+# Cash states worth a per-row icon. PASS and NOT_APPLICABLE are the common,
+# uninteresting cases — printing them on every row is what made the old list
+# read as a wall of identical text, so they stay in /prescan detail only.
+_QUIET_CASH_STATES = frozenset({"PASS", "NOT_APPLICABLE", ""})
+
+_ICON_LEGEND: dict[str, str] = {
+    "✅": "ready for /analyze",
+    "🔎": "sector review first",
+    "👀": "monitor only",
+    "❌": "not suitable",
+    "📭": "data missing",
+    "💛": "check cash flow",
+    "🧡": "cash flow — elevated watch",
+    "❤️": "cash flow weak",
+    "🔥": "loss-maker — watch burn",
+    "❔": "not enough cash history",
+}
 
 
-def _format_prescan_row_html(row: dict[str, Any]) -> str:
-    ticker = html_escape(str(row.get("ticker") or "?"))
-    band = str(row.get("candidate_band") or "")
-    band_icon = BAND_ICONS.get(band, "📊")
-    band_label = html_escape(BAND_LABELS.get(band, "Unranked"))
-    qgs = html_escape(_format_qgs(row))
-    quant = row.get("quant_score")
-    quant_txt = f"{quant:.1f}" if isinstance(quant, (int, float)) else "?"
+def _row_status_icons(row: dict[str, Any]) -> str:
+    """Trailing icons for one row: route verdict, plus cash only when notable."""
+    icons = [VERDICT_ICONS.get(str(row.get("verdict") or ""), "📋")]
     cash = str(row.get("cash_conversion_status") or "")
-    cash_icon = CASH_ICONS.get(cash, "💵")
-    cash_label = html_escape(CASH_LABELS.get(cash, cash or "Cash unknown"))
-    verdict = str(row.get("verdict") or "")
-    verdict_icon = VERDICT_ICONS.get(verdict, "📋")
-    verdict_label = html_escape(VERDICT_LABELS.get(verdict, verdict or "Unknown route"))
-    headline = (
-        f"{band_icon} <b>{ticker}</b> — {band_label} · Overall {quant_txt}/100"
-    )
-    detail = (
-        f"   {qgs}\n"
-        f"   {cash_icon} {cash_label} · {verdict_icon} {verdict_label}"
-    )
-    return f"{headline}\n{detail}"
+    if cash not in _QUIET_CASH_STATES:
+        icons.append(CASH_ICONS.get(cash, "💵"))
+    return "".join(icons)
+
+
+def _compact_pillars(row: dict[str, Any]) -> str:
+    """Q/G/S as fixed-width columns so they line up under each other."""
+    parts = []
+    for key, letter in (
+        ("quality_score", "Q"),
+        ("growth_score", "G"),
+        ("strength_score", "S"),
+    ):
+        value = row.get(key)
+        parts.append(f"{letter}{value:>2.0f}" if isinstance(value, (int, float)) else f"{letter} –")
+    return " ".join(parts)
+
+
+def _format_prescan_row_html(row: dict[str, Any], ticker_width: int = 10) -> str:
+    """One monospace row: TICKER, Overall, Q/G/S, status icons.
+
+    Overall keeps one decimal on purpose — rounding it to a whole number made
+    60.3 (Watchlist) and 59.6 (Below threshold) both print "60", so the score
+    contradicted the tier heading right above it.
+    """
+    ticker = html_escape(str(row.get("ticker") or "?"))
+    quant = row.get("quant_score")
+    score = f"{quant:.1f}" if isinstance(quant, (int, float)) else "?"
+    return (
+        f"{ticker:<{ticker_width}} {score:>5}  "
+        f"{_compact_pillars(row)} {_row_status_icons(row)}"
+    ).rstrip()
 
 
 def format_prescan_telegram_chunks(
@@ -552,22 +568,71 @@ def format_prescan_telegram_chunks(
         ]
 
     header = (
-        f"<b>📋 Prescan list — {html_escape(title)}</b>\n"
-        f"{len(rows)} name(s). Full detail: <code>/prescan SYMBOL</code>\n"
-        "<i>Overall</i> = combined score (0–100). "
-        "<i>Quality / Growth / Strength</i> = the three pillar scores.\n\n"
+        f"<b>📋 Prescan — {html_escape(title)}</b>\n"
+        f"{len(rows)} name(s). Detail: <code>/prescan SYMBOL</code>\n"
+        "<i>Overall</i> counts all 9 inputs. The <i>Q/G/S</i> shown are 3 of them "
+        "(about half the score) — valuation, cash flow, debt and risk make up the rest, "
+        "so a name can show strong Q/G/S and still score low overall.\n\n"
     )
-    chunks: list[str] = []
-    current = header
+
+    ticker_width = min(max((len(str(r.get("ticker") or "?")) for r in rows), default=8), 12)
+
+    # Group by tier so the band label is a heading instead of repeating on
+    # every row; rows within a group keep the Overall-descending order they
+    # arrived in.
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        line = _format_prescan_row_html(row) + "\n"
-        if len(current) + len(line) > max_len and current.strip():
-            chunks.append(current.rstrip())
-            current = line
+        band = str(row.get("candidate_band") or "")
+        grouped.setdefault(band if band in _BAND_ORDER else "", []).append(row)
+    ordered_bands = [b for b in _BAND_ORDER if b in grouped] + ([""] if "" in grouped else [])
+
+    used_icons: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    for band in ordered_bands:
+        icon = BAND_ICONS.get(band, "📊")
+        label = html_escape(BAND_LABELS.get(band, "Unranked")).upper()
+        lines = []
+        for row in grouped[band]:
+            lines.append(_format_prescan_row_html(row, ticker_width))
+            for ch in _row_status_icons(row):
+                if ch in _ICON_LEGEND and ch not in used_icons:
+                    used_icons.append(ch)
+        sections.append((f"{icon} <b>{label}</b>", lines))
+
+    chunks: list[str] = []
+    current = header.rstrip()
+
+    def _append(block: str) -> None:
+        nonlocal current
+        current = f"{current}\n\n{block}" if current else block
+
+    # <pre> gives the rows a monospace grid — without it the score columns
+    # wander and the table stops being scannable.
+    for head, lines in sections:
+        index = 0
+        while index < len(lines):
+            taken: list[str] = []
+            for line in lines[index:]:
+                candidate = f"{head}\n<pre>" + "\n".join([*taken, line]) + "</pre>"
+                if taken and len(current) + 2 + len(candidate) > max_len:
+                    break
+                taken.append(line)
+            if len(current) + 2 + len(f"{head}\n<pre>{taken[0]}</pre>") > max_len and current:
+                chunks.append(current)
+                current = ""
+                continue
+            _append(f"{head}\n<pre>" + "\n".join(taken) + "</pre>")
+            index += len(taken)
+
+    legend = " · ".join(f"{ch} {_ICON_LEGEND[ch]}" for ch in used_icons)
+    if legend:
+        if len(current) + 2 + len(legend) > max_len:
+            chunks.append(current)
+            current = legend
         else:
-            current += line
+            _append(legend)
     if current.strip():
-        chunks.append(current.rstrip())
+        chunks.append(current)
     return chunks
 
 
