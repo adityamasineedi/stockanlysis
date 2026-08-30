@@ -37,7 +37,7 @@ import html
 import logging
 from datetime import UTC, datetime
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, ForceReply, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -93,6 +93,40 @@ DISCLAIMER = (
 # working — found live: nothing previously stopped this, and a restart
 # mid-analysis silently abandoned the in-flight thread with no recovery.
 _IN_FLIGHT: set[str] = set()
+
+# Set when user taps /prescan or /analyze from Telegram's menu without a symbol.
+AWAITING_PRESCAN_SYMBOL = "awaiting_prescan_symbol"
+AWAITING_ANALYZE_SYMBOL = "awaiting_analyze_symbol"
+
+
+def _clear_awaiting_symbol(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop(AWAITING_PRESCAN_SYMBOL, None)
+    context.user_data.pop(AWAITING_ANALYZE_SYMBOL, None)
+
+
+def _consume_awaiting(context: ContextTypes.DEFAULT_TYPE, key: str) -> bool:
+    return bool(context.user_data.pop(key, False))
+
+
+async def _prompt_for_symbol(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    awaiting_key: str,
+    headline: str,
+    example: str,
+) -> None:
+    context.user_data[awaiting_key] = True
+    await update.message.reply_text(
+        f"{headline}\n\n"
+        "Send the <b>NSE symbol or company name</b> in your next message.\n"
+        f"Example: <code>{esc(example)}</code>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=ForceReply(
+            selective=True,
+            input_field_placeholder=f"e.g. {example}",
+        ),
+    )
 
 
 def esc(value: object) -> str:
@@ -444,11 +478,15 @@ async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     query, force = _parse_analyze_command_args(context.args)
     if not query:
-        await update.message.reply_text(
-            "Usage: /analyze <company name or symbol>\n"
-            "       /analyze force <symbol> — bypass eligibility gate (not recommended)"
+        await _prompt_for_symbol(
+            update,
+            context,
+            awaiting_key=AWAITING_ANALYZE_SYMBOL,
+            headline="Which stock should I analyze?",
+            example="BEL",
         )
         return
+    _clear_awaiting_symbol(context)
     await _run_and_reply(update, query, force=force)
 
 
@@ -466,12 +504,15 @@ async def handle_prescan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     query = " ".join(context.args) if context.args else ""
     if not query:
-        await update.message.reply_text(
-            "Usage: /prescan <symbol or name>\n"
-            "Example: /prescan BEL\n\n"
-            "Cheap check: is this stock worth expensive deep /analyze?"
+        await _prompt_for_symbol(
+            update,
+            context,
+            awaiting_key=AWAITING_PRESCAN_SYMBOL,
+            headline="Which stock should I pre-scan?",
+            example="BEL",
         )
         return
+    _clear_awaiting_symbol(context)
     await _run_prescan_and_reply(update, query)
 
 
@@ -520,12 +561,22 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     prescan_query = _parse_prescan_plain_text(text)
     if prescan_query is not None:
+        _clear_awaiting_symbol(context)
         await _run_prescan_and_reply(update, prescan_query)
         return
     force_query = _parse_force_analyze_plain_text(text)
     if force_query is not None:
+        _clear_awaiting_symbol(context)
         query, force = force_query
         await _run_and_reply(update, query, force=force)
+        return
+    if _consume_awaiting(context, AWAITING_PRESCAN_SYMBOL):
+        _clear_awaiting_symbol(context)
+        await _run_prescan_and_reply(update, text)
+        return
+    if _consume_awaiting(context, AWAITING_ANALYZE_SYMBOL):
+        _clear_awaiting_symbol(context)
+        await _run_and_reply(update, text, force=False)
         return
     await _run_and_reply(update, text)
 
@@ -533,6 +584,7 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    _clear_awaiting_symbol(context)
     args = list(context.args or [])
     chunks, err = await asyncio.to_thread(build_candidates_messages, args)
     if err:
@@ -545,19 +597,22 @@ async def handle_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    _clear_awaiting_symbol(context)
     await update.message.reply_text(
         "Commands:\n"
-        "/prescan <symbol> — cheap check: worth deep analysis?\n"
+        "/prescan — tap from menu, then send the stock name\n"
+        "/prescan <symbol> — one-step example: /prescan BEL\n"
         "/candidates — list analyze-ready names from prescan history\n"
         "/candidates strong|candidate|watchlist — filter by score tier\n"
         "/candidates quality 65 — Quality ≥65 and analyze-ready\n"
+        "/analyze — tap from menu, then send the stock name\n"
         "/analyze <company> — full deep analysis (requires prescan eligibility)\n"
         "/analyze force <symbol> — bypass gate (not recommended)\n"
         "/refresh SYMBOL — clear cached analysis for symbol\n"
         "/refresh backfill — recompute gates + expected_return on cached rows\n"
         "/spend — month-to-date cost\n"
         "/health — cost/token/quality audit (no LLM spend)\n\n"
-        "Or send: /prescan BEL\n\n"
+        "Tip: after /prescan, just reply with BEL (no need to type prescan again).\n\n"
         "Educational research only — not investment advice."
     )
 
@@ -565,6 +620,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    _clear_awaiting_symbol(context)
     args = list(context.args or [])
     if not args:
         await update.message.reply_text(
@@ -593,6 +649,7 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def handle_spend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    _clear_awaiting_symbol(context)
     spent = await asyncio.to_thread(month_to_date_spend)
     await update.message.reply_text(
         f"Month-to-date spend: ₹{spent:.2f} of ₹{settings.monthly_budget_inr:.0f}"
@@ -610,6 +667,7 @@ def _write_health_audit_file(markdown: str):
 async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    _clear_awaiting_symbol(context)
     status = await update.message.reply_text("⏳ Running health audit…")
     try:
         report = await asyncio.to_thread(run_health_audit, days=HEALTH_AUDIT_DAYS)
@@ -630,9 +688,9 @@ async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 BOT_COMMANDS = [
-    BotCommand("prescan", "Cheap check: worth deep analysis?"),
+    BotCommand("prescan", "Tap, then send stock name (or /prescan BEL)"),
     BotCommand("candidates", "Prescan picks with plain-English labels"),
-    BotCommand("analyze", "Full deep analysis by name or symbol"),
+    BotCommand("analyze", "Tap, then send stock name (or /analyze BEL)"),
     BotCommand("refresh", "Clear cache or backfill stored verdicts"),
     BotCommand("help", "Usage instructions"),
     BotCommand("spend", "Month-to-date cost"),
