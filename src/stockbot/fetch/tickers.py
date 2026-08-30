@@ -280,3 +280,64 @@ def resolve_ticker(
 
     candidates = _dedup_cross_exchange(list(merged.values()))
     return _finalize(candidates)
+
+
+def suggest_tickers(
+    user_input: str,
+    table: pd.DataFrame | None = None,
+    *,
+    limit: int = 8,
+    min_score: float = 45.0,
+) -> list[TickerInfo]:
+    """Ranked symbol/name matches for Telegram pickers (no AmbiguousMatch)."""
+    if table is None:
+        table = load_symbol_table()
+
+    query = user_input.strip()
+    if not query:
+        return []
+
+    exact_symbol = table[table["symbol"].str.lower() == query.lower()]
+    if not exact_symbol.empty:
+        return [_row_to_ticker_info(exact_symbol.iloc[0])]
+
+    merged: dict[str, tuple[pd.Series, float]] = {}
+
+    for _, row in table[table["symbol"].str.lower().str.startswith(query.lower())].iterrows():
+        symbol = row["symbol"]
+        merged[symbol] = (row, 100.0)
+
+    alias_symbol = COMMON_NAME_ALIASES.get(query.lower())
+    if alias_symbol:
+        aliased = table[table["symbol"] == alias_symbol]
+        if not aliased.empty:
+            row = aliased.iloc[0]
+            merged[row["symbol"]] = (row, 100.0)
+
+    normalized_query = normalize_company_name(query)
+    if normalized_query:
+        exact_name = table[table["normalized_name"] == normalized_query]
+        for _, row in exact_name.iterrows():
+            merged[row["symbol"]] = (row, 100.0)
+
+        choices = table["normalized_name"].tolist()
+        matches = process.extract(
+            normalized_query,
+            choices,
+            scorer=fuzz.token_set_ratio,
+            score_cutoff=min_score,
+            limit=max(limit, 10),
+        )
+        for _, score, idx in matches:
+            row = table.iloc[idx]
+            symbol = row["symbol"]
+            if symbol not in merged or score > merged[symbol][1]:
+                merged[symbol] = (row, float(score))
+
+        for row, score in _first_word_prefix_matches(query, table):
+            symbol = row["symbol"]
+            if symbol not in merged or score > merged[symbol][1]:
+                merged[symbol] = (row, score)
+
+    ranked = sorted(merged.values(), key=lambda pair: pair[1], reverse=True)
+    return [_row_to_ticker_info(row) for row, _score in ranked[:limit]]

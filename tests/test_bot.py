@@ -7,8 +7,11 @@ from copy import deepcopy
 from datetime import date
 
 from stockbot.bot import (
+    AWAITING_PRESCAN_SYMBOL,
+    _consume_awaiting,
     _parse_analyze_command_args,
     _parse_force_analyze_plain_text,
+    _parse_prescan_plain_text,
     esc,
     format_ambiguous_reply,
     format_verdict_reply,
@@ -298,3 +301,21 @@ def test_parse_force_analyze_plain_text():
     assert _parse_force_analyze_plain_text("Force MAZDOCK") == ("MAZDOCK", True)
     assert _parse_force_analyze_plain_text("BEL") is None
     assert _parse_force_analyze_plain_text("force") is None
+
+
+def test_parse_prescan_plain_text():
+    assert _parse_prescan_plain_text("prescan BEL") == "BEL"
+    assert _parse_prescan_plain_text("Pre-Scan Hero MotoCorp") == "Hero MotoCorp"
+    assert _parse_prescan_plain_text("prescan") is None
+    assert _parse_prescan_plain_text("BEL") is None
+
+
+def test_consume_awaiting_symbol():
+    class _Ctx:
+        user_data: dict[str, bool] = {}
+
+    ctx = _Ctx()
+    ctx.user_data = {AWAITING_PRESCAN_SYMBOL: True}
+    assert _consume_awaiting(ctx, AWAITING_PRESCAN_SYMBOL) is True
+    assert AWAITING_PRESCAN_SYMBOL not in ctx.user_data
+    assert _consume_awaiting(ctx, AWAITING_PRESCAN_SYMBOL) is False

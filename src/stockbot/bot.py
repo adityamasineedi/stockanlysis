@@ -36,17 +36,27 @@ import asyncio
 import html
 import logging
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from telegram import BotCommand, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    InlineQueryHandler,
     MessageHandler,
     filters,
 )
 
+from stockbot.bot_suggestions import (
+    build_inline_query_results,
+    build_symbol_pick_keyboard,
+    default_pick_tickers,
+    parse_pick_callback,
+    suggestion_hint_markdown,
+)
 from stockbot.config import (
     LOGS_DIR,
     REPORTS_DIR,
@@ -60,7 +70,8 @@ from stockbot.constitution_gates import (
 )
 from stockbot.costs import month_to_date_spend
 from stockbot.expected_return import format_expected_return_telegram
-from stockbot.models import AmbiguousMatch, Analysis
+from stockbot.fetch.tickers import resolve_ticker
+from stockbot.models import AmbiguousMatch, Analysis, TickerInfo
 from stockbot.monitor.health_audit import run_health_audit
 from stockbot.pipeline import (
     ANALYSIS_RUNTIME_CAP_SECONDS,
@@ -93,6 +104,80 @@ DISCLAIMER = (
 # working — found live: nothing previously stopped this, and a restart
 # mid-analysis silently abandoned the in-flight thread with no recovery.
 _IN_FLIGHT: set[str] = set()
+
+# Set when user taps /prescan or /analyze from Telegram's menu without a symbol.
+AWAITING_PRESCAN_SYMBOL = "awaiting_prescan_symbol"
+AWAITING_ANALYZE_SYMBOL = "awaiting_analyze_symbol"
+
+
+def _clear_awaiting_symbol(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop(AWAITING_PRESCAN_SYMBOL, None)
+    context.user_data.pop(AWAITING_ANALYZE_SYMBOL, None)
+
+
+def _consume_awaiting(context: ContextTypes.DEFAULT_TYPE, key: str) -> bool:
+    return bool(context.user_data.pop(key, False))
+
+
+async def _prompt_for_symbol(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    awaiting_key: str,
+    headline: str,
+    example: str,
+    pick_action: str,
+) -> None:
+    context.user_data[awaiting_key] = True
+    picks = await asyncio.to_thread(default_pick_tickers)
+    keyboard = build_symbol_pick_keyboard(picks, action=pick_action)  # type: ignore[arg-type]
+    bot_user = context.bot.username if context.bot else None
+    inline_tip = suggestion_hint_markdown(bot_user)
+    await update.message.reply_text(
+        f"{headline}\n\n"
+        "Send the <b>NSE symbol or company name</b> or tap a match below.\n"
+        f"{inline_tip}\n"
+        f"Example: <code>{esc(example)}</code>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
+async def _offer_symbol_picks(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    *,
+    action: str,
+    awaiting_key: str,
+) -> bool:
+    """If the fragment matches several names, show tap-to-pick buttons."""
+    from stockbot.fetch.tickers import suggest_tickers
+
+    tickers = await asyncio.to_thread(suggest_tickers, text, limit=8)
+    if not tickers:
+        return False
+
+    query = text.strip()
+    if len(tickers) == 1:
+        only = tickers[0]
+        if only.symbol.upper() == query.upper():
+            return False
+        resolved = await asyncio.to_thread(resolve_ticker, query)
+        if isinstance(resolved, TickerInfo):
+            return False
+
+    keyboard = build_symbol_pick_keyboard(tickers, action=action)  # type: ignore[arg-type]
+    if keyboard is None:
+        return False
+
+    context.user_data[awaiting_key] = True
+    await update.message.reply_text(
+        f"Matches for <b>{esc(query)}</b> — tap one or send a clearer name:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+    return True
 
 
 def esc(value: object) -> str:
@@ -444,11 +529,16 @@ async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     query, force = _parse_analyze_command_args(context.args)
     if not query:
-        await update.message.reply_text(
-            "Usage: /analyze <company name or symbol>\n"
-            "       /analyze force <symbol> — bypass eligibility gate (not recommended)"
+        await _prompt_for_symbol(
+            update,
+            context,
+            awaiting_key=AWAITING_ANALYZE_SYMBOL,
+            headline="Which stock should I analyze?",
+            example="BEL",
+            pick_action="analyze",
         )
         return
+    _clear_awaiting_symbol(context)
     await _run_and_reply(update, query, force=force)
 
 
@@ -466,12 +556,16 @@ async def handle_prescan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     query = " ".join(context.args) if context.args else ""
     if not query:
-        await update.message.reply_text(
-            "Usage: /prescan <symbol or name>\n"
-            "Example: /prescan BEL\n\n"
-            "Cheap check: is this stock worth expensive deep /analyze?"
+        await _prompt_for_symbol(
+            update,
+            context,
+            awaiting_key=AWAITING_PRESCAN_SYMBOL,
+            headline="Which stock should I pre-scan?",
+            example="BEL",
+            pick_action="prescan",
         )
         return
+    _clear_awaiting_symbol(context)
     await _run_prescan_and_reply(update, query)
 
 
@@ -520,12 +614,38 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     prescan_query = _parse_prescan_plain_text(text)
     if prescan_query is not None:
+        _clear_awaiting_symbol(context)
         await _run_prescan_and_reply(update, prescan_query)
         return
     force_query = _parse_force_analyze_plain_text(text)
     if force_query is not None:
+        _clear_awaiting_symbol(context)
         query, force = force_query
         await _run_and_reply(update, query, force=force)
+        return
+    if _consume_awaiting(context, AWAITING_PRESCAN_SYMBOL):
+        if await _offer_symbol_picks(
+            update,
+            context,
+            text,
+            action="prescan",
+            awaiting_key=AWAITING_PRESCAN_SYMBOL,
+        ):
+            return
+        _clear_awaiting_symbol(context)
+        await _run_prescan_and_reply(update, text)
+        return
+    if _consume_awaiting(context, AWAITING_ANALYZE_SYMBOL):
+        if await _offer_symbol_picks(
+            update,
+            context,
+            text,
+            action="analyze",
+            awaiting_key=AWAITING_ANALYZE_SYMBOL,
+        ):
+            return
+        _clear_awaiting_symbol(context)
+        await _run_and_reply(update, text, force=False)
         return
     await _run_and_reply(update, text)
 
@@ -533,6 +653,7 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    _clear_awaiting_symbol(context)
     args = list(context.args or [])
     chunks, err = await asyncio.to_thread(build_candidates_messages, args)
     if err:
@@ -545,19 +666,26 @@ async def handle_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    _clear_awaiting_symbol(context)
+    bot_user = context.bot.username if context.bot else None
+    inline_tip = suggestion_hint_markdown(bot_user)
     await update.message.reply_text(
         "Commands:\n"
-        "/prescan <symbol> — cheap check: worth deep analysis?\n"
+        "/prescan — tap from menu, then send the stock name\n"
+        "/prescan <symbol> — one-step example: /prescan BEL\n"
         "/candidates — list analyze-ready names from prescan history\n"
         "/candidates strong|candidate|watchlist — filter by score tier\n"
         "/candidates quality 65 — Quality ≥65 and analyze-ready\n"
+        "/analyze — tap from menu, then send the stock name\n"
         "/analyze <company> — full deep analysis (requires prescan eligibility)\n"
         "/analyze force <symbol> — bypass gate (not recommended)\n"
         "/refresh SYMBOL — clear cached analysis for symbol\n"
         "/refresh backfill — recompute gates + expected_return on cached rows\n"
         "/spend — month-to-date cost\n"
         "/health — cost/token/quality audit (no LLM spend)\n\n"
-        "Or send: /prescan BEL\n\n"
+        "Tip: after /prescan, just reply with BEL (no need to type prescan again).\n"
+        f"{inline_tip}\n"
+        "(One-time in BotFather: /setinline — enables @-mention suggestions.)\n\n"
         "Educational research only — not investment advice."
     )
 
@@ -565,6 +693,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    _clear_awaiting_symbol(context)
     args = list(context.args or [])
     if not args:
         await update.message.reply_text(
@@ -587,12 +716,73 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(
         f"Cleared {deleted} cached row(s) for {esc(symbol)}. "
         f"Next /analyze will run fresh."
-    )
+        )
+
+
+async def _reject_inline_if_unauthorized(update: Update) -> bool:
+    allowed = parse_telegram_allowed_chat_ids()
+    if not allowed:
+        return False
+    user = update.inline_query.from_user if update.inline_query else None
+    if user is not None and user.id in allowed:
+        return False
+    await update.inline_query.answer([], cache_time=1)
+    return True
+
+
+async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_inline_if_unauthorized(update):
+        return
+    query = (update.inline_query.query or "").strip()
+    if len(query) < 1:
+        tickers = await asyncio.to_thread(default_pick_tickers, 12)
+    else:
+        from stockbot.fetch.tickers import suggest_tickers
+
+        tickers = await asyncio.to_thread(suggest_tickers, query, limit=12)
+    results = build_inline_query_results(tickers, action="prescan")
+    await update.inline_query.answer(results, cache_time=30, is_personal=True)
+
+
+async def _reject_callback_if_unauthorized(update: Update) -> bool:
+    cq = update.callback_query
+    if cq is None or cq.message is None:
+        return True
+    allowed = parse_telegram_allowed_chat_ids()
+    if not allowed:
+        return False
+    if cq.message.chat_id in allowed:
+        return False
+    await cq.answer("Not authorized.", show_alert=True)
+    return True
+
+
+async def handle_symbol_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cq = update.callback_query
+    if cq is None:
+        return
+    if await _reject_callback_if_unauthorized(update):
+        return
+    parsed = parse_pick_callback(cq.data)
+    if parsed is None:
+        await cq.answer("Unknown selection")
+        return
+    action, symbol = parsed
+    await cq.answer()
+    _clear_awaiting_symbol(context)
+    if cq.message is None:
+        return
+    shim = SimpleNamespace(message=cq.message)
+    if action == "prescan":
+        await _run_prescan_and_reply(shim, symbol)
+    else:
+        await _run_and_reply(shim, symbol, force=False)
 
 
 async def handle_spend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    _clear_awaiting_symbol(context)
     spent = await asyncio.to_thread(month_to_date_spend)
     await update.message.reply_text(
         f"Month-to-date spend: ₹{spent:.2f} of ₹{settings.monthly_budget_inr:.0f}"
@@ -610,6 +800,7 @@ def _write_health_audit_file(markdown: str):
 async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    _clear_awaiting_symbol(context)
     status = await update.message.reply_text("⏳ Running health audit…")
     try:
         report = await asyncio.to_thread(run_health_audit, days=HEALTH_AUDIT_DAYS)
@@ -630,9 +821,9 @@ async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 BOT_COMMANDS = [
-    BotCommand("prescan", "Cheap check: worth deep analysis?"),
+    BotCommand("prescan", "Tap, then send stock name (or /prescan BEL)"),
     BotCommand("candidates", "Prescan picks with plain-English labels"),
-    BotCommand("analyze", "Full deep analysis by name or symbol"),
+    BotCommand("analyze", "Tap, then send stock name (or /analyze BEL)"),
     BotCommand("refresh", "Clear cache or backfill stored verdicts"),
     BotCommand("help", "Usage instructions"),
     BotCommand("spend", "Month-to-date cost"),
@@ -641,10 +832,16 @@ BOT_COMMANDS = [
 
 
 async def _register_commands(application: Application) -> None:
-    # Gives Telegram's own "/" command menu (name + description autocomplete
-    # when typing "/") — not per-keystroke company-name suggestions, which
-    # would be a different feature (inline mode) with its own BotFather setup.
     await application.bot.set_my_commands(BOT_COMMANDS)
+    try:
+        me = await application.bot.get_me()
+        if me.username:
+            logger.info(
+                "Inline suggestions: BotFather /setinline then type @%s + letters",
+                me.username,
+            )
+    except Exception:
+        logger.exception("Failed to log bot username for inline hint")
 
 
 def build_application() -> Application:
@@ -661,6 +858,8 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("help", handle_help))
     application.add_handler(CommandHandler("spend", handle_spend))
     application.add_handler(CommandHandler("health", handle_health))
+    application.add_handler(InlineQueryHandler(handle_inline_query))
+    application.add_handler(CallbackQueryHandler(handle_symbol_pick))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_text))
     return application
 
