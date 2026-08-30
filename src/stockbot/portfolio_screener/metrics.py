@@ -441,6 +441,7 @@ def extract_metrics(
 
     m.years_available = financials.years_available
     m.financials_basis = financials.basis
+    m.financials_source = financials.source
     pnl = financials.pnl
     bs = financials.balance_sheet
     cf = financials.cash_flow

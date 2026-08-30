@@ -156,6 +156,7 @@ class EligibilityResult:
     data_confidence: str | None = None
     data_completeness: float | None = None
     financials_basis: str | None = None
+    financials_source: str | None = None
     sector_source: str | None = None
     derived_metric_count: int = 0
     key_reason: str = ""
@@ -282,8 +283,9 @@ class EligibilityResult:
 
         lines.extend(["", "📎 <b>More detail</b>"])
         if self.financials_basis:
+            source_label = _financials_source_label(self.financials_source)
             lines.append(
-                f"📊 Financial statements: {_esc(self.financials_basis)} (from Screener.in)"
+                f"📊 Financial statements: {_esc(self.financials_basis)} (from {source_label})"
             )
         if self.sector_source == "override":
             lines.append(
@@ -555,6 +557,16 @@ class EligibilityResult:
             "ℹ️ <i>Pre-scan only — not a buy, average-down, or profit-book signal.</i>"
         )
         return "\n".join(lines)
+
+
+def _financials_source_label(source: str | None) -> str:
+    if not source:
+        return "Screener.in"
+    if source.startswith("yfinance:"):
+        return "Yahoo Finance (Screener data stale or missing)"
+    if source.startswith("screener:"):
+        return "Screener.in"
+    return source
 
 
 def _esc(value: object) -> str:
@@ -1076,6 +1088,7 @@ def check_deep_analysis_eligibility(
         data_confidence=quant.data_validation.data_confidence,
         data_completeness=quant.data_validation.data_completeness_score,
         financials_basis=m.financials_basis,
+        financials_source=m.financials_source,
         sector_source=m.sector_source,
         derived_metric_count=count_derived_key_ratios(m),
         key_reason=key_reason,

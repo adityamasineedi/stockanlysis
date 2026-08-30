@@ -123,7 +123,8 @@ class StockMetrics:
     asset_turnover: float | None = None
 
     years_available: int = 0
-    financials_basis: str | None = None  # consolidated | standalone (Screener)
+    financials_basis: str | None = None  # consolidated | standalone
+    financials_source: str | None = None  # screener:consolidated | yfinance:ns | ...
     sector_source: str | None = None  # yfinance | override
     data_timestamp: datetime | None = None
     price_returns: list[float] | None = None  # daily returns for correlation
