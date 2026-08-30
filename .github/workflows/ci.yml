@@ -31,3 +31,36 @@ jobs:
       - uses: actions/checkout@v4
       - name: Deploy to Railway (production)
         run: railway up --service stockanlysis --detach
+
+  notify-deploy:
+    needs: deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Telegram — deploy succeeded
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_DEPLOY_CHAT_ID: ${{ secrets.TELEGRAM_DEPLOY_CHAT_ID }}
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_DEPLOY_CHAT_ID:-}" ]; then
+            echo "Skip Telegram notify: set TELEGRAM_BOT_TOKEN and TELEGRAM_DEPLOY_CHAT_ID repo secrets."
+            exit 0
+          fi
+          short_sha="${COMMIT_SHA:0:7}"
+          commit_line="$(printf '%s' "$COMMIT_MSG" | head -n 1 | tr -d '\r')"
+          text=$(printf '%s\n' \
+            "✅ Railway deploy succeeded" \
+            "" \
+            "Service: stockanlysis (production)" \
+            "Commit: ${short_sha} — ${commit_line}" \
+            "Pushed by: ${ACTOR}" \
+            "https://github.com/${REPO}/commit/${COMMIT_SHA}")
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_DEPLOY_CHAT_ID}" \
+            --data-urlencode "text=${text}" \
+            --data-urlencode "disable_web_page_preview=true"
