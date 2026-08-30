@@ -151,7 +151,7 @@ def load_prescan_outcomes(
         if not line:
             continue
         try:
-            rows.append(json.loads(line))
+            rows.append(normalize_prescan_row(json.loads(line)))
         except json.JSONDecodeError:
             logger.warning("Skipping invalid prescan JSONL line in %s", target)
     if not latest_per_ticker:
@@ -165,6 +165,79 @@ def load_prescan_outcomes(
         if prev is None or str(row.get("logged_at") or "") >= str(prev.get("logged_at") or ""):
             latest[ticker] = row
     return sorted(latest.values(), key=lambda r: str(r.get("ticker") or ""))
+
+
+def _row_has_qgs(row: dict[str, Any]) -> bool:
+    return all(
+        isinstance(row.get(key), (int, float))
+        for key in ("quality_score", "growth_score", "strength_score")
+    )
+
+
+def normalize_prescan_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Unify legacy JSONL field names."""
+    out = dict(row)
+    if out.get("strength_score") is None and isinstance(
+        out.get("financial_strength_score"), (int, float)
+    ):
+        out["strength_score"] = out["financial_strength_score"]
+    return out
+
+
+def backfill_row_qgs(
+    row: dict[str, Any],
+    *,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Recompute Quality/Growth/Strength when older prescan logs lack pillar scores."""
+    row = normalize_prescan_row(row)
+    if _row_has_qgs(row):
+        return row
+
+    ticker = str(row.get("ticker") or "").strip().upper()
+    if not ticker:
+        return row
+
+    from stockbot.fetch.tickers import AmbiguousMatch, load_symbol_table, resolve_ticker
+    from stockbot.portfolio_screener.data_loader import fetch_universe_metrics
+    from stockbot.portfolio_screener.quant_engine import compute_quant_score
+    from stockbot.portfolio_screener.scoring_config import ScreenerRunConfig
+
+    resolved = resolve_ticker(ticker, load_symbol_table())
+    if resolved is None or isinstance(resolved, AmbiguousMatch):
+        return row
+
+    metrics = fetch_universe_metrics([resolved])
+    if not metrics:
+        return row
+
+    quant = compute_quant_score(metrics[0], ScreenerRunConfig())
+    enriched = {
+        **row,
+        "quality_score": round(quant.components.business_quality, 1),
+        "growth_score": round(quant.components.growth, 1),
+        "strength_score": round(quant.components.financial_strength, 1),
+    }
+    if persist:
+        log_prescan_outcome(
+            {key: value for key, value in enriched.items() if key != "logged_at"}
+        )
+        logger.info(
+            "backfilled prescan Q/G/S for %s (Q=%.1f G=%.1f S=%.1f)",
+            ticker,
+            enriched["quality_score"],
+            enriched["growth_score"],
+            enriched["strength_score"],
+        )
+    return enriched
+
+
+def backfill_rows_qgs(
+    rows: list[dict[str, Any]],
+    *,
+    persist: bool = True,
+) -> list[dict[str, Any]]:
+    return [backfill_row_qgs(row, persist=persist) for row in rows]
 
 
 def query_prescan_outcomes(
@@ -419,7 +492,7 @@ def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
 
 def _format_qgs(row: dict[str, Any]) -> str:
     text = format_qgs_from_row(row)
-    if text.startswith("Quality/Growth/Strength not logged"):
+    if text == "Pillar scores unavailable":
         return text
     labels = (
         ("quality_score", "Quality"),
@@ -519,4 +592,8 @@ def build_candidates_messages(
         min_quality=parsed.min_quality,
         analyze_ready_only=parsed.analyze_ready_only,
     )
+    stale = sum(1 for row in matched if not _row_has_qgs(row))
+    if stale:
+        logger.info("Backfilling Q/G/S for %d prescan row(s) missing pillar scores", stale)
+    matched = backfill_rows_qgs(matched, persist=True)
     return format_prescan_telegram_chunks(matched, title=parsed.label), None
