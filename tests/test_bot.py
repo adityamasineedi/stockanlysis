@@ -96,7 +96,7 @@ def test_format_verdict_reply_shows_add_more_range_when_allowed():
     analysis = _analysis()
     analysis.verdict_json["add_range_allowed"] = True
     text = format_verdict_reply(analysis)
-    assert "Add-more range: ₹300.00–₹340.00" in text
+    assert "Add-more range: ₹300.00–₹330.00 (on-dip · bear FV)" in text
 
 
 def test_format_verdict_reply_shows_stage2_mode():

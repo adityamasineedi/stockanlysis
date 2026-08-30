@@ -64,6 +64,7 @@ from stockbot.config import (
     settings,
     setup_logging,
 )
+from stockbot.action_ranges import add_more_range_blocked_reason, resolve_add_more_zone_abs
 from stockbot.constitution_gates import (
     should_anti_chase_from_dict,
     wc_gap_blocks_buy_zone,
@@ -288,25 +289,26 @@ def _format_sell_range_line(verdict_json: dict) -> str:
 
 
 def _format_add_more_range_line(verdict_json: dict) -> str:
-    anti_chase, cash_gap_blocks, wc_gap_norm = _capital_range_gate_context(verdict_json)
-    bear_fv = _resolve_scenario_fair_value(verdict_json, "bear")
-    add_range_allowed = verdict_json.get("add_range_allowed")
-    if (
-        add_range_allowed is True
-        and bear_fv is not None
-        and not cash_gap_blocks
-        and not anti_chase
-    ):
-        return f"Add-more range: ₹{bear_fv[0]}–₹{bear_fv[1]}"
-    if anti_chase:
-        return "Add-more range: not issued (anti-chase: pause new capital)"
-    if cash_gap_blocks and wc_gap_norm:
-        return f"Add-more range: not issued (WC: {esc(wc_gap_norm)})"
-    if add_range_allowed is not True:
+    block_reason = add_more_range_blocked_reason(verdict_json)
+    if block_reason:
+        if block_reason.startswith("anti-chase"):
+            return "Add-more range: not issued (anti-chase: pause new capital)"
+        if block_reason.startswith("WC:"):
+            wc_label = block_reason.removeprefix("WC: ").strip()
+            return f"Add-more range: not issued (WC: {esc(wc_label)})"
+        if block_reason.startswith("five-year test:"):
+            label = block_reason.removeprefix("five-year test: ").strip()
+            return f"Add-more range: not issued (five-year: {esc(label)})"
+        if block_reason.startswith("thesis:"):
+            label = block_reason.removeprefix("thesis: ").strip()
+            return f"Add-more range: not issued (thesis: {esc(label)})"
         return "Add-more range: not issued"
-    if bear_fv is None:
+
+    add_zone = resolve_add_more_zone_abs(verdict_json)
+    if add_zone is None:
         return "Add-more range: unavailable"
-    return "Add-more range: not issued"
+    low, high = f"{add_zone[0]:.2f}", f"{add_zone[1]:.2f}"
+    return f"Add-more range: ₹{low}–₹{high} (on-dip · bear FV)"
 
 
 def _format_take_profit_targets_line(verdict_json: dict) -> str:
