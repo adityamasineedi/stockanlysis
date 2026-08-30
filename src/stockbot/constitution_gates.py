@@ -20,6 +20,35 @@ ANTI_CHASE_PE_THRESHOLD = 35.0
 _PRICE_ABOVE_BASE_FV_TOLERANCE = 0.005  # 0.5% — float wiggle
 _VALUATION_TENSION_BEAR_MULTIPLIER = 2.0
 
+# The only wc_gap_classification that unlocks buy/add ranges. Mirrors
+# validate.py's _WC_UNLOCK_CLASSIFICATION and issuer_routing.py's
+# WC_GAP_UNLOCKS_VALUATION (duplicated rather than imported — importing
+# validate here would close a cycle, since validate imports this module).
+_WC_GAP_UNLOCK_CLASSIFICATION = "TEMPORARY_BILLING_CYCLE"
+
+
+def wc_gap_blocks_buy_zone(wc_gap_classification: object) -> bool:
+    """True when the model flagged a working-capital gap it did not resolve.
+
+    Driven solely by the model's own structured ``wc_gap_classification`` —
+    the single source of truth for both the rendered report
+    (``apply_constitution_overrides``, before render) and the Telegram card
+    (``refresh_constitution_fields``), so the two can no longer disagree
+    about whether a buy zone was issued.
+
+    A null/blank classification means no WC gap was flagged and does not
+    block: the genuinely dangerous case (extreme reported cash conversion
+    with no classification) is already caught deterministically upstream by
+    ``validate._check_wc_buy_gate``, which reads the FINANCIALS numbers
+    rather than guessing from report prose.
+    """
+    if wc_gap_classification is None:
+        return False
+    text = str(wc_gap_classification).strip().upper()
+    if not text:
+        return False
+    return text != _WC_GAP_UNLOCK_CLASSIFICATION
+
 
 def _trailing_pe(verdict: VerdictJSON, brief: Brief) -> float | None:
     if brief.financials is None:
@@ -175,7 +204,7 @@ def refresh_constitution_fields(verdict_json: dict) -> dict:
     anti_chase, _ = should_anti_chase_from_dict(updated)
     updated["anti_chase_flag"] = anti_chase
     updated["external_valuation_tension"] = compute_valuation_tension_from_dict(updated)
-    if anti_chase:
+    if anti_chase or wc_gap_blocks_buy_zone(updated.get("wc_gap_classification")):
         updated["buy_range_allowed"] = False
         updated["add_range_allowed"] = False
         updated["buy_zone_abs"] = None
@@ -224,4 +253,11 @@ def apply_constitution_overrides(
             updates["buy_zone_abs"] = None
     elif verdict.anti_chase_flag is None:
         updates["anti_chase_flag"] = False
+    # Withhold the buy zone here — before render — so the report and the
+    # Telegram card read the same suppressed state instead of each applying
+    # its own rule and disagreeing about whether a zone was issued.
+    if wc_gap_blocks_buy_zone(verdict.wc_gap_classification):
+        updates["buy_range_allowed"] = False
+        updates["add_range_allowed"] = False
+        updates["buy_zone_abs"] = None
     return verdict.model_copy(update=updates)

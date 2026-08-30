@@ -54,7 +54,10 @@ from stockbot.config import (
     settings,
     setup_logging,
 )
-from stockbot.constitution_gates import should_anti_chase_from_dict
+from stockbot.constitution_gates import (
+    should_anti_chase_from_dict,
+    wc_gap_blocks_buy_zone,
+)
 from stockbot.costs import month_to_date_spend
 from stockbot.expected_return import format_expected_return_telegram
 from stockbot.models import AmbiguousMatch, Analysis
@@ -155,42 +158,6 @@ def _resolve_base_fair_value(verdict_json: dict) -> tuple[str, str] | None:
     return _money_pair(verdict_json.get("fair_value_abs"))
 
 
-_CASH_GAP_BLOCK_MARKERS = (
-    "operating cash flow was sharply negative",
-    "ocf/pat",
-    "σcfo/σpat",
-    "cfo/pat",
-    "cash conversion",
-    "cumulative Σcfo",
-    "cumulative cfo",
-    "cumulative σcfo",
-)
-
-
-def _verdict_text_blob(verdict: dict) -> str:
-    parts: list[str] = []
-    for key in ("reasons_avoid", "reasons_buy"):
-        for item in verdict.get(key) or []:
-            parts.append(str(item))
-    parts.append(str(verdict.get("biggest_watch") or ""))
-    five_year = verdict.get("five_year_business_test") or {}
-    if isinstance(five_year, dict):
-        for key in ("evidence_against", "evidence_for"):
-            for item in five_year.get(key) or []:
-                parts.append(str(item))
-    return " ".join(parts).lower()
-
-
-def _unresolved_cash_gap_blocks_buy_zone(verdict: dict) -> bool:
-    """Hide buy zones when WC gap is unresolved (incl. legacy cached analyses)."""
-    wc_gap = verdict.get("wc_gap_classification")
-    if wc_gap is not None and str(wc_gap).strip() != "":
-        return str(wc_gap).strip().upper() != "TEMPORARY_BILLING_CYCLE"
-
-    blob = _verdict_text_blob(verdict)
-    return any(marker in blob for marker in _CASH_GAP_BLOCK_MARKERS)
-
-
 def _format_stage2_mode_line(verdict_json: dict) -> str | None:
     """Telegram card line for lite vs full Stage 2 (omitted on older cache rows)."""
     raw_mode = verdict_json.get("stage2_mode")
@@ -212,26 +179,21 @@ def format_verdict_reply(
     buy_range_allowed = v.get("buy_range_allowed")
     wc_gap = v.get("wc_gap_classification")
     wc_gap_norm = str(wc_gap).strip().upper() if wc_gap else None
-    cash_gap_blocks = _unresolved_cash_gap_blocks_buy_zone(v)
+    # Same deterministic rule the report was rendered under — see
+    # constitution_gates.wc_gap_blocks_buy_zone.
+    cash_gap_blocks = wc_gap_blocks_buy_zone(wc_gap)
     anti_chase = bool(v.get("anti_chase_flag")) or should_anti_chase_from_dict(v)[0]
     buy_zone_ok = (
         buy_zone is not None
         and buy_range_allowed is True
         and not cash_gap_blocks
         and not anti_chase
-        and (
-            wc_gap_norm is None
-            or wc_gap_norm == "TEMPORARY_BILLING_CYCLE"
-        )
     )
     if buy_zone_ok:
         buy_zone_line = f"Buy Zone: ₹{buy_zone[0]}–₹{buy_zone[1]}"
     elif anti_chase:
         buy_zone_line = "Buy Zone: not issued (anti-chase: pause new capital)"
-    elif cash_gap_blocks:
-        label = wc_gap_norm or "RECONCILIATION_REQUIRED"
-        buy_zone_line = f"Buy Zone: not issued (WC: {esc(label)})"
-    elif wc_gap_norm and wc_gap_norm != "TEMPORARY_BILLING_CYCLE":
+    elif cash_gap_blocks and wc_gap_norm:
         buy_zone_line = f"Buy Zone: not issued (WC: {esc(wc_gap_norm)})"
     else:
         buy_zone_line = "Buy Zone: not issued"
