@@ -39,6 +39,37 @@ def test_load_prescan_outcomes_latest_per_ticker(tmp_path: Path) -> None:
     assert by_ticker["AAA"]["quant_score"] == 70
 
 
+def test_query_prescan_outcomes_sorted_by_overall_not_quality() -> None:
+    """The headline shows Overall first and bold, so the list must be ordered
+    by Overall — sorting by Quality instead put a higher-Overall name below a
+    lower-Overall one, which read as an unsorted/broken list."""
+    rows = [
+        {"ticker": "HEROMOTOCO", "quality_score": 77.9, "quant_score": 82.0},
+        {"ticker": "BEL", "quality_score": 90.9, "quant_score": 56.0},
+        {"ticker": "CYIENT", "quality_score": 42.4, "quant_score": 58.0},
+    ]
+    matched = query_prescan_outcomes(rows)
+    assert [r["ticker"] for r in matched] == ["HEROMOTOCO", "CYIENT", "BEL"]
+
+
+def test_prescan_row_html_does_not_round_across_tier_boundary() -> None:
+    """VGUARD (60.3, Watchlist) and ADVENZYMES (59.6, Below threshold) must
+    not both display "60" — that erases the actual tier boundary between
+    them. See _format_prescan_row_html's quant_txt formatting."""
+    from stockbot.portfolio_screener.outcome_log import _format_prescan_row_html
+
+    vguard = _format_prescan_row_html(
+        {"ticker": "VGUARD", "quant_score": 60.3, "candidate_band": "WATCHLIST"}
+    )
+    advenzymes = _format_prescan_row_html(
+        {"ticker": "ADVENZYMES", "quant_score": 59.6, "candidate_band": "REMOVE"}
+    )
+    assert "60.3" in vguard
+    assert "59.6" in advenzymes
+    assert "Overall 60/100" not in vguard
+    assert "Overall 60/100" not in advenzymes
+
+
 def test_query_prescan_outcomes_quality_and_analyze_ready(tmp_path: Path) -> None:
     path = tmp_path / "prescan_outcomes.jsonl"
     _write_rows(

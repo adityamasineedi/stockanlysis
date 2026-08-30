@@ -51,7 +51,10 @@ from telegram.ext import (
     filters,
 )
 
-from stockbot.action_ranges import add_more_range_blocked_reason, resolve_add_more_zone_abs
+from stockbot.action_ranges import (
+    add_more_range_blocked_reason,
+    resolve_add_more_zone_abs,
+)
 from stockbot.bot_suggestions import (
     build_inline_query_results,
     build_symbol_pick_keyboard,
@@ -65,15 +68,6 @@ from stockbot.config import (
     parse_telegram_allowed_chat_ids,
     settings,
     setup_logging,
-)
-from stockbot.report_digest import (
-    TELEGRAM_MAX_MISSING,
-    TELEGRAM_MAX_REASON_CHARS,
-    TELEGRAM_MAX_REASONS,
-    TELEGRAM_MAX_WATCH_CHARS,
-    _clip,
-    _compact_context_flags_line,
-    build_compact_attachment_md,
 )
 from stockbot.constitution_gates import (
     should_anti_chase_from_dict,
@@ -95,6 +89,15 @@ from stockbot.portfolio_screener.eligibility import (
 )
 from stockbot.portfolio_screener.outcome_log import build_candidates_messages
 from stockbot.portfolio_screener.scoring_config import ScreenerRunConfig
+from stockbot.report_digest import (
+    TELEGRAM_MAX_MISSING,
+    TELEGRAM_MAX_REASON_CHARS,
+    TELEGRAM_MAX_REASONS,
+    TELEGRAM_MAX_WATCH_CHARS,
+    _clip,
+    _compact_context_flags_line,
+    build_compact_attachment_md,
+)
 from stockbot.storage import backfill_cached_verdicts, invalidate_cached_analyses
 
 logger = logging.getLogger(__name__)
@@ -356,7 +359,9 @@ def format_verdict_reply(
     compact: bool = True,
 ) -> str:
     v = analysis.verdict_json
-    anti_chase, cash_gap_blocks, wc_gap_norm = _capital_range_gate_context(v)
+    # cash_gap_blocks is applied inside _format_buy_range_line/_format_add_more_range_line,
+    # not here — this scope only needs the anti-chase and WC-gap labels.
+    anti_chase, _cash_gap_blocks, wc_gap_norm = _capital_range_gate_context(v)
 
     lines: list[str] = []
     if staleness_banner:
