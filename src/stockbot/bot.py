@@ -98,16 +98,55 @@ DISCLAIMER = (
     "Do your own due diligence before any trade.</i>"
 )
 
-# Tickers with a run_full_analysis currently in flight, keyed by normalized
-# query text. Prevents a second /analyze for the same query from starting
-# an overlapping (and separately billed) analysis while the first is still
-# working — found live: nothing previously stopped this, and a restart
-# mid-analysis silently abandoned the in-flight thread with no recovery.
-_IN_FLIGHT: set[str] = set()
-
 
 def esc(value: object) -> str:
     return html.escape(str(value), quote=False)
+
+
+# One deep analysis at a time for the whole bot. While run_full_analysis is
+# in flight, every other command/plain-text action is rejected so a second
+# prescan or /analyze cannot overlap or burn extra LLM budget.
+_analysis_lock = asyncio.Lock()
+_analysis_in_progress: str | None = None
+
+BUSY_ANALYSIS_REPLY = (
+    "Deep analysis in progress for {company} (usually 5–15 min). "
+    "Please wait for the result — other bot commands are paused until it finishes."
+)
+
+
+async def _active_analysis_query() -> str | None:
+    async with _analysis_lock:
+        return _analysis_in_progress
+
+
+async def _try_begin_analysis(query: str) -> bool:
+    global _analysis_in_progress
+    normalized = query.strip()
+    async with _analysis_lock:
+        if _analysis_in_progress is not None:
+            return False
+        _analysis_in_progress = normalized
+        return True
+
+
+async def _end_analysis() -> None:
+    global _analysis_in_progress
+    async with _analysis_lock:
+        _analysis_in_progress = None
+
+
+async def _reject_if_analysis_busy(update: Update) -> bool:
+    """Return True when input was rejected because an analysis is running."""
+    active = await _active_analysis_query()
+    if active is None:
+        return False
+    reply = BUSY_ANALYSIS_REPLY.format(company=esc(active))
+    if update.message is not None:
+        await update.message.reply_text(reply)
+    elif update.callback_query is not None:
+        await update.callback_query.answer(reply[:200], show_alert=True)
+    return True
 
 
 async def _reject_if_unauthorized(update: Update) -> bool:
@@ -530,38 +569,42 @@ async def _check_analyze_eligibility_gate(update: Update, query: str) -> bool:
 
 
 async def _run_and_reply(update: Update, query: str, *, force: bool = False) -> None:
-    if settings.require_prescan_for_analyze and not force:
-        allowed = await _check_analyze_eligibility_gate(update, query)
-        if not allowed:
-            return
-
-    key = query.strip().upper()
-    if key in _IN_FLIGHT:
+    if not await _try_begin_analysis(query):
+        active = await _active_analysis_query()
         await update.message.reply_text(
-            f"Already analyzing {esc(query)} — this takes several minutes; please wait for "
-            f"that to finish instead of sending it again."
+            BUSY_ANALYSIS_REPLY.format(company=esc(active or query))
         )
         return
 
-    _IN_FLIGHT.add(key)
-    status_message = await update.message.reply_text(ANALYZING_TEMPLATE.format(company=esc(query)))
-    progress_task = asyncio.create_task(_send_progress_updates(status_message, query))
     try:
-        try:
-            result = await asyncio.to_thread(run_full_analysis, query)
-        except Exception as exc:  # bot's resilience boundary — a crash here must still reply, not vanish
-            logger.exception("run_full_analysis failed for %r", query)
-            await status_message.edit_text(f"Something went wrong: {esc(exc)}")
-            return
-    finally:
-        progress_task.cancel()
-        _IN_FLIGHT.discard(key)
+        if settings.require_prescan_for_analyze and not force:
+            allowed = await _check_analyze_eligibility_gate(update, query)
+            if not allowed:
+                return
 
-    await _deliver_result(update, result, status_message)
+        status_message = await update.message.reply_text(
+            ANALYZING_TEMPLATE.format(company=esc(query))
+        )
+        progress_task = asyncio.create_task(_send_progress_updates(status_message, query))
+        try:
+            try:
+                result = await asyncio.to_thread(run_full_analysis, query)
+            except Exception as exc:  # bot's resilience boundary — a crash here must still reply, not vanish
+                logger.exception("run_full_analysis failed for %r", query)
+                await status_message.edit_text(f"Something went wrong: {esc(exc)}")
+                return
+        finally:
+            progress_task.cancel()
+
+        await _deliver_result(update, result, status_message)
+    finally:
+        await _end_analysis()
 
 
 async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
         return
     query, force = _parse_analyze_command_args(context.args)
     if not query:
@@ -584,6 +627,8 @@ def _parse_analyze_command_args(args: list[str] | None) -> tuple[str, bool]:
 
 async def handle_prescan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
         return
     query = " ".join(context.args) if context.args else ""
     if not query:
@@ -636,6 +681,8 @@ def _parse_force_analyze_plain_text(text: str) -> tuple[str, bool] | None:
 async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    if await _reject_if_analysis_busy(update):
+        return
     text = (update.message.text or "").strip()
     if not text:
         return
@@ -654,6 +701,8 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    if await _reject_if_analysis_busy(update):
+        return
     args = list(context.args or [])
     chunks, err = await asyncio.to_thread(build_candidates_messages, args)
     if err:
@@ -665,6 +714,8 @@ async def handle_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
         return
     await update.message.reply_text(
         "Commands:\n"
@@ -685,6 +736,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
         return
     args = list(context.args or [])
     if not args:
@@ -714,6 +767,8 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def handle_spend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
+    if await _reject_if_analysis_busy(update):
+        return
     spent = await asyncio.to_thread(month_to_date_spend)
     await update.message.reply_text(
         f"Month-to-date spend: ₹{spent:.2f} of ₹{settings.monthly_budget_inr:.0f}"
@@ -730,6 +785,8 @@ def _write_health_audit_file(markdown: str):
 
 async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
         return
     status = await update.message.reply_text("⏳ Running health audit…")
     try:
