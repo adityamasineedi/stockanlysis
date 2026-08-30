@@ -53,6 +53,7 @@ from telegram.ext import (
 
 from stockbot.action_ranges import (
     add_more_range_blocked_reason,
+    buy_zone_price_ceiling,
     capital_range_blocked_reason,
     resolve_add_more_zone_abs,
 )
@@ -309,11 +310,15 @@ def _format_buy_range_line(verdict_json: dict) -> str:
     )
     if buy_zone_ok:
         return f"Buy range: ₹{buy_zone[0]}–₹{buy_zone[1]}"
-    # Suppression itself is unchanged above; this only names the gate that
-    # caused it, including the five-year test the old branch chain missed.
-    label = _range_block_label(capital_range_blocked_reason(verdict_json))
-    if label:
-        return f"Buy range: not issued ({label})"
+    # Suppression itself is unchanged above; this only explains it — the gate
+    # that fired (including the five-year test the old branch chain missed)
+    # and the price bar a buy zone has to clear, which was never shown at all.
+    parts = [p for p in (_range_block_label(capital_range_blocked_reason(verdict_json)),) if p]
+    ceiling = buy_zone_price_ceiling(verdict_json)
+    if ceiling is not None:
+        parts.append(f"needs ≤₹{ceiling[0]:.2f} at {esc(ceiling[1])} risk")
+    if parts:
+        return f"Buy range: not issued ({' · '.join(parts)})"
     return "Buy range: not issued"
 
 

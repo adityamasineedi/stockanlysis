@@ -83,3 +83,28 @@ def test_capital_range_reason_covers_shared_gates_only():
     thesis_only = {"add_range_allowed": True, "thesis_status": "THESIS_BROKEN"}
     assert capital_range_blocked_reason(thesis_only) is None
     assert add_more_range_blocked_reason(thesis_only) == "thesis: THESIS_BROKEN"
+
+
+def test_buy_zone_price_ceiling_uses_shallowest_band_discount():
+    """The ceiling is the highest price that could still carry a zone, so it
+    comes from the band's *minimum* discount below the fair-value midpoint."""
+    from stockbot.action_ranges import buy_zone_price_ceiling
+
+    # JYOTHYLAB, live: FV 210-231 (mid 220.50), MEDIUM risk -> 20% floor.
+    assert buy_zone_price_ceiling(
+        {"risk": "MEDIUM", "fair_value_abs": [210.0, 231.0]}
+    ) == (176.40, "MEDIUM")
+    # LOW risk needs only a 10% margin, so its ceiling sits higher.
+    assert buy_zone_price_ceiling({"risk": "LOW", "fair_value_abs": [100.0, 100.0]}) == (
+        90.0,
+        "LOW",
+    )
+
+
+def test_buy_zone_price_ceiling_none_without_inputs():
+    from stockbot.action_ranges import buy_zone_price_ceiling
+
+    assert buy_zone_price_ceiling({"risk": "MEDIUM"}) is None
+    assert buy_zone_price_ceiling({"fair_value_abs": [210.0, 231.0]}) is None
+    assert buy_zone_price_ceiling({"risk": "NONSENSE", "fair_value_abs": [1.0, 2.0]}) is None
+    assert buy_zone_price_ceiling({"risk": "MEDIUM", "fair_value_abs": [0.0, 0.0]}) is None
