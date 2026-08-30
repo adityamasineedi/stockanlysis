@@ -157,3 +157,15 @@ def test_full_company_name_resolves_uniquely(table):
 def test_normalize_company_name_strips_suffix_and_punctuation():
     assert normalize_company_name("Reliance Industries Limited") == "reliance industries"
     assert normalize_company_name("HDFC Bank Ltd.") == "hdfc bank"
+
+
+def test_suggest_tickers_prefix_and_fuzzy(table):
+    from stockbot.fetch.tickers import suggest_tickers
+
+    hits = suggest_tickers("tcs", table=table, limit=5)
+    assert len(hits) >= 1
+    assert hits[0].symbol == "TCS"
+
+    hero = suggest_tickers("hcl", table=table, limit=5)
+    symbols = {t.symbol for t in hero}
+    assert "HCL-INSYS" in symbols
