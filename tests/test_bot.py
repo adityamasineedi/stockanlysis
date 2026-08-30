@@ -96,10 +96,26 @@ def test_format_verdict_reply_shows_add_more_range_when_allowed():
     assert "Add-more range: ₹300.00–₹330.00 (on-dip · bear FV)" in text
 
 
+def test_format_verdict_reply_compact_limits_reason_bullets():
+    analysis = _analysis()
+    analysis.verdict_json["reasons_buy"] = ["Reason A", "Reason B", "Reason C"]
+    text = format_verdict_reply(analysis, compact=True)
+    assert "Reason A" in text
+    assert "Reason B" in text
+    assert "Reason C" not in text
+
+
+def test_format_verdict_reply_full_shows_all_reasons():
+    analysis = _analysis()
+    analysis.verdict_json["reasons_buy"] = ["Reason A", "Reason B", "Reason C"]
+    text = format_verdict_reply(analysis, compact=False)
+    assert "Reason C" in text
+
+
 def test_format_verdict_reply_shows_stage2_mode():
     analysis = _analysis()
     analysis.verdict_json["stage2_mode"] = "LITE"
-    text = format_verdict_reply(analysis)
+    text = format_verdict_reply(analysis, compact=False)
     assert "Stage 2:" in text
     assert "LITE" in text
     assert "Haiku compact report" in text
@@ -109,7 +125,7 @@ def test_format_verdict_reply_shows_forced_full_override():
     analysis = _analysis()
     analysis.verdict_json["stage2_mode"] = "FULL"
     analysis.verdict_json["stage2_mode_forced"] = True
-    text = format_verdict_reply(analysis)
+    text = format_verdict_reply(analysis, compact=False)
     assert "Stage 2:" in text
     assert "FULL" in text
     assert "config override" in text
@@ -135,8 +151,7 @@ def test_format_verdict_reply_shows_expected_return_scenarios():
     }
     text = format_verdict_reply(analysis)
     assert "Expected 3y CAGR" in text
-    assert "Educational scenario ranges only" in text
-    assert "8.0%" in text or "8.0%–12.0%" in text
+    assert "educational only" in text.lower()
 
 
 def test_format_verdict_reply_hides_buy_zone_when_wc_not_temporary():
@@ -160,7 +175,7 @@ def test_format_verdict_reply_shows_anti_chase_when_price_above_base_fv():
         "eps_bull": 88.0, "multiple_bull": [36.0, 40.0],
     }
     text = format_verdict_reply(analysis)
-    assert "Anti-chase" in text
+    assert "anti-chase" in text.lower()
 
 
 def test_card_does_not_suppress_buy_zone_on_descriptive_cash_prose():

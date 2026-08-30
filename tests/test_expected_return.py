@@ -124,6 +124,23 @@ def test_merge_into_verdict_json():
     assert er["assumptions"]
 
 
+def test_telegram_format_compact_single_cagr_line():
+    lines = format_expected_return_telegram(
+        {
+            "horizon_years": 3,
+            "bear_cagr_range_pct": [-12.0, -2.0],
+            "base_cagr_range_pct": [4.0, 9.0],
+            "bull_cagr_range_pct": [12.0, 18.0],
+            "display_mode": "EDUCATIONAL_ONLY",
+            "note": "Not guaranteed.",
+        },
+        compact=True,
+    )
+    assert len(lines) == 1
+    assert "Expected 3y CAGR" in lines[0]
+    assert "educational only" in lines[0]
+
+
 def test_telegram_format_educational_disclaimer():
     lines = format_expected_return_telegram(
         {
