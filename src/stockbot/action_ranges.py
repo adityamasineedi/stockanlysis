@@ -50,7 +50,10 @@ def compute_add_more_zone_abs(
 
 def add_more_range_blocked_reason(verdict_json: dict) -> str | None:
     """Return a short reason when constitution gates block add-more display."""
-    from stockbot.constitution_gates import should_anti_chase_from_dict, wc_gap_blocks_buy_zone
+    from stockbot.constitution_gates import (
+        should_anti_chase_from_dict,
+        wc_gap_blocks_buy_zone,
+    )
 
     if bool(verdict_json.get("anti_chase_flag")) or should_anti_chase_from_dict(verdict_json)[0]:
         return "anti-chase: pause new capital"
@@ -103,6 +106,6 @@ def _resolve_bear_fv_floats(verdict_json: dict) -> tuple[float, float] | None:
 
             valuation = compute_valuation(ValuationInputs.model_validate(raw_inputs))
             return valuation.fair_value_bear_abs
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort derivation, fall back to no bear range
             return None
     return None

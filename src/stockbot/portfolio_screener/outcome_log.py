@@ -289,10 +289,14 @@ def query_prescan_outcomes(
         if exclude_hard_exclude and str(row.get("hard_filter_status") or "") == "HARD_EXCLUDE":
             continue
         filtered.append(row)
+    # Sort by Overall (quant_score) first — that's the number shown first and
+    # bold on each line, so the visible order must match it or the list reads
+    # as unsorted (e.g. a Quality-first sort put an Overall-82 name below an
+    # Overall-56 one). Quality stays as the tiebreaker.
     filtered.sort(
         key=lambda r: (
-            -(float(r["quality_score"]) if isinstance(r.get("quality_score"), (int, float)) else -1),
             -(float(r["quant_score"]) if isinstance(r.get("quant_score"), (int, float)) else -1),
+            -(float(r["quality_score"]) if isinstance(r.get("quality_score"), (int, float)) else -1),
             str(r.get("ticker") or ""),
         ),
     )
@@ -514,7 +518,7 @@ def _format_prescan_row_html(row: dict[str, Any]) -> str:
     band_label = html_escape(BAND_LABELS.get(band, "Unranked"))
     qgs = html_escape(_format_qgs(row))
     quant = row.get("quant_score")
-    quant_txt = f"{quant:.0f}" if isinstance(quant, (int, float)) else "?"
+    quant_txt = f"{quant:.1f}" if isinstance(quant, (int, float)) else "?"
     cash = str(row.get("cash_conversion_status") or "")
     cash_icon = CASH_ICONS.get(cash, "💵")
     cash_label = html_escape(CASH_LABELS.get(cash, cash or "Cash unknown"))

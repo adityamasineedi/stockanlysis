@@ -347,7 +347,7 @@ def test_parse_prescan_plain_text():
 
 def test_consume_awaiting_symbol():
     class _Ctx:
-        user_data: dict[str, bool] = {}
+        user_data: dict[str, bool]
 
     ctx = _Ctx()
     ctx.user_data = {AWAITING_PRESCAN_SYMBOL: True}
