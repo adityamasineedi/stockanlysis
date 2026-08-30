@@ -66,8 +66,45 @@ def test_prescan_row_html_does_not_round_across_tier_boundary() -> None:
     )
     assert "60.3" in vguard
     assert "59.6" in advenzymes
-    assert "Overall 60/100" not in vguard
-    assert "Overall 60/100" not in advenzymes
+    # The bug was both collapsing to a bare "60" under different tier headings.
+    assert "60" not in vguard.replace("60.3", "")
+    assert "60" not in advenzymes.replace("59.6", "")
+
+
+def test_chunks_group_by_tier_without_repeating_the_label() -> None:
+    """The tier used to be reprinted on all 18 rows. It is a section heading
+    now, so each label appears once and sections run best-tier first."""
+    rows = [
+        {"ticker": "HEROMOTOCO", "quant_score": 82.3, "candidate_band": "STRONG_CANDIDATE"},
+        {"ticker": "DBCORP", "quant_score": 63.1, "candidate_band": "WATCHLIST"},
+        {"ticker": "VGUARD", "quant_score": 60.3, "candidate_band": "WATCHLIST"},
+        {"ticker": "BEL", "quant_score": 56.4, "candidate_band": "REMOVE"},
+    ]
+    body = format_prescan_telegram_chunks(rows, title="All")[0]
+    assert body.count("WATCHLIST (60–69)") == 1
+    assert (
+        body.index("TOP TIER (80+)")
+        < body.index("WATCHLIST (60–69)")
+        < body.index("BELOW THRESHOLD")
+    )
+    # Grouping must not reshuffle rows — they keep the Overall-descending
+    # order query_prescan_outcomes already put them in.
+    assert body.index("DBCORP") < body.index("VGUARD")
+
+
+def test_chunks_split_without_orphaning_a_tier_heading() -> None:
+    """When a tier spills into a second message, the heading and the <pre>
+    wrapper must be reopened — a bare row block would lose its context."""
+    rows = [
+        {"ticker": f"TICKER{i:02d}", "quant_score": 70.0 - i, "candidate_band": "CANDIDATE"}
+        for i in range(12)
+    ]
+    chunks = format_prescan_telegram_chunks(rows, title="All", max_len=500)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        if "<pre>" in chunk:
+            assert chunk.count("<pre>") == chunk.count("</pre>")
+            assert "GOOD PICK (70–79)" in chunk
 
 
 def test_query_prescan_outcomes_quality_and_analyze_ready(tmp_path: Path) -> None:
@@ -144,13 +181,18 @@ def test_format_prescan_telegram_chunks_includes_ticker() -> None:
     ]
     chunks = format_prescan_telegram_chunks(rows, title="Strong")
     assert len(chunks) == 1
-    assert "HEROMOTOCO" in chunks[0]
-    assert "Quality 72" in chunks[0]
-    assert "Growth 55" in chunks[0]
-    assert "Strength 88" in chunks[0]
-    assert "Top tier (80+)" in chunks[0]
-    assert "Ready for /analyze" in chunks[0]
-    assert "Cash flow OK" in chunks[0]
+    body = chunks[0]
+    # One monospace row carries ticker, Overall and the three pillars.
+    assert "HEROMOTOCO  82.2  Q72 G55 S88" in body
+    # The tier is a section heading now, not repeated on the row itself.
+    assert "<b>TOP TIER (80+)</b>" in body
+    assert body.count("TOP TIER") == 1
+    # Route shows as a trailing icon explained once in the footer legend.
+    assert "✅" in body
+    assert "✅ ready for /analyze" in body
+    # A healthy cash gate is the common case and stays out of the list.
+    assert "💚" not in body
+    assert "Cash flow OK" not in body
 
 
 def test_format_prescan_telegram_chunks_missing_qgs(monkeypatch) -> None:
@@ -168,7 +210,10 @@ def test_format_prescan_telegram_chunks_missing_qgs(monkeypatch) -> None:
         lambda matched, persist=True: matched,
     )
     chunks = format_prescan_telegram_chunks(rows, title="Strong")
-    assert "Pillar scores unavailable" in chunks[0]
+    # Missing pillars render as dashes rather than being silently omitted,
+    # so the row still lines up with the rows that do have scores.
+    assert "Q – G – S –" in chunks[0]
+    assert "82.0" in chunks[0]
 
 
 def test_backfill_row_qgs_persists_scores(monkeypatch, tmp_path: Path) -> None:
