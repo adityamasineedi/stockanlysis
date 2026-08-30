@@ -3,8 +3,9 @@ web server, no public IP. python-telegram-bot v22 (confirmed installed;
 CommandHandler/MessageHandler/Application.run_polling signatures verified
 against the installed package before writing this).
 
-Reply formatting reads verdict_json only, never report_md — the full
-report goes out as a .md file attachment instead. HTML parse mode (not
+Reply formatting reads verdict_json for the in-chat card (compact by
+default). The attached ``.md`` is a reading digest extracted from the full
+Stage 2 report — generation and DB storage are unchanged (no token savings). HTML parse mode (not
 MarkdownV2 — ₹ and decimals break MarkdownV2's escaping rules), so any
 LLM-generated text interpolated into a tag is escaped via html.escape
 first, or a stray '<'/'>'/'&' in the model's own output breaks the whole
@@ -50,6 +51,7 @@ from telegram.ext import (
     filters,
 )
 
+from stockbot.action_ranges import add_more_range_blocked_reason, resolve_add_more_zone_abs
 from stockbot.bot_suggestions import (
     build_inline_query_results,
     build_symbol_pick_keyboard,
@@ -64,7 +66,15 @@ from stockbot.config import (
     settings,
     setup_logging,
 )
-from stockbot.action_ranges import add_more_range_blocked_reason, resolve_add_more_zone_abs
+from stockbot.report_digest import (
+    TELEGRAM_MAX_MISSING,
+    TELEGRAM_MAX_REASON_CHARS,
+    TELEGRAM_MAX_REASONS,
+    TELEGRAM_MAX_WATCH_CHARS,
+    _clip,
+    _compact_context_flags_line,
+    build_compact_attachment_md,
+)
 from stockbot.constitution_gates import (
     should_anti_chase_from_dict,
     wc_gap_blocks_buy_zone,
@@ -343,6 +353,7 @@ def format_verdict_reply(
     analysis: Analysis,
     *,
     staleness_banner: str | None = None,
+    compact: bool = True,
 ) -> str:
     v = analysis.verdict_json
     anti_chase, cash_gap_blocks, wc_gap_norm = _capital_range_gate_context(v)
@@ -374,21 +385,35 @@ def format_verdict_reply(
             f"Holding Period: {esc(v.get('holding_period', '?'))}",
         ]
     )
-    stage2_line = _format_stage2_mode_line(v)
-    if stage2_line:
-        lines.append(stage2_line)
-    if five_year_answer:
-        lines.append(f"5y business test: {esc(str(five_year_answer))}")
-    if wc_gap_norm:
-        lines.append(f"WC gap: {esc(wc_gap_norm)}")
-    if anti_chase:
-        lines.append("Anti-chase: pause new capital — valuation recheck")
     tension = v.get("external_valuation_tension")
-    if tension and str(tension).upper() not in ("NONE", ""):
-        lines.append(f"Valuation tension: {esc(str(tension))}")
-    if v.get("thesis_status"):
-        lines.append(f"Thesis: {esc(str(v.get('thesis_status')))}")
-    for er_line in format_expected_return_telegram(v.get("expected_return") or {}):
+    stage2_line = _format_stage2_mode_line(v)
+    if compact:
+        flags_line = _compact_context_flags_line(
+            five_year_answer=str(five_year_answer) if five_year_answer else None,
+            wc_gap_norm=wc_gap_norm,
+            anti_chase=anti_chase,
+            tension=tension,
+            thesis_status=v.get("thesis_status"),
+        )
+        if flags_line:
+            lines.append(esc(flags_line))
+    else:
+        if stage2_line:
+            lines.append(stage2_line)
+        if five_year_answer:
+            lines.append(f"5y business test: {esc(str(five_year_answer))}")
+        if wc_gap_norm:
+            lines.append(f"WC gap: {esc(wc_gap_norm)}")
+        if anti_chase:
+            lines.append("Anti-chase: pause new capital — valuation recheck")
+        if tension and str(tension).upper() not in ("NONE", ""):
+            lines.append(f"Valuation tension: {esc(str(tension))}")
+        if v.get("thesis_status"):
+            lines.append(f"Thesis: {esc(str(v.get('thesis_status')))}")
+    for er_line in format_expected_return_telegram(
+        v.get("expected_return") or {},
+        compact=compact,
+    ):
         lines.append(esc(er_line))
     lines.extend(
         [
@@ -396,20 +421,41 @@ def format_verdict_reply(
             "<b>Why buy</b>",
         ]
     )
-    for reason in v.get("reasons_buy") or []:
-        lines.append(f"• {esc(reason)}")
+    reasons_buy = v.get("reasons_buy") or []
+    if compact:
+        reasons_buy = reasons_buy[:TELEGRAM_MAX_REASONS]
+    for reason in reasons_buy:
+        text = _clip(reason, TELEGRAM_MAX_REASON_CHARS) if compact else str(reason)
+        lines.append(f"• {esc(text)}")
     lines.append("")
     lines.append("<b>Why avoid</b>")
-    for reason in v.get("reasons_avoid") or []:
-        lines.append(f"• {esc(reason)}")
+    reasons_avoid = v.get("reasons_avoid") or []
+    if compact:
+        reasons_avoid = reasons_avoid[:TELEGRAM_MAX_REASONS]
+    for reason in reasons_avoid:
+        text = _clip(reason, TELEGRAM_MAX_REASON_CHARS) if compact else str(reason)
+        lines.append(f"• {esc(text)}")
     lines.append("")
-    lines.append(f"<b>Biggest watch:</b> {esc(v.get('biggest_watch', '?'))}")
+    watch = v.get("biggest_watch", "?")
+    if compact:
+        watch = _clip(watch, TELEGRAM_MAX_WATCH_CHARS)
+    lines.append(f"<b>Biggest watch:</b> {esc(watch)}")
 
-    for item in analysis.missing:
-        lines.append(f"⚠️ {esc(item)}")
+    missing = analysis.missing
+    if compact and len(missing) > TELEGRAM_MAX_MISSING:
+        for item in missing[:TELEGRAM_MAX_MISSING]:
+            lines.append(f"⚠️ {esc(item)}")
+        lines.append(f"⚠️ … +{len(missing) - TELEGRAM_MAX_MISSING} more data gaps")
+    else:
+        for item in missing:
+            lines.append(f"⚠️ {esc(item)}")
 
     lines.append("")
     lines.append(DISCLAIMER)
+    if compact:
+        lines.append(
+            "<i>Digest attached; full §1–§16 report stored internally (same LLM run).</i>"
+        )
 
     text = "\n".join(lines)
     if len(text) > TELEGRAM_MAX_MESSAGE_LENGTH:
@@ -491,10 +537,16 @@ async def _deliver_result(update: Update, result: PipelineResult, status_message
     await _send_report_attachment(update, analysis)
 
 
-def _write_report_file(analysis: Analysis):
+def _write_report_file(analysis: Analysis, *, compact: bool = True):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = REPORTS_DIR / f"{analysis.ticker}_{analysis.run_date.isoformat()}.md"
-    report_path.write_text(analysis.report_md, encoding="utf-8")
+    suffix = "digest" if compact else "full"
+    report_path = REPORTS_DIR / f"{analysis.ticker}_{analysis.run_date.isoformat()}_{suffix}.md"
+    body = (
+        build_compact_attachment_md(analysis)
+        if compact
+        else analysis.report_md
+    )
+    report_path.write_text(body, encoding="utf-8")
     return report_path
 
 
