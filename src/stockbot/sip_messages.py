@@ -8,6 +8,7 @@ this module only decides what to say and where the numbers come from.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from stockbot.sip import (
     DEFAULT_SCENARIO_RATES_PCT,
@@ -39,7 +40,21 @@ class ScenarioRates:
     caveat: str
 
 
-def resolve_scenario_rates(verdict_json: dict | None) -> ScenarioRates:
+def _age_note(computed_at: datetime | None) -> str:
+    """How stale the stored scenarios are — a SIP outlives its analysis."""
+    if computed_at is None:
+        return ""
+    days = (datetime.now(UTC) - computed_at).days
+    if days < 45:
+        return ""
+    if days < 365:
+        return f" They were computed about {days // 30} month(s) ago"
+    return f" They were computed about {days // 365} year(s) ago"
+
+
+def resolve_scenario_rates(
+    verdict_json: dict | None, *, computed_at: datetime | None = None
+) -> ScenarioRates:
     """Prefer the stock's own valuation scenarios over generic bands.
 
     Generic "large-cap 10-12%" figures describe *funds*; this bot invests in a
@@ -66,6 +81,8 @@ def resolve_scenario_rates(verdict_json: dict | None) -> ScenarioRates:
                     f"{horizon or 3}-year view; stretching them across the full "
                     "horizon assumes the same rate keeps compounding, which no "
                     "single stock is guaranteed to do."
+                    f"{_age_note(computed_at)}"
+                    f"{' — run /analyze again to refresh them.' if _age_note(computed_at) else ''}"
                 ),
             )
 

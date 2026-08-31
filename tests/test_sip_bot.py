@@ -221,3 +221,65 @@ def test_status_never_prints_minus_zero_for_break_even(price, expected):
     text = format_status(_plan(), ledger, resolve_scenario_rates(None), current_price=price)
     assert expected in text
     assert "−₹0)" not in text and "−₹0 " not in text
+
+
+def test_scenario_rates_read_stored_verdict_without_fetching_a_price(monkeypatch):
+    """get_cached fetches the live price and refuses on a >10% move, so over a
+    SIP's life it would reject every past analysis and quietly fall back to
+    generic rates — while paying for a second price fetch to do it."""
+    from datetime import timedelta
+
+    from stockbot import bot
+
+    fetches = []
+    monkeypatch.setattr(
+        bot, "get_latest_verdict_json",
+        lambda t: (
+            {
+                "expected_return": {
+                    "horizon_years": 3,
+                    "bear_cagr_range_pct": [-16.9, -13.1],
+                    "base_cagr_range_pct": [0.4, 3.7],
+                    "bull_cagr_range_pct": [13.1, 19.1],
+                }
+            },
+            datetime.now(UTC) - timedelta(days=800),
+        ),
+    )
+    monkeypatch.setattr(bot, "_sip_price_and_high", lambda t: fetches.append(t) or (1.0, 2.0))
+
+    rates = bot._sip_scenario_rates("BEL")
+    assert rates.rates_pct == (-15.0, 2.1, 16.1)  # the stock's own scenarios
+    assert fetches == []  # no price fetch to read stored numbers
+    # A two-year-old scenario must not be presented as current.
+    assert "year(s) ago" in rates.caveat
+    assert "/analyze again" in rates.caveat
+
+
+def test_scenario_rates_fall_back_when_nothing_is_stored(monkeypatch):
+    from stockbot import bot
+    from stockbot.sip import DEFAULT_SCENARIO_RATES_PCT
+
+    monkeypatch.setattr(bot, "get_latest_verdict_json", lambda t: None)
+    assert bot._sip_scenario_rates("BEL").rates_pct == DEFAULT_SCENARIO_RATES_PCT
+
+    def boom(t):
+        raise RuntimeError("db unreadable")
+
+    monkeypatch.setattr(bot, "get_latest_verdict_json", boom)
+    assert bot._sip_scenario_rates("BEL").rates_pct == DEFAULT_SCENARIO_RATES_PCT
+
+
+def test_recent_analysis_carries_no_staleness_note(monkeypatch):
+    from stockbot.sip_messages import resolve_scenario_rates
+
+    fresh = resolve_scenario_rates(
+        {"expected_return": {
+            "horizon_years": 3,
+            "bear_cagr_range_pct": [1.0, 2.0],
+            "base_cagr_range_pct": [3.0, 4.0],
+            "bull_cagr_range_pct": [5.0, 6.0],
+        }},
+        computed_at=datetime.now(UTC),
+    )
+    assert "ago" not in fresh.caveat

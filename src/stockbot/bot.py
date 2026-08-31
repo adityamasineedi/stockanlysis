@@ -102,7 +102,7 @@ from stockbot.report_digest import (
 )
 from stockbot.storage import (
     backfill_cached_verdicts,
-    get_cached,
+    get_latest_verdict_json,
     get_sip_plan,
     invalidate_cached_analyses,
     list_active_sip_plans,
@@ -1029,15 +1029,24 @@ def _sip_price_and_high(ticker: str) -> tuple[float | None, float | None]:
 
 
 def _sip_scenario_rates(ticker: str):
-    """Scenario CAGRs, preferring the stock's own stored analysis."""
+    """Scenario CAGRs, preferring the stock's own stored analysis.
+
+    Reads the stored verdict directly rather than via get_cached: that helper
+    fetches the live price and refuses on a >10% move, so over a SIP's life it
+    would reject every past analysis and silently fall back to generic rates —
+    and it would cost a second price fetch per reminder to do it.
+    """
     from stockbot.sip_messages import resolve_scenario_rates
 
     try:
-        cached = get_cached(ticker, max_age_days=3650)
+        stored = get_latest_verdict_json(ticker)
     except Exception:
         logger.exception("SIP could not read stored analysis for %s", ticker)
-        cached = None
-    return resolve_scenario_rates(cached.analysis.verdict_json if cached else None)
+        stored = None
+    if stored is None:
+        return resolve_scenario_rates(None)
+    verdict_json, computed_at = stored
+    return resolve_scenario_rates(verdict_json, computed_at=computed_at)
 
 
 def _build_sip_status(chat_id: int, ticker: str) -> str:

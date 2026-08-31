@@ -401,3 +401,29 @@ def summarize_sip_contributions(chat_id: int) -> SipLedgerSummary:
         total_invested=round(total, 2),
         units_estimate=round(units, 4) if units is not None else None,
     )
+
+
+def get_latest_verdict_json(ticker: str) -> tuple[dict, datetime] | None:
+    """Latest stored verdict for a ticker, with when it was produced.
+
+    Deliberately not ``get_cached``: that one answers "is this report still
+    servable as a fresh answer", so it fetches the live price and refuses on a
+    >10% move. Callers who only want the numbers a past analysis computed (SIP
+    scenario CAGRs, say) must not pay for that price fetch, and must not be
+    denied a perfectly good three-year-old scenario just because the stock has
+    since moved — over a SIP's life it always will. The timestamp comes back so
+    callers can say how old the figures are.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT verdict_json, created_at FROM analyses WHERE ticker = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (ticker.upper(),),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        verdict = json.loads(row["verdict_json"])
+    except (TypeError, ValueError):
+        return None
+    return verdict, datetime.fromisoformat(row["created_at"])
