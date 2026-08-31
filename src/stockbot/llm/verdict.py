@@ -89,7 +89,11 @@ LITE_MODEL = "claude-haiku-4-5-20251001"
 # Raised to 32000; still not proven sufficient, watch for further
 # truncation rather than assuming this is the last raise needed.
 MAX_TOKENS = 32000
-LITE_MAX_TOKENS = 4096
+# LITE (Haiku) raised from 4096 after live truncations: HBLENGINE and GESHIP
+# hit stop_reason=max_tokens three times each (fixtures stage2_lite_*), burning
+# truncation retries with no report. 8192 covers the compact LITE prompt + JSON
+# block with headroom; watch fixtures for further max_tokens hits.
+LITE_MAX_TOKENS = 8192
 
 PIPELINE_CONFIDENCE_CAP = 7
 
