@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import math
 from datetime import UTC, datetime, time, timedelta, timezone
 from types import SimpleNamespace
 
@@ -369,7 +370,12 @@ def _format_buy_range_line(verdict_json: dict) -> str:
     # and the price bar a buy zone has to clear, which was never shown at all.
     parts = [p for p in (_range_block_label(capital_range_blocked_reason(verdict_json)),) if p]
     ceiling = buy_zone_price_ceiling(verdict_json)
-    if ceiling is not None:
+    # Only worth saying when the price is the thing in the way. A stock at ₹150
+    # told it "needs ≤₹176.40" reads as nonsense — it already clears the bar,
+    # and the named gate above is the whole story. Absent price: stay quiet
+    # rather than guess which side of the bar it sits on.
+    price = verdict_json.get("current_price_abs")
+    if ceiling is not None and isinstance(price, (int, float)) and float(price) > ceiling[0]:
         parts.append(f"needs ≤₹{ceiling[0]:.2f} at {esc(ceiling[1])} risk")
     if parts:
         return f"Buy range: not issued ({' · '.join(parts)})"
@@ -1093,7 +1099,13 @@ def _sip_price_and_high(ticker: str) -> tuple[float | None, float | None]:
     except Exception:
         logger.exception("SIP price fetch failed for %s", ticker)
         return (None, None)
-    return (price_data.current_price_abs, three_month_high(price_data.ohlcv_adjusted))
+    # Both numbers must come from the same series. current_price_abs is taken
+    # from the *unadjusted* closes (fetch/prices.py), so pairing it with an
+    # adjusted high understates the high after any split or dividend inside the
+    # window — a real drawdown would then report "No dip right now", exactly
+    # when the dip check matters. Unadjusted also matches the price the user
+    # sees in their broker.
+    return (price_data.current_price_abs, three_month_high(price_data.ohlcv_unadjusted))
 
 
 def _sip_scenario_rates(ticker: str):
@@ -1122,7 +1134,7 @@ def _build_sip_status(chat_id: int, ticker: str) -> str:
 
     plan = get_sip_plan(chat_id)
     assert plan is not None  # caller checked
-    ledger = summarize_sip_contributions(chat_id)
+    ledger = summarize_sip_contributions(chat_id, ticker)
     price, _ = _sip_price_and_high(ticker)
     return format_status(plan, ledger, _sip_scenario_rates(ticker), current_price=price)
 
@@ -1132,7 +1144,7 @@ def _build_sip_reminder(chat_id: int, ticker: str) -> str:
 
     plan = get_sip_plan(chat_id)
     assert plan is not None  # caller iterates active plans
-    ledger = summarize_sip_contributions(chat_id)
+    ledger = summarize_sip_contributions(chat_id, ticker)
     price, high = _sip_price_and_high(ticker)
     return format_monthly_reminder(
         plan,
@@ -1152,22 +1164,40 @@ def _parse_sip_setup(args: list[str]) -> tuple[str, float, float] | str:
         monthly = float(args[1].replace(",", "").replace("₹", ""))
     except ValueError:
         return f"<code>{esc(args[1])}</code> is not a number — try <code>/sip BEL 5000</code>."
-    if monthly <= 0:
-        return "The monthly amount must be more than zero."
+    # float() happily parses "nan" and "inf", and `nan <= 0` is False, so
+    # without an explicit finite check a NaN plan saves and every later
+    # message renders "₹nan".
+    if not math.isfinite(monthly) or monthly <= 0:
+        return "The monthly amount must be a real number greater than zero."
 
     step_up = 0.0
-    if len(args) >= 4 and args[2].lower() in {"stepup", "step-up", "step_up"}:
+    extra = args[2:]
+    if extra:
+        keyword = extra[0].lower()
+        if keyword not in {"stepup", "step-up", "step_up"}:
+            return (
+                f"Did not understand <code>{esc(' '.join(extra))}</code>. "
+                "For a yearly increase use <code>/sip BEL 5000 stepup 10</code>."
+            )
+        # A bare "stepup" with no value used to be dropped in silence, so the
+        # plan saved with no step-up and still replied "Plan saved".
+        if len(extra) < 2:
+            return "Say how much to step up, e.g. <code>/sip BEL 5000 stepup 10</code>."
         try:
-            step_up = float(args[3].replace("%", ""))
+            step_up = float(extra[1].replace("%", ""))
         except ValueError:
-            return f"<code>{esc(args[3])}</code> is not a valid step-up percent."
-        if step_up < 0:
-            return "Step-up cannot be negative."
+            return f"<code>{esc(extra[1])}</code> is not a valid step-up percent."
+        if not math.isfinite(step_up) or step_up < 0:
+            return "Step-up must be a real number of percent, and cannot be negative."
     return (symbol, monthly, step_up)
 
 
 async def handle_sip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
+        return
+    # Every other command carries this guard. /sip was added after the lock
+    # landed, so it silently escaped a policy that says "all bot commands".
+    if await _reject_if_analysis_busy(update):
         return
     _clear_awaiting_symbol(context)
     chat_id = update.effective_chat.id
@@ -1222,6 +1252,7 @@ async def handle_sip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def _handle_sip_subcommand(update: Update, sub: str, args: list[str], plan) -> None:
+    from stockbot.sip import current_instalment
     from stockbot.sip_messages import TOPUP_RISK_NOTE, format_plan_summary
 
     chat_id = plan.chat_id
@@ -1245,7 +1276,9 @@ async def _handle_sip_subcommand(update: Update, sub: str, args: list[str], plan
         return
 
     # /sip paid [amount] [topup]
-    amount = plan.monthly_amount
+    # Default to the instalment actually due, step-up included — using the
+    # original amount meant a step-up plan silently never stepped up.
+    amount = current_instalment(plan.monthly_amount, plan.step_up_pct, plan.started_at)
     was_topup = any(a.lower() in {"topup", "top-up"} for a in args[1:])
     for token in args[1:]:
         try:
@@ -1262,7 +1295,7 @@ async def _handle_sip_subcommand(update: Update, sub: str, args: list[str], plan
         price_at_contribution=price,
         was_topup=was_topup,
     )
-    ledger = await asyncio.to_thread(summarize_sip_contributions, chat_id)
+    ledger = await asyncio.to_thread(summarize_sip_contributions, chat_id, plan.ticker)
     kind = "top-up" if was_topup else "instalment"
     lines = [
         f"✅ Logged ₹{amount:,.0f} {kind} for {esc(plan.ticker)}"
@@ -1280,7 +1313,13 @@ async def _handle_sip_subcommand(update: Update, sub: str, args: list[str], plan
 
 
 async def _sip_monthly_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Message every active plan. One failure must not stop the rest."""
+    """Message every active plan. One failure must not stop the rest.
+
+    Deliberately not gated on the analysis lock, unlike the /sip command: this
+    fires on a date, so refusing it because an analysis happens to be running
+    would drop that month's reminder entirely rather than defer it. The job
+    spends nothing and makes one price call per plan.
+    """
     plans = await asyncio.to_thread(list_active_sip_plans)
     for plan in plans:
         try:

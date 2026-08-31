@@ -55,7 +55,7 @@ def test_contributions_are_append_only(store):
     second = store.record_sip_contribution(42, "BEL", 5000, price_at_contribution=380.0)
     assert second != first
 
-    summary = store.summarize_sip_contributions(42)
+    summary = store.summarize_sip_contributions(42, "BEL")
     assert summary.contributions == 2
     assert summary.total_invested == 10_000.0
     # Units accrue at each contribution's own price — the point of averaging.
@@ -69,7 +69,7 @@ def test_units_withheld_when_any_contribution_lacks_a_price(store):
     store.record_sip_contribution(42, "BEL", 5000, price_at_contribution=400.0)
     store.record_sip_contribution(42, "BEL", 5000)  # price unknown
 
-    summary = store.summarize_sip_contributions(42)
+    summary = store.summarize_sip_contributions(42, "BEL")
     assert summary.contributions == 2
     assert summary.total_invested == 10_000.0
     assert summary.units_estimate is None
@@ -78,9 +78,9 @@ def test_units_withheld_when_any_contribution_lacks_a_price(store):
 def test_topup_flag_and_empty_ledger(store):
     store.save_sip_plan(42, "BEL", 5000)
     store.record_sip_contribution(42, "BEL", 2500, price_at_contribution=350.0, was_topup=True)
-    assert store.summarize_sip_contributions(42).total_invested == 2500.0
+    assert store.summarize_sip_contributions(42, "BEL").total_invested == 2500.0
 
-    empty = store.summarize_sip_contributions(777)
+    empty = store.summarize_sip_contributions(777, "BEL")
     assert empty.contributions == 0
     assert empty.total_invested == 0.0
     assert empty.units_estimate is None
@@ -93,5 +93,27 @@ def test_plans_are_isolated_per_chat(store):
 
     assert store.get_sip_plan(1).ticker == "BEL"
     assert store.get_sip_plan(2).ticker == "CRISIL"
-    assert store.summarize_sip_contributions(2).contributions == 0
+    assert store.summarize_sip_contributions(2, "CRISIL").contributions == 0
     assert len(store.list_active_sip_plans()) == 2
+
+
+def test_ledger_is_scoped_to_the_plans_current_ticker(store):
+    """save_sip_plan lets a chat re-point its plan. Without a ticker filter the
+    totals merge both stocks and the caller multiplies BEL-derived units by the
+    live CRISIL price — a gain that never happened."""
+    store.save_sip_plan(42, "BEL", 5000)
+    store.record_sip_contribution(42, "BEL", 5000, price_at_contribution=400.0)
+    store.record_sip_contribution(42, "BEL", 5000, price_at_contribution=380.0)
+
+    store.save_sip_plan(42, "CRISIL", 8000)
+    store.record_sip_contribution(42, "CRISIL", 8000, price_at_contribution=1600.0)
+
+    crisil = store.summarize_sip_contributions(42, "CRISIL")
+    assert crisil.contributions == 1
+    assert crisil.total_invested == 8000.0
+    assert crisil.units_estimate == pytest.approx(5.0)
+
+    # The abandoned BEL rows survive in the append-only ledger.
+    bel = store.summarize_sip_contributions(42, "BEL")
+    assert bel.contributions == 2
+    assert bel.total_invested == 10_000.0
