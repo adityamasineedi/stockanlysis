@@ -18,6 +18,7 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 COPY prompts ./prompts
 COPY data/portfolio ./data/portfolio
+COPY data/portfolio/sip_portfolios.json ./config/portfolio/sip_portfolios.json
 
 RUN uv sync --frozen --no-dev --no-editable
 

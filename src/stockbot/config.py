@@ -20,7 +20,11 @@ DATA_DIR = Path(os.environ.get("STOCKBOT_DATA_DIR") or (PROJECT_ROOT / "data"))
 SYMBOLS_DIR = DATA_DIR / "symbols"
 PORTFOLIO_DIR = DATA_DIR / "portfolio"
 WATCHLIST_PATH = PORTFOLIO_DIR / "watchlist.txt"
-SIP_PORTFOLIOS_PATH = PORTFOLIO_DIR / "sip_portfolios.json"
+# Bundled in the Docker image at config/portfolio/ — outside the Railway volume
+# mount (/app/data), which otherwise hides repo files copied under data/.
+SIP_PORTFOLIOS_BUNDLED_PATH = PROJECT_ROOT / "config" / "portfolio" / "sip_portfolios.json"
+SIP_PORTFOLIOS_VOLUME_PATH = PORTFOLIO_DIR / "sip_portfolios.json"
+SIP_PORTFOLIOS_PATH = SIP_PORTFOLIOS_BUNDLED_PATH
 CACHE_DIR = DATA_DIR / "cache"
 SCREENER_CACHE_DIR = CACHE_DIR / "screener"
 ANNUAL_REPORT_CACHE_DIR = CACHE_DIR / "annual_reports"
@@ -69,6 +73,15 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def resolve_sip_portfolios_path(explicit: Path | None = None) -> Path:
+    """Return SIP config path — volume override, else bundled image copy."""
+    if explicit is not None:
+        return explicit
+    if SIP_PORTFOLIOS_VOLUME_PATH.exists():
+        return SIP_PORTFOLIOS_VOLUME_PATH
+    return SIP_PORTFOLIOS_BUNDLED_PATH
 
 
 def parse_telegram_allowed_chat_ids(raw: str | None = None) -> frozenset[int]:

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from stockbot.config import SIP_PORTFOLIOS_PATH
+from stockbot.config import resolve_sip_portfolios_path
 
 
 @dataclass(frozen=True)
@@ -211,11 +211,12 @@ def _load_v1(raw: dict[str, Any]) -> PortfolioSipConfig:
 
 
 def load_portfolio_sip_config(path: Path | None = None) -> PortfolioSipConfig:
-    target = path or SIP_PORTFOLIOS_PATH
+    target = resolve_sip_portfolios_path(path)
     if not target.exists():
         raise FileNotFoundError(
             f"Portfolio SIP config not found at {target}. "
-            "Create sip_portfolios.json under data/portfolio/."
+            "Expected bundled config/portfolio/sip_portfolios.json in the image "
+            "or data/portfolio/sip_portfolios.json on the volume."
         )
     raw = json.loads(target.read_text(encoding="utf-8"))
     if raw.get("version") == 1:
