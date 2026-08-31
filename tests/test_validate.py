@@ -16,7 +16,7 @@ from stockbot.models import (
     Technicals,
     TickerInfo,
 )
-from stockbot.validate import validate_report
+from stockbot.validate import try_auto_fix_report, validate_report
 
 NOW = datetime.now(UTC)
 TODAY = datetime.now(UTC).date()
@@ -357,6 +357,36 @@ def test_anti_chase_required_when_price_at_base_fv_top():
     )
     assert result.passed is False
     assert any("anti_chase_flag" in f for f in result.failures)
+
+
+def test_auto_fix_anti_chase_when_price_at_base_fv_top():
+    report = _report(
+        {
+            "current_price_abs": 400.0,
+            "anti_chase_flag": False,
+            "buy_range_allowed": False,
+            "buy_zone_abs": None,
+            "earnings_quality": "MEDIUM",
+            "valuation_inputs": {
+                "eps_bear": 8.0,
+                "eps_base": 10.0,
+                "eps_bull": 12.0,
+                "multiple_bear": [30.0, 32.0],
+                "multiple_base": [38.0, 40.0],
+                "multiple_bull": [42.0, 45.0],
+            },
+        }
+    )
+    brief = _brief(financials=_extreme_cash_financials())
+    initial = validate_report(report, brief)
+    assert initial.passed is False
+    assert any("anti_chase_flag" in f for f in initial.failures)
+
+    fixed = try_auto_fix_report(report, initial, brief)
+    assert fixed is not None
+    fixed_report, revalidated = fixed
+    assert revalidated.passed is True
+    assert '"anti_chase_flag": true' in fixed_report.lower()
 
 
 def test_holding_period_fails_when_thesis_under_review_but_3_5_years():

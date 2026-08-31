@@ -216,6 +216,13 @@ def _audit_llm_calls(findings: list[Finding], days: int) -> dict[str, object]:
         stage = row["stage"] or "unknown"
         by_stage[stage] += float(row["cost_inr"])
 
+    by_ticker: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for row in rows:
+        if row["ticker"]:
+            by_ticker[str(row["ticker"]).upper()].append(row)
+
+    stage2_prior_counts: dict[str, int] = defaultdict(int)
+
     for row in rows:
         inp = int(row["input_tokens"])
         out = int(row["output_tokens"])
@@ -278,21 +285,32 @@ def _audit_llm_calls(findings: list[Finding], days: int) -> dict[str, object]:
 
         cache_create = int(row["cache_creation_tokens"] or 0)
         cache_read = int(row["cached_tokens"] or 0)
-        if cache_create > 5000 and cache_read == 0 and stage.startswith("stage2"):
-            findings.append(
-                Finding(
-                    "warning",
-                    "token_waste",
-                    "Stage 2 cache write without read on same call",
-                    f"Wrote {cache_create:,} cache tokens (₹{cost:.2f}) — ensure retries reuse within 1h.",
-                    {"called_at": row["called_at"], "ticker": row["ticker"], "cache_creation_tokens": cache_create},
+        if stage.startswith("stage2"):
+            ticker_key = str(row["ticker"] or "").upper()
+            prior_stage2 = stage2_prior_counts[ticker_key]
+            stage2_prior_counts[ticker_key] += 1
+            # First Stage 2 call per ticker always writes cache; reads appear on retries.
+            if (
+                cache_create > 5000
+                and cache_read == 0
+                and prior_stage2 >= 1
+            ):
+                findings.append(
+                    Finding(
+                        "warning",
+                        "token_waste",
+                        "Stage 2 retry did not read prompt cache",
+                        f"Call #{prior_stage2 + 1} for {ticker_key or '?'} wrote {cache_create:,} "
+                        f"cache tokens (₹{cost:.2f}) without a cache read — retries should reuse "
+                        f"within 1h.",
+                        {
+                            "called_at": row["called_at"],
+                            "ticker": row["ticker"],
+                            "cache_creation_tokens": cache_create,
+                            "stage2_call_index": prior_stage2 + 1,
+                        },
+                    )
                 )
-            )
-
-    by_ticker: dict[str, list[sqlite3.Row]] = defaultdict(list)
-    for row in rows:
-        if row["ticker"]:
-            by_ticker[str(row["ticker"]).upper()].append(row)
 
     with _connect_analyses() as conn:
         analysis_rows = conn.execute(
@@ -480,8 +498,12 @@ def _audit_logs(findings: list[Finding], days: int) -> None:
     since = datetime.now(UTC) - timedelta(days=days)
     patterns = {
         "analysis_cost_exceeded": re.compile(r"analysis_cost_exceeded|AnalysisCostExceeded", re.IGNORECASE),
+        "analysis_truncated": re.compile(
+            r"analysis_truncated|Stage2TruncationExhausted|truncated.*without completing",
+            re.IGNORECASE,
+        ),
         "runtime_exceeded": re.compile(r"analysis_runtime_exceeded|AnalysisRuntimeExceeded", re.IGNORECASE),
-        "truncated": re.compile(r"truncated|TruncatedResponseError", re.IGNORECASE),
+        "truncated": re.compile(r"Stage 2 response truncated|TruncatedResponseError", re.IGNORECASE),
         "validation_failed": re.compile(r"validation failed", re.IGNORECASE),
         "render_failed": re.compile(r"render_failed|PlaceholderError", re.IGNORECASE),
     }
@@ -506,7 +528,7 @@ def _audit_logs(findings: list[Finding], days: int) -> None:
     for key, count in counts.items():
         if count == 0:
             continue
-        sev: Severity = "warning" if key in {"validation_failed", "truncated"} else "info"
+        sev: Severity = "warning" if key in {"validation_failed", "truncated", "analysis_truncated"} else "info"
         if key in {"analysis_cost_exceeded", "runtime_exceeded"}:
             sev = "critical"
         findings.append(

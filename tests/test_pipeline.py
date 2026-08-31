@@ -10,6 +10,7 @@ import pytest
 
 from stockbot import pipeline as pipeline_module
 from stockbot.llm.extract import ExtractionResult
+from stockbot.llm.verdict import TruncatedResponseError
 from stockbot.models import (
     AmbiguousMatch,
     Brief,
@@ -273,6 +274,22 @@ def test_per_analysis_cost_cap_stops_after_a_retry_pushes_it_over(monkeypatch):
     assert result.status == "analysis_cost_exceeded"
     assert result.spent_inr == pytest.approx(85.0)
     assert calls["count"] == 2
+
+
+def test_truncation_exhausted_returns_distinct_status(monkeypatch):
+    _patch_common(monkeypatch)
+    calls = {"count": 0}
+
+    def _stage2(brief, extraction, extra_instruction=None, **kwargs):
+        calls["count"] += 1
+        raise TruncatedResponseError(6.0, 8000, 32000)
+
+    monkeypatch.setattr(pipeline_module, "run_stage2", _stage2)
+
+    result = run_full_analysis("TEST")
+    assert result.status == "analysis_truncated"
+    assert result.spent_inr == pytest.approx(5.0 + 6.0 * 3)
+    assert calls["count"] == 3
 
 
 def test_busy_when_concurrency_slot_already_held(monkeypatch):
