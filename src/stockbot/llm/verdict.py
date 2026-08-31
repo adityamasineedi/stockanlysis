@@ -55,7 +55,11 @@ from stockbot.brief_enrichment import (
     format_prescan_summary_json,
 )
 from stockbot.config import MASTER_PROMPT_PATH, PROMPTS_DIR, settings
-from stockbot.fetch.annual_report import format_ar_business_summary_json
+from stockbot.fetch.annual_report import (
+    BUSINESS_HEADING_PRIORITY,
+    business_narrative_gap,
+    format_ar_business_summary_json,
+)
 
 CONSTITUTION_PATH = PROMPTS_DIR / "quality-first-portfolio-constitution-v1.md"
 STAGE2_LITE_PROMPT_PATH = PROMPTS_DIR / "stage2-lite-v1.md"
@@ -165,6 +169,15 @@ quality/five-year/anti-chase gates pass; tranches 2-4 stay valuation-gated \
 and conditional, never automatic solely because price fell. Anti-chase \
 pauses new capital (including tranche 1) after abnormal short-term surges. \
 Profit review = rebalancing review, not an exact top.
+
+10. Read <data_inventory> before §15A. If pipeline_missing is empty and \
+FINANCIALS span multiple years, base five_year_business_test on those \
+numbers. Do not answer UNCERTAIN solely because MD&A is thin when FINANCIALS \
+show a clear multi-year trend — name the specific trend in evidence_for or \
+evidence_against. Use UNCERTAIN only for genuinely mixed business evidence, \
+not pipeline gaps. When buy_range_allowed is false, state the gate in §13 \
+and Beginner Summary (e.g. "five-year: UNCERTAIN — margin compression") — \
+never vague "needs more evidence" without naming the gate.
 
 At the very end of your report, after the Final Beginner Summary, include a \
 fenced ```json code block containing exactly these fields. Output only valid \
@@ -461,6 +474,29 @@ def _pledge_warning(brief: Brief) -> str | None:
     )
 
 
+def format_data_inventory_json(brief: Brief) -> str:
+    """Structured pipeline gap inventory — shared by Stage 2 and validators."""
+    ar = brief.annual_report
+    business_present = [h for h in BUSINESS_HEADING_PRIORITY if h in ar.sections]
+    business_dropped = [h for h in ar.dropped_sections if h in BUSINESS_HEADING_PRIORITY]
+    payload: dict[str, object] = {
+        "pipeline_missing": brief.missing,
+        "confidence_ceiling": brief.confidence_ceiling,
+        "financials_available": brief.financials is not None,
+        "annual_report_sections": list(ar.sections.keys()),
+        "annual_report_business_sections_present": business_present,
+        "annual_report_business_sections_dropped": business_dropped,
+        "ar_business_summary_present": ar.business_summary is not None,
+        "prescan_data_confidence": (
+            brief.prescan_summary.data_confidence if brief.prescan_summary else None
+        ),
+    }
+    narrative_gap = business_narrative_gap(ar.sections, ar.dropped_sections)
+    if narrative_gap:
+        payload["business_narrative_gap"] = narrative_gap
+    return json.dumps(payload, indent=2)
+
+
 def build_user_message(
     brief: Brief, extraction: ExtractionResult, extra_instruction: str | None = None
 ) -> str:
@@ -475,6 +511,10 @@ def build_user_message(
         "<prescan_summary>",
         format_prescan_summary_json(brief.prescan_summary),
         "</prescan_summary>",
+        "",
+        "<data_inventory>",
+        format_data_inventory_json(brief),
+        "</data_inventory>",
         "",
         "<price_and_technicals>",
         format_price_section(brief.price, brief.technicals),

@@ -35,7 +35,7 @@ from tabulate import tabulate
 
 from stockbot.analysis.technicals import compute_technicals
 from stockbot.brief_enrichment import enrich_brief
-from stockbot.fetch.annual_report import fetch_annual_report
+from stockbot.fetch.annual_report import business_narrative_gap, fetch_annual_report
 from stockbot.fetch.fundamentals import fetch_fundamentals
 from stockbot.fetch.news import fetch_news
 from stockbot.fetch.prices import fetch_price_data
@@ -127,6 +127,13 @@ def assemble_brief(ticker: TickerInfo) -> Brief:
                 "(scanned/image-only, or no target headings matched)"
             )
             missing.append(f"MISSING: annual report — {reason}")
+        else:
+            narrative_gap = business_narrative_gap(
+                annual_report.sections,
+                annual_report.dropped_sections,
+            )
+            if narrative_gap:
+                missing.append(narrative_gap)
 
     confidence_ceiling = 10
     if financials is None:

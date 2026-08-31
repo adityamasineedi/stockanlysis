@@ -5,6 +5,7 @@ compliance-certificate false positive for "Independent Auditor's Report")
 was verified by hand during development — see the module docstring."""
 
 from stockbot.fetch.annual_report import (
+    BUSINESS_HEADING_PRIORITY,
     HEADING_PRIORITY,
     TOKEN_CAP,
     _build_sections,
@@ -15,6 +16,7 @@ from stockbot.fetch.annual_report import (
     _merge_ranges,
     _normalize_quotes,
     _truncate_to_budget,
+    business_narrative_gap,
     parse_ar_business_summary,
 )
 
@@ -212,3 +214,33 @@ def test_parse_ar_business_summary_extracts_order_book_and_segments():
     assert summary is not None
     assert summary.order_book_cr == 20535.0
     assert summary.segments
+
+
+def test_build_sections_reserves_budget_for_business_headings():
+    """Huge audit prose must not evict MD&A entirely — live ADVENZYMES bug."""
+    audit_page = (
+        "Independent Auditor's Report\nTo The Members of Test Co\nBasis for Opinion\n"
+        + ("audit prose " * 8000)
+    )
+    business_page = (
+        "Management Discussion and Analysis\n"
+        "Order book stands at Rs. 500 crore. Segment - Enzymes: export growth."
+    )
+    pages = [audit_page, business_page]
+
+    sections, _, _dropped = _build_sections(pages)
+
+    assert any(h in sections for h in BUSINESS_HEADING_PRIORITY)
+
+
+def test_business_narrative_gap_when_business_headings_dropped_only():
+    gap = business_narrative_gap(
+        sections={"Independent Auditor's Report": "clean opinion"},
+        dropped_sections=["Management Discussion", "MD&A"],
+    )
+    assert gap is not None
+    assert "business narrative" in gap
+    assert business_narrative_gap(
+        sections={"Management Discussion": "segment growth"},
+        dropped_sections=["MD&A"],
+    ) is None

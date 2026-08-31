@@ -10,7 +10,7 @@ from stockbot.bot import (
     AWAITING_PRESCAN_SYMBOL,
     _consume_awaiting,
     _parse_analyze_command_args,
-    _parse_force_analyze_plain_text,
+    _parse_analyze_plain_text,
     _parse_prescan_plain_text,
     esc,
     format_ambiguous_reply,
@@ -325,17 +325,21 @@ def test_format_ambiguous_reply_lists_all_candidates():
 
 
 def test_parse_analyze_command_args():
-    assert _parse_analyze_command_args(["BEL"]) == ("BEL", False)
-    assert _parse_analyze_command_args(["force", "MAZDOCK"]) == ("MAZDOCK", True)
-    assert _parse_analyze_command_args(["Force", "TCS"]) == ("TCS", True)
-    assert _parse_analyze_command_args([]) == ("", False)
+    assert _parse_analyze_command_args(["BEL"]) == ("BEL", False, False)
+    assert _parse_analyze_command_args(["force", "MAZDOCK"]) == ("MAZDOCK", True, False)
+    assert _parse_analyze_command_args(["Force", "TCS"]) == ("TCS", True, False)
+    assert _parse_analyze_command_args(["full", "CAMS"]) == ("CAMS", False, True)
+    assert _parse_analyze_command_args(["CAMS", "full"]) == ("CAMS", False, True)
+    assert _parse_analyze_command_args(["force", "full", "BSE"]) == ("BSE", True, True)
+    assert _parse_analyze_command_args([]) == ("", False, False)
 
 
-def test_parse_force_analyze_plain_text():
-    assert _parse_force_analyze_plain_text("force BEL") == ("BEL", True)
-    assert _parse_force_analyze_plain_text("Force MAZDOCK") == ("MAZDOCK", True)
-    assert _parse_force_analyze_plain_text("BEL") is None
-    assert _parse_force_analyze_plain_text("force") is None
+def test_parse_analyze_plain_text():
+    assert _parse_analyze_plain_text("force BEL") == ("BEL", True, False)
+    assert _parse_analyze_plain_text("full CAMS") == ("CAMS", False, True)
+    assert _parse_analyze_plain_text("force full MAZDOCK") == ("MAZDOCK", True, True)
+    assert _parse_analyze_plain_text("BEL") is None
+    assert _parse_analyze_plain_text("force") is None
 
 
 def test_parse_prescan_plain_text():

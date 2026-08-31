@@ -129,6 +129,8 @@ def test_build_user_message_includes_hard_injections():
     assert "You do NOT have a web search tool" in message
     assert "Treat them as [FACT]" in message
     assert "<context>" in message
+    assert "<data_inventory>" in message
+    assert "pipeline_missing" in message
     assert "<price_and_technicals>" in message
     assert "<instruction>" in message
     assert "Analyze:" in message

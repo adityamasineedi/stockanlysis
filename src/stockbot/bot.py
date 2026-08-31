@@ -429,6 +429,7 @@ def format_verdict_reply(
     *,
     staleness_banner: str | None = None,
     compact: bool = True,
+    full_attachment: bool = False,
 ) -> str:
     v = analysis.verdict_json
     # cash_gap_blocks is applied inside _format_buy_range_line/_format_add_more_range_line,
@@ -530,9 +531,12 @@ def format_verdict_reply(
     lines.append("")
     lines.append(DISCLAIMER)
     if compact:
-        lines.append(
-            "<i>Digest attached; full §1–§16 report stored internally (same LLM run).</i>"
-        )
+        if full_attachment:
+            lines.append("<i>Full §1–§16 report attached as .md</i>")
+        else:
+            lines.append(
+                "<i>Digest attached; full §1–§16 report stored internally (same LLM run).</i>"
+            )
 
     text = "\n".join(lines)
     if len(text) > TELEGRAM_MAX_MESSAGE_LENGTH:
@@ -547,7 +551,13 @@ def format_ambiguous_reply(candidates: AmbiguousMatch) -> str:
     return "\n".join(lines)
 
 
-async def _deliver_result(update: Update, result: PipelineResult, status_message) -> None:
+async def _deliver_result(
+    update: Update,
+    result: PipelineResult,
+    status_message,
+    *,
+    full_report: bool = False,
+) -> None:
     if result.status == "not_found":
         await status_message.edit_text(
             "Couldn't find that company. Check the spelling, or try the exact NSE symbol."
@@ -618,10 +628,14 @@ async def _deliver_result(update: Update, result: PipelineResult, status_message
 
     analysis = result.analysis
     await status_message.edit_text(
-        format_verdict_reply(analysis, staleness_banner=result.staleness_banner),
+        format_verdict_reply(
+            analysis,
+            staleness_banner=result.staleness_banner,
+            full_attachment=full_report,
+        ),
         parse_mode=ParseMode.HTML,
     )
-    await _send_report_attachment(update, analysis)
+    await _send_report_attachment(update, analysis, compact=not full_report)
 
 
 def _write_report_file(analysis: Analysis, *, compact: bool = True):
@@ -637,8 +651,13 @@ def _write_report_file(analysis: Analysis, *, compact: bool = True):
     return report_path
 
 
-async def _send_report_attachment(update: Update, analysis: Analysis) -> None:
-    report_path = await asyncio.to_thread(_write_report_file, analysis)
+async def _send_report_attachment(
+    update: Update,
+    analysis: Analysis,
+    *,
+    compact: bool = True,
+) -> None:
+    report_path = await asyncio.to_thread(_write_report_file, analysis, compact=compact)
     document_bytes = await asyncio.to_thread(report_path.read_bytes)
     await update.message.reply_document(document=document_bytes, filename=report_path.name)
 
@@ -701,7 +720,13 @@ async def _check_analyze_eligibility_gate(update: Update, query: str) -> bool:
     return False
 
 
-async def _run_and_reply(update: Update, query: str, *, force: bool = False) -> None:
+async def _run_and_reply(
+    update: Update,
+    query: str,
+    *,
+    force: bool = False,
+    full_report: bool = False,
+) -> None:
     if not await _try_begin_analysis(query):
         active = await _active_analysis_query()
         await update.message.reply_text(
@@ -729,7 +754,7 @@ async def _run_and_reply(update: Update, query: str, *, force: bool = False) -> 
         finally:
             progress_task.cancel()
 
-        await _deliver_result(update, result, status_message)
+        await _deliver_result(update, result, status_message, full_report=full_report)
     finally:
         await _end_analysis()
 
@@ -739,7 +764,7 @@ async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     if await _reject_if_analysis_busy(update):
         return
-    query, force = _parse_analyze_command_args(context.args)
+    query, force, full_report = _parse_analyze_command_args(context.args)
     if not query:
         await _prompt_for_symbol(
             update,
@@ -751,16 +776,23 @@ async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
     _clear_awaiting_symbol(context)
-    await _run_and_reply(update, query, force=force)
+    await _run_and_reply(update, query, force=force, full_report=full_report)
 
 
-def _parse_analyze_command_args(args: list[str] | None) -> tuple[str, bool]:
+def _parse_analyze_command_args(args: list[str] | None) -> tuple[str, bool, bool]:
     parts = list(args or [])
     force = False
-    if parts and parts[0].lower() == "force":
-        force = True
-        parts = parts[1:]
-    return " ".join(parts).strip(), force
+    full_report = False
+    cleaned: list[str] = []
+    for token in parts:
+        low = token.lower()
+        if low == "force":
+            force = True
+        elif low == "full":
+            full_report = True
+        else:
+            cleaned.append(token)
+    return " ".join(cleaned).strip(), force, full_report
 
 
 async def handle_prescan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -810,14 +842,28 @@ def _parse_prescan_plain_text(text: str) -> str | None:
     return None
 
 
-def _parse_force_analyze_plain_text(text: str) -> tuple[str, bool] | None:
-    """Accept 'force BEL' as a plain-text override for the eligibility gate."""
+def _parse_analyze_plain_text(text: str) -> tuple[str, bool, bool] | None:
+    """Accept 'force BEL', 'full CAMS', or 'force full BEL' as plain-text shortcuts."""
     stripped = text.strip()
-    if stripped.lower().startswith("force "):
-        rest = stripped[6:].strip()
-        if rest:
-            return rest, True
-    return None
+    if not stripped:
+        return None
+    parts = stripped.split()
+    force = False
+    full_report = False
+    cleaned: list[str] = []
+    for token in parts:
+        low = token.lower()
+        if low == "force":
+            force = True
+        elif low == "full":
+            full_report = True
+        else:
+            cleaned.append(token)
+    if not cleaned:
+        return None
+    if not force and not full_report:
+        return None
+    return " ".join(cleaned), force, full_report
 
 
 async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -833,11 +879,11 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         _clear_awaiting_symbol(context)
         await _run_prescan_and_reply(update, prescan_query)
         return
-    force_query = _parse_force_analyze_plain_text(text)
-    if force_query is not None:
+    analyze_query = _parse_analyze_plain_text(text)
+    if analyze_query is not None:
         _clear_awaiting_symbol(context)
-        query, force = force_query
-        await _run_and_reply(update, query, force=force)
+        query, force, full_report = analyze_query
+        await _run_and_reply(update, query, force=force, full_report=full_report)
         return
     if _consume_awaiting(context, AWAITING_PRESCAN_SYMBOL):
         if await _offer_symbol_picks(
@@ -897,7 +943,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/candidates strong|candidate|watchlist — filter by score tier\n"
         "/candidates quality 65 — Quality ≥65 and analyze-ready\n"
         "/analyze — tap from menu, then send the stock name\n"
-        "/analyze <company> — full deep analysis (requires prescan eligibility)\n"
+        "/analyze <company> — deep analysis (digest .md attached by default)\n"
+        "/analyze full <symbol> — attach full §1–§16 report .md\n"
         "/analyze force <symbol> — bypass gate (not recommended)\n"
         "/refresh SYMBOL — clear cached analysis for symbol\n"
         "/refresh backfill — recompute gates + expected_return on cached rows\n"

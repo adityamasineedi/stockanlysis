@@ -17,7 +17,7 @@ from stockbot.portfolio_sip_messages import (
     format_portfolio_track_html,
     split_telegram_chunks,
 )
-from stockbot.portfolio_sip_schema import CashPolicy, SymbolConfig
+from stockbot.portfolio_sip_schema import SymbolConfig
 
 
 def test_equal_whole_share_respects_budget():

@@ -56,6 +56,11 @@ DOWNLOAD_TIMEOUT_SECONDS = 90.0
 MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50MB cap
 SWING_WINDOW_PAGES = 3
 TOKEN_CAP = 50_000
+# Audit/governance sections can be huge; reserve this budget for MD&A /
+# business narrative so Stage 2 can run the five-year test on filing text,
+# not only FINANCIALS. Without a reserve, live ADVENZYMES kept only the
+# auditor report and dropped Management Discussion entirely.
+BUSINESS_TOKEN_RESERVE = 12_000
 CHARS_PER_TOKEN_ESTIMATE = 4  # rough, dependency-free — no tokenizer in the stack
 MIN_AVG_CHARS_PER_PAGE = 20  # below this, treat the PDF as scanned/image-only
 
@@ -455,6 +460,19 @@ def parse_ar_business_summary(sections: dict[str, str]) -> ArBusinessSummary | N
     )
 
 
+def business_narrative_gap(sections: dict[str, str], dropped_sections: list[str]) -> str | None:
+    """Return a brief.missing line when MD&A/business headings were dropped entirely."""
+    present = [h for h in BUSINESS_HEADING_PRIORITY if h in sections]
+    if present:
+        return None
+    dropped_business = [h for h in dropped_sections if h in BUSINESS_HEADING_PRIORITY]
+    if not dropped_business:
+        return None
+    preview = ", ".join(dropped_business[:3])
+    suffix = "…" if len(dropped_business) > 3 else ""
+    return f"MISSING: annual report business narrative — {preview}{suffix} dropped at token cap"
+
+
 def format_ar_business_summary_json(summary: ArBusinessSummary | None) -> str:
     if summary is None:
         return "null"
@@ -468,6 +486,34 @@ def format_ar_business_summary_json(summary: ArBusinessSummary | None) -> str:
         "strategy": list(summary.strategy),
     }
     return json.dumps(payload, indent=2)
+
+
+def _allocate_sections(
+    heading_list: list[str],
+    candidate_text: dict[str, str],
+    budget: int,
+) -> tuple[dict[str, str], bool, list[str], int]:
+    sections: dict[str, str] = {}
+    dropped: list[str] = []
+    truncated_any = False
+    for heading in heading_list:
+        if heading not in candidate_text:
+            continue
+        text = candidate_text[heading]
+        cost = _estimate_tokens(text)
+
+        if cost <= budget:
+            sections[heading] = text
+            budget -= cost
+        elif budget > 0:
+            sections[heading] = _truncate_to_budget(text, budget)
+            dropped.append(heading)
+            truncated_any = True
+            budget = 0
+        else:
+            dropped.append(heading)
+
+    return sections, truncated_any, dropped, budget
 
 
 def _build_sections(
@@ -487,26 +533,20 @@ def _build_sections(
         ranges = _merge_ranges(hits, window, total_pages)
         candidate_text[heading] = _extract_ranges_text(pages_text, hits, heading, ranges)
 
-    sections: dict[str, str] = {}
-    dropped: list[str] = []
-    budget = TOKEN_CAP
-    for heading in heading_list:
-        if heading not in candidate_text:
-            continue
-        text = candidate_text[heading]
-        cost = _estimate_tokens(text)
-
-        if cost <= budget:
-            sections[heading] = text
-            budget -= cost
-        elif budget > 0:
-            sections[heading] = _truncate_to_budget(text, budget)
-            dropped.append(heading)
-            budget = 0
-        else:
-            dropped.append(heading)
-
-    return sections, bool(dropped), dropped
+    audit_sections, audit_truncated, audit_dropped, audit_remaining = _allocate_sections(
+        HEADING_PRIORITY,
+        candidate_text,
+        TOKEN_CAP - BUSINESS_TOKEN_RESERVE,
+    )
+    business_budget = BUSINESS_TOKEN_RESERVE + audit_remaining
+    business_sections, business_truncated, business_dropped, _ = _allocate_sections(
+        BUSINESS_HEADING_PRIORITY,
+        candidate_text,
+        business_budget,
+    )
+    sections = {**audit_sections, **business_sections}
+    dropped = audit_dropped + business_dropped
+    return sections, audit_truncated or business_truncated, dropped
 
 
 def fetch_annual_report(symbol: str) -> ReportText:
