@@ -994,7 +994,7 @@ async def handle_preflight(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     ticker: TickerInfo = resolved
     try:
         _brief, report = await asyncio.to_thread(assemble_brief_for_analysis, ticker)
-    except Exception as exc:  # noqa: BLE001 - preflight resilience; always reply
+    except Exception as exc:
         logger.exception("preflight failed for %r", query)
         await status.edit_text(f"Preflight fetch failed: {esc(exc)}")
         return
