@@ -288,3 +288,58 @@ def test_recent_analysis_carries_no_staleness_note(monkeypatch):
         computed_at=datetime.now(UTC),
     )
     assert "ago" not in fresh.caveat
+
+
+def test_parse_sip_setup_rejects_non_finite_amounts():
+    """float() parses "nan"/"inf" and `nan <= 0` is False, so without an
+    explicit finite check a NaN plan saved and every message rendered "₹nan"."""
+    for token in ("nan", "inf", "-inf", "NaN"):
+        assert isinstance(_parse_sip_setup(["BEL", token]), str), token
+    assert isinstance(_parse_sip_setup(["BEL", "5000", "stepup", "nan"]), str)
+
+
+def test_parse_sip_setup_rejects_silently_dropped_stepup():
+    """Both of these used to save with no step-up and still reply "Plan saved"."""
+    assert isinstance(_parse_sip_setup(["BEL", "5000", "stepup"]), str)
+    assert isinstance(_parse_sip_setup(["BEL", "5000", "10"]), str)
+    # The valid form still works.
+    assert _parse_sip_setup(["BEL", "5000", "stepup", "10"]) == ("BEL", 5000.0, 10.0)
+
+
+def test_sip_command_is_guarded_by_the_analysis_lock():
+    """PR #11 blocks all commands during a deep analysis; /sip was added after
+    and escaped the policy."""
+    import inspect
+
+    from stockbot.bot import handle_sip
+
+    assert "_reject_if_analysis_busy" in inspect.getsource(handle_sip)
+
+
+def test_reminder_asks_for_the_stepped_up_instalment():
+    """The reminder announced the original amount forever while the projections
+    in the same message compounded a rising one."""
+    from datetime import timedelta
+
+    from stockbot.sip_messages import format_monthly_reminder, resolve_scenario_rates
+    from stockbot.storage import SipLedgerSummary, SipPlan
+
+    started = datetime.now(UTC) - timedelta(days=400)  # one anniversary passed
+    plan = SipPlan(1, "BEL", 5000.0, "moderate", 10.0, 20, started, True)
+    text = format_monthly_reminder(
+        plan,
+        SipLedgerSummary(12, 60000.0, 150.0),
+        resolve_scenario_rates(None),
+        current_price=400.0,
+        high_3m=410.0,
+    )
+    assert "This month's instalment: ₹5,500." in text
+    assert "₹5,000." not in text
+
+
+def test_portfolio_paid_rejects_non_finite_amounts():
+    from stockbot.bot import _parse_portfolio_paid_args
+
+    for token in ("nan", "inf", "-inf"):
+        assert isinstance(_parse_portfolio_paid_args(["paid", "BEL", token]), str), token
+    assert _parse_portfolio_paid_args(["paid", "BEL", "3213"]) == ("BEL", 3213.0, False)

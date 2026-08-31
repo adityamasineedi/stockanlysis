@@ -66,9 +66,7 @@ def five_year_allows_buy_zone(test: FiveYearBusinessTest | dict | None) -> bool:
         return True
     if confidence == "HIGH" and len(evidence_for) >= 1:
         return True
-    if len(evidence_for) >= 1 and len(evidence_against) >= 1:
-        return True
-    return False
+    return len(evidence_for) >= 1 and len(evidence_against) >= 1
 
 
 def five_year_blocks_capital_range(verdict_json: dict) -> str | None:

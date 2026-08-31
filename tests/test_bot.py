@@ -429,11 +429,13 @@ def test_buy_range_shows_the_price_bar_it_has_to_clear():
     risk-scaled margin, so the price simply did not qualify."""
     from stockbot.bot import _format_buy_range_line
 
+    # Live JYOTHYLAB: ₹207.40 against a ₹176.40 ceiling — price is the blocker.
     line = _format_buy_range_line(
         {
             "buy_zone_abs": None,
             "buy_range_allowed": False,
             "risk": "MEDIUM",
+            "current_price_abs": 207.40,
             "fair_value_abs": [210.0, 231.0],
             "five_year_business_test": {"answer": "UNCERTAIN"},
         }
@@ -445,9 +447,33 @@ def test_buy_range_price_bar_alone_when_no_gate_fired():
     from stockbot.bot import _format_buy_range_line
 
     line = _format_buy_range_line(
-        {"buy_range_allowed": False, "risk": "MEDIUM", "fair_value_abs": [210.0, 231.0]}
+        {
+            "buy_range_allowed": False,
+            "risk": "MEDIUM",
+            "current_price_abs": 207.40,
+            "fair_value_abs": [210.0, 231.0],
+        }
     )
     assert line == "Buy range: not issued (needs ≤₹176.40 at MEDIUM risk)"
+
+
+def test_buy_range_omits_price_bar_when_price_already_clears_it():
+    """A stock at ₹150 told it "needs ≤₹176.40" reads as nonsense — it already
+    clears the valuation bar, so the named gate is the whole story."""
+    from stockbot.bot import _format_buy_range_line
+
+    verdict = {
+        "buy_range_allowed": False,
+        "risk": "MEDIUM",
+        "current_price_abs": 150.0,
+        "fair_value_abs": [210.0, 231.0],
+        "five_year_business_test": {"answer": "UNCERTAIN"},
+    }
+    assert _format_buy_range_line(verdict) == "Buy range: not issued (five-year: UNCERTAIN)"
+
+    # Unknown price: stay quiet rather than guess which side of the bar it sits.
+    no_price = {k: v for k, v in verdict.items() if k != "current_price_abs"}
+    assert _format_buy_range_line(no_price) == "Buy range: not issued (five-year: UNCERTAIN)"
 
 
 def test_buy_range_omits_price_bar_when_not_computable():

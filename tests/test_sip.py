@@ -123,3 +123,39 @@ def test_scenario_projections_preserve_rate_order():
     assert [p.annual_rate_pct for p in projections] == [10.0, 12.0, 14.0]
     corpora = [p.projected_corpus for p in projections]
     assert corpora == sorted(corpora)
+
+
+def test_elapsed_plan_years_counts_completed_anniversaries():
+    from datetime import datetime
+
+    from stockbot.sip import UTC, current_instalment, elapsed_plan_years
+
+    started = datetime(2024, 3, 15, tzinfo=UTC)
+    assert elapsed_plan_years(started, datetime(2025, 3, 14, tzinfo=UTC)) == 0
+    assert elapsed_plan_years(started, datetime(2025, 3, 15, tzinfo=UTC)) == 1
+    assert elapsed_plan_years(started, datetime(2026, 3, 16, tzinfo=UTC)) == 2
+    # A naive started_at (as SQLite can hand back) must not raise — the naive
+    # datetime here is the point of the test, hence the noqa.
+    naive_start = datetime(2024, 3, 15)  # noqa: DTZ001 - exercises the naive path
+    assert elapsed_plan_years(naive_start, datetime(2026, 6, 1, tzinfo=UTC)) == 2
+    # Clock skew must not produce a negative exponent.
+    assert elapsed_plan_years(started, datetime(2023, 1, 1, tzinfo=UTC)) == 0
+
+    # The instalment actually due, not the original amount.
+    assert current_instalment(5000, 10, started, datetime(2026, 3, 16, tzinfo=UTC)) == 6050.0
+    assert current_instalment(5000, 0, started, datetime(2026, 3, 16, tzinfo=UTC)) == 5000.0
+
+
+def test_three_month_high_reads_whichever_series_it_is_given():
+    """The caller must pass the same series the compared price came from —
+    an adjusted high against an unadjusted price hides real dips after a split."""
+    from stockbot.sip import classify_dip, three_month_high
+
+    unadjusted = pd.DataFrame({"Close": [400.0, 420.0, 360.0]})
+    adjusted = pd.DataFrame({"Close": [200.0, 210.0, 180.0]})  # post 2:1 split
+    assert three_month_high(unadjusted) == 420.0
+    assert three_month_high(adjusted) == 210.0
+    # Quoted (unadjusted) price vs unadjusted high finds the dip.
+    assert classify_dip(360.0, three_month_high(unadjusted)) == "DEEP"
+    # Mixing series hides it entirely.
+    assert classify_dip(360.0, three_month_high(adjusted)) is None

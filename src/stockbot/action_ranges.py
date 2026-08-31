@@ -95,10 +95,12 @@ def add_more_range_blocked_reason(verdict_json: dict) -> str | None:
 
 
 def buy_zone_price_ceiling(verdict_json: dict) -> tuple[float, str] | None:
-    """Highest price at which a buy zone could be issued, and the risk level.
+    """Highest price a buy zone's top could take, and the risk level.
 
-    A buy zone is fair value minus a risk-scaled margin of safety, so a stock
-    trading above this ceiling cannot have one however good the business is.
+    A buy zone is fair value minus a risk-scaled margin of safety, so this
+    bounds where the *zone* may sit — not where the stock must trade. A stock
+    above it cannot have an issuable zone however good the business is; a stock
+    below it clears the valuation bar, and any remaining block is a gate.
     The card showed the gate that blocked the range but never this bar, so
     "not issued" on a fairly-valued stock looked like a malfunction rather
     than a price judgement.

@@ -725,18 +725,22 @@ def _check_wc_buy_gate(verdict: VerdictJSON, brief: Brief) -> CheckResult:
             ),
         )
 
-    if extreme and claiming and classification != _WC_UNLOCK_CLASSIFICATION:
-        if classification is None or wc_gap_blocks_buy_zone(classification):
-            return CheckResult(
-                name="wc_buy_gate",
-                passed=False,
-                message=(
-                    "Reported cash conversion is extremely weak in FINANCIALS; "
-                    f"set wc_gap_classification={_WC_UNLOCK_CLASSIFICATION} with "
-                    "year-by-year CFO-to-PAT evidence, or set buy_zone_abs=null and "
-                    "buy_range_allowed=false"
-                ),
-            )
+    if (
+        extreme
+        and claiming
+        and classification != _WC_UNLOCK_CLASSIFICATION
+        and (classification is None or wc_gap_blocks_buy_zone(classification))
+    ):
+        return CheckResult(
+            name="wc_buy_gate",
+            passed=False,
+            message=(
+                "Reported cash conversion is extremely weak in FINANCIALS; "
+                f"set wc_gap_classification={_WC_UNLOCK_CLASSIFICATION} with "
+                "year-by-year CFO-to-PAT evidence, or set buy_zone_abs=null and "
+                "buy_range_allowed=false"
+            ),
+        )
 
     return CheckResult(
         name="wc_buy_gate",
