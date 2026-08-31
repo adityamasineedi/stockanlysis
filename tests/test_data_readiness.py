@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, date, datetime
 
 import pandas as pd
@@ -14,6 +15,7 @@ from stockbot.data_readiness import (
 from stockbot.models import (
     ArBusinessSummary,
     Brief,
+    BriefMetadata,
     Financials,
     NewsItems,
     PriceData,
@@ -141,3 +143,26 @@ def test_apply_fallbacks_uses_ar_excerpt_for_missing_description(monkeypatch):
     assert updated.financials.business_description is not None
     assert "[AR excerpt]" in updated.financials.business_description
     assert any(a.ok and a.source == "annual report MD&A excerpt" for a in attempts)
+
+
+def test_assess_news_ok_when_adv_metadata_present():
+    """ADV liquidity metadata must not falsely mark news as missing."""
+    meta = BriefMetadata(
+        ticker="TEST",
+        company_name="Test Co Limited",
+        sector=None,
+        industry=None,
+        market_cap_cr=500.0,
+        ttm_pe=20.0,
+        ttm_pb=3.0,
+        price=100.0,
+        price_date="2026-08-31",
+        range_52w_low=80.0,
+        range_52w_high=120.0,
+        rsi_14=55.0,
+        adv_inr_cr=9.67,
+    )
+    report = assess_data_readiness(dataclasses.replace(_brief(), metadata=meta))
+    news_field = next(f for f in report.fields if f.name == "news")
+    assert news_field.state == "ok"
+    assert not any("News/RSS unavailable" in w for w in report.warnings)

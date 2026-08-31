@@ -64,21 +64,23 @@ BUSINESS_TOKEN_RESERVE = 15_000
 CHARS_PER_TOKEN_ESTIMATE = 4  # rough, dependency-free — no tokenizer in the stack
 MIN_AVG_CHARS_PER_PAGE = 20  # below this, treat the PDF as scanned/image-only
 
-# Priority order: filled in this order, lower priorities dropped first
-# when TOKEN_CAP binds. See module docstring for why apostrophes below
-# are written straight — matching normalizes both forms.
+# Core audit opinion text — allocated before business narrative.
 HEADING_PRIORITY: list[str] = [
     "Qualified Opinion",
     "Adverse Opinion",
     "Disclaimer of Opinion",
     "Independent Auditor's Report",
     "Emphasis of Matter",
+]
+
+# Quantified notes — large on real filings; allocated only after MD&A.
+LATE_AUDIT_HEADING_PRIORITY: list[str] = [
     "Key Audit Matters",
     "Contingent Liabilit",
     "Related Party",
 ]
 
-# Filled after audit sections within the same TOKEN_CAP budget.
+# Filled after core audit sections within the TOKEN_CAP budget.
 BUSINESS_HEADING_PRIORITY: list[str] = [
     "Management Discussion",
     "MD&A",
@@ -88,7 +90,27 @@ BUSINESS_HEADING_PRIORITY: list[str] = [
     "Segment Information",
 ]
 
-FULL_HEADING_PRIORITY: list[str] = HEADING_PRIORITY + BUSINESS_HEADING_PRIORITY
+FULL_HEADING_PRIORITY: list[str] = (
+    HEADING_PRIORITY + BUSINESS_HEADING_PRIORITY + LATE_AUDIT_HEADING_PRIORITY
+)
+
+# Pre-cap extracted text per heading so swing-window padding cannot exhaust TOKEN_CAP
+# before allocation (live ADVENZYMES: Related Party alone was 73k tokens).
+HEADING_MAX_TOKENS: dict[str, int] = {
+    "Independent Auditor's Report": 10_000,
+    "Emphasis of Matter": 3_000,
+    "Key Audit Matters": 4_000,
+    "Contingent Liabilit": 4_000,
+    "Related Party": 4_000,
+    "Management Discussion": 30_000,
+    "MD&A": 30_000,
+    "Business Overview": 15_000,
+    "Business Review": 15_000,
+    "Order Book": 5_000,
+    "Segment Information": 5_000,
+}
+
+LATE_AUDIT_SWING_WINDOW_PAGES = 2
 BUSINESS_SWING_WINDOW_PAGES = 5
 
 _ORDER_BOOK_AMOUNT_RE = re.compile(
@@ -380,6 +402,18 @@ def _truncate_to_budget(text: str, budget_tokens: int) -> str:
     return truncated + "\n\n[TRUNCATED — exceeds the annual report token budget]"
 
 
+def _cap_text(text: str, max_tokens: int) -> str:
+    """Pre-cap candidate extraction before allocation — no truncation marker."""
+    if _estimate_tokens(text) <= max_tokens:
+        return text
+    max_chars = max_tokens * CHARS_PER_TOKEN_ESTIMATE
+    truncated = text[:max_chars]
+    last_break = truncated.rfind("\n\n")
+    if last_break > max_chars * 0.5:
+        truncated = truncated[:last_break]
+    return truncated
+
+
 def _parse_amount_cr(text: str) -> float | None:
     match = _ORDER_BOOK_AMOUNT_RE.search(text)
     if not match:
@@ -516,6 +550,14 @@ def _allocate_sections(
     return sections, truncated_any, dropped, budget
 
 
+def _swing_window_for_heading(heading: str) -> int:
+    if heading in BUSINESS_HEADING_PRIORITY:
+        return BUSINESS_SWING_WINDOW_PAGES
+    if heading in LATE_AUDIT_HEADING_PRIORITY:
+        return LATE_AUDIT_SWING_WINDOW_PAGES
+    return SWING_WINDOW_PAGES
+
+
 def _build_sections(
     pages_text: list[str],
     *,
@@ -529,24 +571,20 @@ def _build_sections(
         hits = _find_heading_pages(pages_text, heading)
         if not hits:
             continue
-        window = BUSINESS_SWING_WINDOW_PAGES if heading in BUSINESS_HEADING_PRIORITY else swing_window
+        window = swing_window if headings is not None else _swing_window_for_heading(heading)
         ranges = _merge_ranges(hits, window, total_pages)
-        candidate_text[heading] = _extract_ranges_text(pages_text, hits, heading, ranges)
+        text = _extract_ranges_text(pages_text, hits, heading, ranges)
+        max_tokens = HEADING_MAX_TOKENS.get(heading)
+        if max_tokens is not None:
+            text = _cap_text(text, max_tokens)
+        candidate_text[heading] = text
 
-    audit_sections, audit_truncated, audit_dropped, audit_remaining = _allocate_sections(
-        HEADING_PRIORITY,
+    sections, truncated, dropped, _ = _allocate_sections(
+        heading_list,
         candidate_text,
-        TOKEN_CAP - BUSINESS_TOKEN_RESERVE,
+        TOKEN_CAP,
     )
-    business_budget = BUSINESS_TOKEN_RESERVE + audit_remaining
-    business_sections, business_truncated, business_dropped, _ = _allocate_sections(
-        BUSINESS_HEADING_PRIORITY,
-        candidate_text,
-        business_budget,
-    )
-    sections = {**audit_sections, **business_sections}
-    dropped = audit_dropped + business_dropped
-    return sections, audit_truncated or business_truncated, dropped
+    return sections, truncated, dropped
 
 
 def fetch_annual_report(symbol: str) -> ReportText:

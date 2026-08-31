@@ -28,6 +28,7 @@ from urllib.parse import quote_plus
 import httpx
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from stockbot.config import HTTP_USER_AGENT
 from stockbot.models import NewsItems, RedFlag
@@ -52,6 +53,7 @@ def _build_url(query: str) -> str:
     return f"{RSS_BASE_URL}?q={quote_plus(query)}&hl=en-IN&gl=IN&ceid=IN:en"
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), reraise=True)
 def _fetch_rss(query: str) -> list[RedFlag]:
     url = _build_url(query)
     with httpx.Client(
@@ -145,9 +147,13 @@ def red_flag_news(company: str) -> tuple[list[RedFlag], list[str], list[str]]:
     return _dedup_by_title(all_items), queries, queries_empty
 
 
-def fetch_news(company: str) -> NewsItems:
-    general = general_news(company)
-    red_flags, queries_run, queries_empty = red_flag_news(company)
+def fetch_news(company: str) -> NewsItems | None:
+    """Fetch general + red-flag news. Returns None only when every RSS call fails."""
+    try:
+        general = general_news(company)
+        red_flags, queries_run, queries_empty = red_flag_news(company)
+    except httpx.HTTPError:
+        return None
 
     return NewsItems(
         general=general,

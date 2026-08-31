@@ -8,8 +8,10 @@ from stockbot.fetch.annual_report import (
     BUSINESS_HEADING_PRIORITY,
     HEADING_PRIORITY,
     TOKEN_CAP,
+    _allocate_sections,
     _build_sections,
     _estimate_tokens,
+    _extract_ranges_text,
     _figure_density,
     _find_heading_pages,
     _is_scanned,
@@ -175,8 +177,15 @@ def test_build_sections_prioritizes_figure_dense_page_over_earlier_prose_page_wh
     prose_page = "Contingent Liabilit ies are possible obligations arising from past events. " * 4000
     figures_page = "Contingent Liabilit ies 147 162 2026 2025 Note 31 Reconciliation to carrying amounts"
     pages = [prose_page] + ["filler page, nothing relevant"] * 10 + [figures_page]
+    hits = _find_heading_pages(pages, "Contingent Liabilit")
+    ranges = _merge_ranges(hits, window=3, total_pages=len(pages))
+    combined = _extract_ranges_text(pages, hits, "Contingent Liabilit", ranges)
 
-    sections, truncated, _dropped = _build_sections(pages)
+    sections, truncated, _dropped, _ = _allocate_sections(
+        ["Contingent Liabilit"],
+        {"Contingent Liabilit": combined},
+        TOKEN_CAP,
+    )
 
     assert truncated is True
     assert "Contingent Liabilit" in sections

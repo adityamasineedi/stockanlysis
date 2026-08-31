@@ -45,7 +45,11 @@ FALLBACK_CHAINS: dict[str, tuple[str, ...]] = {
     ),
     "shareholding": ("NSE shareholding API + XBRL pledge", "screener FII/DII merge"),
     "annual_report": ("NSE annual-reports PDF extract",),
-    "news": ("Google News RSS company name", "Google News RSS symbol+NSE"),
+    "news": (
+        "Google News RSS company name",
+        "Google News RSS symbol+NSE",
+        "Google News RSS symbol only",
+    ),
 }
 
 
@@ -276,6 +280,27 @@ def apply_data_fallbacks(brief: Brief, ticker: TickerInfo) -> tuple[Brief, list[
                 detail=str(exc)[:120],
             )
 
+    if news is None:
+        try:
+            news = fetch_news(ticker.symbol)
+            _attempt(
+                attempts,
+                field="news",
+                tier=3,
+                source="Google News RSS symbol only",
+                ok=news is not None,
+                detail="ok" if news else "empty",
+            )
+        except Exception as exc:  # noqa: BLE001
+            _attempt(
+                attempts,
+                field="news",
+                tier=3,
+                source="Google News RSS symbol only",
+                ok=False,
+                detail=str(exc)[:120],
+            )
+
     # --- financials explicit retry (tertiary yfinance if primary assemble missed) ---
     if financials is None:
         try:
@@ -484,15 +509,35 @@ def assess_data_readiness(
         )
     else:
         note = None
-        if ar.truncated or ar.dropped_sections:
+        from stockbot.fetch.annual_report import business_narrative_gap
+
+        gap = business_narrative_gap(ar.sections, ar.dropped_sections)
+        business_truncated = [
+            h
+            for h in ar.dropped_sections
+            if h in BUSINESS_HEADING_PRIORITY and h in ar.sections
+        ]
+        primary_business = (
+            "Management Discussion",
+            "MD&A",
+            "Business Overview",
+            "Business Review",
+        )
+        primary_chars = sum(
+            len(ar.sections[h]) for h in primary_business if h in ar.sections
+        )
+        if gap:
+            warnings.append(gap.replace("MISSING: ", ""))
+            note = "truncated"
+        elif business_truncated and primary_chars < 40_000:
             warnings.append(
-                f"Annual report truncated — dropped sections: {ar.dropped_sections[:4]}"
+                f"Annual report business sections truncated: {business_truncated[:3]}"
             )
             note = "truncated"
         fields.append(
             FieldStatus(
                 name="annual_report",
-                state="degraded" if ar.truncated else "ok",
+                state="degraded" if note else "ok",
                 source=ar.source,
                 chain=FALLBACK_CHAINS["annual_report"],
                 attempts=tuple(a for a in attempts if a.field == "annual_report"),
@@ -531,12 +576,18 @@ def assess_data_readiness(
             )
         )
 
-    if settings.min_adv_inr_cr_warn and brief.metadata and brief.metadata.adv_inr_cr is not None:
-        if brief.metadata.adv_inr_cr < settings.min_adv_inr_cr_warn:
-            warnings.append(
-                f"Low liquidity: ADV ₹{brief.metadata.adv_inr_cr:.2f} cr/day "
-                f"(prefer ≥₹{settings.min_adv_inr_cr_warn:.2f} cr) — slippage risk on SIP size."
-            )
+    if (
+        settings.min_adv_inr_cr_warn
+        and brief.metadata
+        and brief.metadata.adv_inr_cr is not None
+        and brief.metadata.adv_inr_cr < settings.min_adv_inr_cr_warn
+    ):
+        warnings.append(
+            f"Low liquidity: ADV ₹{brief.metadata.adv_inr_cr:.2f} cr/day "
+            f"(prefer ≥₹{settings.min_adv_inr_cr_warn:.2f} cr) — slippage risk on SIP size."
+        )
+
+    if brief.news is None:
         warnings.append("News/RSS unavailable — red-flag scan degraded.")
         fields.append(
             FieldStatus(
