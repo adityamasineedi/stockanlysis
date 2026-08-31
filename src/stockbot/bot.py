@@ -982,7 +982,7 @@ async def handle_preflight(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     try:
         table = await asyncio.to_thread(load_symbol_table)
         resolved = await asyncio.to_thread(resolve_ticker, query, table)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - preflight resilience; always reply
         await status.edit_text(f"Preflight failed: {esc(exc)}")
         return
     if resolved is None:
@@ -994,7 +994,7 @@ async def handle_preflight(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     ticker: TickerInfo = resolved
     try:
         _brief, report = await asyncio.to_thread(assemble_brief_for_analysis, ticker)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - preflight resilience; always reply
         logger.exception("preflight failed for %r", query)
         await status.edit_text(f"Preflight fetch failed: {esc(exc)}")
         return
