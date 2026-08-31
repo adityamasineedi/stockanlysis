@@ -95,6 +95,7 @@ from stockbot.portfolio_screener.eligibility import (
 )
 from stockbot.portfolio_screener.outcome_log import build_candidates_messages
 from stockbot.portfolio_screener.scoring_config import ScreenerRunConfig
+from stockbot.portfolio_state import DEFAULT_MAX_POSITION_PCT
 from stockbot.report_digest import (
     TELEGRAM_MAX_MISSING,
     TELEGRAM_MAX_REASON_CHARS,
@@ -106,12 +107,19 @@ from stockbot.report_digest import (
 )
 from stockbot.storage import (
     backfill_cached_verdicts,
+    delete_holding,
+    get_holding,
     get_latest_verdict_json,
+    get_risk_policy,
     get_sip_plan,
     invalidate_cached_analyses,
     list_active_sip_plans,
+    list_holdings,
     record_sip_contribution,
+    save_holding,
+    save_risk_policy,
     save_sip_plan,
+    seed_holding_from_sip,
     set_sip_plan_active,
     summarize_sip_contributions,
 )
@@ -439,6 +447,7 @@ def format_verdict_reply(
     staleness_banner: str | None = None,
     compact: bool = True,
     full_attachment: bool = False,
+    position_line: str | None = None,
 ) -> str:
     v = analysis.verdict_json
     # cash_gap_blocks is applied inside _format_buy_range_line/_format_add_more_range_line,
@@ -465,6 +474,12 @@ def format_verdict_reply(
     profit_review_line = _format_profit_review_line(v)
     if profit_review_line:
         action_range_lines.append(profit_review_line)
+    # Sits with the action ranges because it is the same kind of information:
+    # what to do with money. Passed in rather than looked up here so this stays
+    # a pure formatter — the caller knows the chat, this does not. Absent when
+    # no capital is declared; never a percentage of a guessed denominator.
+    if position_line:
+        action_range_lines.append(position_line)
 
     lines.extend(
         [
@@ -656,11 +671,18 @@ async def _deliver_result(
     if result.staleness_banner:
         banner_parts.append(result.staleness_banner)
     combined_banner = "\n".join(banner_parts) if banner_parts else None
+    chat = update.effective_chat
+    position_line = (
+        await asyncio.to_thread(_build_position_line, chat.id, analysis.ticker)
+        if chat is not None
+        else None
+    )
     await status_message.edit_text(
         format_verdict_reply(
             analysis,
             staleness_banner=combined_banner,
             full_attachment=full_report,
+            position_line=position_line,
         ),
         parse_mode=ParseMode.HTML,
     )
@@ -1025,6 +1047,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "Trade-friendly mode ON: easier buy ranges on UNCERTAIN+evidence; prescan skipped for /analyze\n"
         "/refresh SYMBOL — clear cached analysis for symbol\n"
         "/refresh backfill — recompute gates + expected_return on cached rows\n"
+        "/capital 500000 max 10 — total capital and per-stock cap\n"
+        "/hold BEL 25 412.50 — record a position (/hold to list)\n"
         "/sip BEL 5000 — monthly plan with dip alerts and projections\n"
         "/sip plan — ₹60k portfolio tables (3 buckets, live prices)\n"
         "/sip track — planned vs logged this month\n"
@@ -1185,7 +1209,290 @@ BOT_COMMANDS = [
     BotCommand("spend", "Month-to-date cost"),
     BotCommand("health", "Cost/token/quality audit"),
     BotCommand("sip", "Portfolio plan, track, or single-stock SIP"),
+    BotCommand("capital", "Set total capital and per-stock cap"),
+    BotCommand("hold", "Record and review what you own"),
 ]
+
+
+CAPITAL_USAGE = (
+    "<b>/capital — your risk policy</b>\n"
+    "<code>/capital 500000</code> — total investable capital\n"
+    "<code>/capital 500000 max 8</code> — and cap any one stock at 8%\n"
+    "<code>/capital</code> — show the current policy\n\n"
+    "<i>Without this the bot cannot say what fraction of your money a position "
+    "is, so it won't guess one.</i>"
+)
+
+HOLD_USAGE = (
+    "<b>/hold — what you own</b>\n"
+    "<code>/hold BEL 25 412.50</code> — 25 shares at ₹412.50 average\n"
+    "<code>/hold</code> — list positions with live value and headroom\n"
+    "<code>/hold seed BEL</code> — build it from your logged SIP contributions\n"
+    "<code>/hold remove BEL</code>\n\n"
+    "<i>Set <code>/capital</code> first so percentages mean something.</i>"
+)
+
+
+def _money_inr(value: float) -> str:
+    return f"₹{value:,.0f}"
+
+
+def _build_position_line(chat_id: int, ticker: str) -> str | None:
+    """"Your position" line for the /analyze card, or None.
+
+    Returns None whenever the answer would be invented: no declared capital, no
+    holding, or no live price. A position percentage against a guessed
+    denominator looks authoritative and means nothing.
+    """
+    from stockbot.portfolio_state import size_position
+
+    policy = get_risk_policy(chat_id)
+    holding = get_holding(chat_id, ticker)
+    if policy is None or holding is None:
+        return None
+
+    price, _ = _sip_price_and_high(ticker)
+    if price is None:
+        return None
+
+    sizing = size_position(
+        holding.quantity, price, policy.total_capital_inr, policy.max_position_pct
+    )
+    if sizing is None:
+        return None
+
+    room = (
+        f"room for {_money_inr(sizing.headroom_inr)} more"
+        if sizing.headroom_inr > 0
+        else "<b>at or over your cap</b>"
+    )
+    return (
+        f"Your position: {_money_inr(sizing.value_inr)} · "
+        f"{sizing.pct_of_capital:.1f}% of capital · {room} "
+        f"(cap {sizing.max_position_pct:.0f}%)"
+    )
+
+
+def _parse_capital_args(args: list[str]) -> tuple[float, float | None] | str:
+    """(total_capital, max_position_pct or None) or an error string."""
+    if not args:
+        return "Send an amount, e.g. <code>/capital 500000</code>."
+    try:
+        capital = float(args[0].replace(",", "").replace("₹", ""))
+    except ValueError:
+        return f"<code>{esc(args[0])}</code> is not a number."
+    if not math.isfinite(capital) or capital <= 0:
+        return "Capital must be a real number greater than zero."
+
+    cap_pct: float | None = None
+    extra = args[1:]
+    if extra:
+        if extra[0].lower() not in {"max", "cap"} or len(extra) < 2:
+            return (
+                f"Did not understand <code>{esc(' '.join(extra))}</code>. "
+                "To set a per-stock cap use <code>/capital 500000 max 8</code>."
+            )
+        try:
+            cap_pct = float(extra[1].replace("%", ""))
+        except ValueError:
+            return f"<code>{esc(extra[1])}</code> is not a valid percent."
+        if not math.isfinite(cap_pct) or not (0 < cap_pct <= 100):
+            return "The per-stock cap must be between 0 and 100 percent."
+    return (capital, cap_pct)
+
+
+async def handle_capital(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
+        return
+    _clear_awaiting_symbol(context)
+    chat_id = update.effective_chat.id
+    args = list(context.args or [])
+
+    if not args:
+        policy = await asyncio.to_thread(get_risk_policy, chat_id)
+        if policy is None:
+            await update.message.reply_text(CAPITAL_USAGE, parse_mode=ParseMode.HTML)
+            return
+        await update.message.reply_text(
+            f"<b>Risk policy</b>\n"
+            f"Capital: {_money_inr(policy.total_capital_inr)}\n"
+            f"Max per stock: {policy.max_position_pct:.0f}% "
+            f"({_money_inr(policy.total_capital_inr * policy.max_position_pct / 100)})",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    parsed = await asyncio.to_thread(_parse_capital_args, args)
+    if isinstance(parsed, str):
+        await update.message.reply_text(
+            f"{parsed}\n\n{CAPITAL_USAGE}", parse_mode=ParseMode.HTML
+        )
+        return
+
+    capital, cap_pct = parsed
+    existing = await asyncio.to_thread(get_risk_policy, chat_id)
+    resolved_cap = cap_pct if cap_pct is not None else (
+        existing.max_position_pct if existing else DEFAULT_MAX_POSITION_PCT
+    )
+    policy = await asyncio.to_thread(
+        save_risk_policy, chat_id, capital, max_position_pct=resolved_cap
+    )
+    await update.message.reply_text(
+        f"✅ Capital {_money_inr(policy.total_capital_inr)}, "
+        f"max {policy.max_position_pct:.0f}% per stock "
+        f"({_money_inr(policy.total_capital_inr * policy.max_position_pct / 100)}).\n\n"
+        f"{DISCLAIMER}",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+def _format_holdings_list(chat_id: int) -> str:
+    """Every position with live value, share of capital, and headroom."""
+    from stockbot.portfolio_state import concentration_breaches, size_position
+
+    holdings = list_holdings(chat_id)
+    if not holdings:
+        return "No positions recorded.\n\n" + HOLD_USAGE
+
+    policy = get_risk_policy(chat_id)
+    lines = ["<b>Your positions</b>"]
+    values: dict[str, float] = {}
+    for holding in holdings:
+        price, _ = _sip_price_and_high(holding.ticker)
+        if price is None:
+            lines.append(
+                f"{esc(holding.ticker)} — {holding.quantity:g} @ "
+                f"{_money_inr(holding.avg_cost)} · <i>price unavailable</i>"
+            )
+            continue
+        sizing = size_position(
+            holding.quantity,
+            price,
+            policy.total_capital_inr if policy else None,
+            policy.max_position_pct if policy else DEFAULT_MAX_POSITION_PCT,
+        )
+        if sizing is None:
+            # No capital declared — report value, withhold the percentage.
+            value = holding.quantity * price
+            values[holding.ticker] = value
+            lines.append(
+                f"{esc(holding.ticker)} — {holding.quantity:g} @ "
+                f"{_money_inr(holding.avg_cost)} · now {_money_inr(value)}"
+            )
+            continue
+        values[holding.ticker] = sizing.value_inr
+        flag = " ⚠️" if sizing.over_cap else ""
+        lines.append(
+            f"{esc(holding.ticker)} — {holding.quantity:g} @ "
+            f"{_money_inr(holding.avg_cost)} · now {_money_inr(sizing.value_inr)} · "
+            f"{sizing.pct_of_capital:.1f}%{flag}"
+        )
+
+    if policy is None:
+        lines.append("")
+        lines.append("<i>Set <code>/capital</code> to see these as % of capital.</i>")
+        return "\n".join(lines)
+
+    breaches = concentration_breaches(values, policy.total_capital_inr, policy.max_position_pct)
+    if breaches:
+        named = ", ".join(f"{t} {p:.1f}%" for t, p in breaches)
+        lines.append("")
+        lines.append(f"⚠️ Over your {policy.max_position_pct:.0f}% cap: {esc(named)}")
+    return "\n".join(lines)
+
+
+async def handle_hold(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
+        return
+    _clear_awaiting_symbol(context)
+    chat_id = update.effective_chat.id
+    args = list(context.args or [])
+    sub = args[0].lower() if args else ""
+
+    if not args:
+        text = await asyncio.to_thread(_format_holdings_list, chat_id)
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        return
+
+    if sub in {"seed", "remove", "delete"} and len(args) >= 2:
+        resolved = await asyncio.to_thread(resolve_ticker, args[1])
+        if isinstance(resolved, AmbiguousMatch) or resolved is None:
+            await update.message.reply_text(
+                f"Could not resolve <b>{esc(args[1])}</b> to one NSE symbol.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        if sub == "seed":
+            holding = await asyncio.to_thread(seed_holding_from_sip, chat_id, resolved.symbol)
+            if holding is None:
+                await update.message.reply_text(
+                    f"Cannot seed <b>{esc(resolved.symbol)}</b> — no SIP contributions "
+                    "logged, or some were logged without a price, so the share count "
+                    "is unknowable. Enter it directly instead: "
+                    f"<code>/hold {esc(resolved.symbol)} 25 412.50</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            await update.message.reply_text(
+                f"✅ Seeded {esc(holding.ticker)} from your SIP ledger — "
+                f"{holding.quantity:.2f} shares at {_money_inr(holding.avg_cost)} average.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        removed = await asyncio.to_thread(delete_holding, chat_id, resolved.symbol)
+        await update.message.reply_text(
+            f"✅ Removed {esc(resolved.symbol)}." if removed
+            else f"No position in {esc(resolved.symbol)} to remove."
+        )
+        return
+
+    parsed = await asyncio.to_thread(_parse_hold_args, args)
+    if isinstance(parsed, str):
+        await update.message.reply_text(f"{parsed}\n\n{HOLD_USAGE}", parse_mode=ParseMode.HTML)
+        return
+
+    symbol, quantity, avg_cost = parsed
+    resolved = await asyncio.to_thread(resolve_ticker, symbol)
+    if isinstance(resolved, AmbiguousMatch) or resolved is None:
+        await update.message.reply_text(
+            f"Could not resolve <b>{esc(symbol)}</b> to one NSE symbol.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    holding = await asyncio.to_thread(
+        save_holding, chat_id, resolved.symbol, quantity, avg_cost
+    )
+    line = await asyncio.to_thread(_build_position_line, chat_id, holding.ticker)
+    reply = (
+        f"✅ {esc(holding.ticker)}: {holding.quantity:g} @ "
+        f"{_money_inr(holding.avg_cost)} (cost {_money_inr(holding.cost_basis_inr)})"
+    )
+    if line:
+        reply += f"\n{line}"
+    await update.message.reply_text(reply, parse_mode=ParseMode.HTML)
+
+
+def _parse_hold_args(args: list[str]) -> tuple[str, float, float] | str:
+    """(symbol, quantity, avg_cost) or an error string."""
+    if len(args) < 3:
+        return "Send symbol, quantity and average cost, e.g. <code>/hold BEL 25 412.50</code>."
+    numbers = []
+    for token in args[1:3]:
+        try:
+            numbers.append(float(token.replace(",", "").replace("₹", "")))
+        except ValueError:
+            return f"<code>{esc(token)}</code> is not a number."
+    quantity, avg_cost = numbers
+    if not math.isfinite(quantity) or quantity <= 0:
+        return "Quantity must be a real number greater than zero."
+    if not math.isfinite(avg_cost) or avg_cost <= 0:
+        return "Average cost must be a real number greater than zero."
+    return (args[0], quantity, avg_cost)
 
 
 SIP_USAGE = (
@@ -1796,6 +2103,8 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("spend", handle_spend))
     application.add_handler(CommandHandler("health", handle_health))
     application.add_handler(CommandHandler("sip", handle_sip))
+    application.add_handler(CommandHandler("capital", handle_capital))
+    application.add_handler(CommandHandler("hold", handle_hold))
     application.add_handler(InlineQueryHandler(handle_inline_query))
     application.add_handler(CallbackQueryHandler(handle_symbol_pick))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_text))
