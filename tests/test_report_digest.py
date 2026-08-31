@@ -17,9 +17,27 @@ def test_extract_beginner_summary_stops_before_json():
         "*Research and education, not investment advice.*\n"
     )
     summary = extract_beginner_summary(report)
-    assert summary.startswith("SHOULD I BUY?")
+    assert summary.startswith("**SHOULD I BUY?**")
     assert "json" not in summary
     assert "Research and education" not in summary
+
+
+def test_extract_beginner_summary_keeps_the_heading_markup():
+    """The needle is bare text but the report writes '**SHOULD I BUY?**'.
+    Slicing at the needle dropped the opening '**' and kept the closing one,
+    so the digest opened with a stray 'SHOULD I BUY?**'."""
+    report = "### 16. RISKS\nBody.\n\n**SHOULD I BUY?**\n- **Decision:** WATCH\n"
+    summary = extract_beginner_summary(report)
+    assert summary.splitlines()[0] == "**SHOULD I BUY?**"
+    assert not summary.startswith("SHOULD I BUY?**")
+    # The preceding section must not leak in when backing up to the line start.
+    assert "RISKS" not in summary
+
+
+def test_extract_beginner_summary_when_heading_is_the_first_line():
+    """rfind returns -1 with no preceding newline; +1 must land on index 0."""
+    summary = extract_beginner_summary("**SHOULD I BUY?**\n- **Decision:** BUY\n")
+    assert summary.splitlines()[0] == "**SHOULD I BUY?**"
 
 
 def test_compact_attachment_shorter_than_full_report():

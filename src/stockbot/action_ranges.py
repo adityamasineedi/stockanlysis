@@ -48,8 +48,15 @@ def compute_add_more_zone_abs(
     return (round(add_low, 2), round(add_high, 2))
 
 
-def add_more_range_blocked_reason(verdict_json: dict) -> str | None:
-    """Return a short reason when constitution gates block add-more display."""
+def capital_range_blocked_reason(verdict_json: dict) -> str | None:
+    """Gates that block *any* new capital — the buy range and add-more alike.
+
+    Split out of ``add_more_range_blocked_reason`` so the buy line can name
+    the same reasons. The buy line used to hand-roll only the anti-chase and
+    WC checks, so a five-year test of NO/UNCERTAIN — a primary buy-zone
+    blocker per the v3 prompt — printed a bare "not issued" with no reason,
+    while the add-more line on the very same card said "(five-year: …)".
+    """
     from stockbot.constitution_gates import (
         should_anti_chase_from_dict,
         wc_gap_blocks_buy_zone,
@@ -68,6 +75,15 @@ def add_more_range_blocked_reason(verdict_json: dict) -> str | None:
     if answer and answer != "YES":
         return f"five-year test: {answer}"
 
+    return None
+
+
+def add_more_range_blocked_reason(verdict_json: dict) -> str | None:
+    """Return a short reason when constitution gates block add-more display."""
+    shared = capital_range_blocked_reason(verdict_json)
+    if shared is not None:
+        return shared
+
     thesis = str(verdict_json.get("thesis_status") or "").strip().upper()
     if thesis in _THESIS_BLOCKS_ADD:
         return f"thesis: {thesis}"
@@ -75,6 +91,52 @@ def add_more_range_blocked_reason(verdict_json: dict) -> str | None:
     if verdict_json.get("add_range_allowed") is not True:
         return "add range not allowed"
 
+    return None
+
+
+def buy_zone_price_ceiling(verdict_json: dict) -> tuple[float, str] | None:
+    """Highest price at which a buy zone could be issued, and the risk level.
+
+    A buy zone is fair value minus a risk-scaled margin of safety, so a stock
+    trading above this ceiling cannot have one however good the business is.
+    The card showed the gate that blocked the range but never this bar, so
+    "not issued" on a fairly-valued stock looked like a malfunction rather
+    than a price judgement.
+
+    This is necessary, not sufficient — the constitution gates still apply.
+    """
+    from stockbot.validate import RISK_DISCOUNT_BANDS
+
+    risk = str(verdict_json.get("risk") or "").strip().upper()
+    band = RISK_DISCOUNT_BANDS.get(risk)
+    if band is None:
+        return None
+
+    base = _resolve_base_fv_floats(verdict_json)
+    if base is None:
+        return None
+
+    fv_mid = (base[0] + base[1]) / 2
+    if fv_mid <= 0:
+        return None
+    # Shallowest discount in the band gives the highest qualifying price.
+    return round(fv_mid * (1 - band[0]), 2), risk
+
+
+def _resolve_base_fv_floats(verdict_json: dict) -> tuple[float, float] | None:
+    base = _float_pair(verdict_json.get("fair_value_abs"))
+    if base is not None:
+        return base
+
+    raw_inputs = verdict_json.get("valuation_inputs")
+    if isinstance(raw_inputs, dict):
+        try:
+            from stockbot.llm.verdict import ValuationInputs, compute_valuation
+
+            valuation = compute_valuation(ValuationInputs.model_validate(raw_inputs))
+            return valuation.fair_value_base_abs
+        except Exception:  # noqa: BLE001 - best-effort derivation, fall back to no ceiling
+            return None
     return None
 
 

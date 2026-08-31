@@ -372,3 +372,85 @@ def test_analysis_lock_allows_one_run_at_a_time():
         await _end_analysis()
 
     asyncio.run(scenario())
+
+
+def test_buy_range_names_the_five_year_gate_like_add_more_does():
+    """Live JYOTHYLAB card: add-more said "(five-year: UNCERTAIN)" while the
+    buy line — blocked by that same gate — printed a bare "not issued", so the
+    card could not explain its own suppression."""
+    from stockbot.bot import _format_add_more_range_line, _format_buy_range_line
+
+    verdict = {
+        "buy_zone_abs": None,
+        "buy_range_allowed": False,
+        "add_range_allowed": False,
+        "five_year_business_test": {"answer": "UNCERTAIN"},
+        "thesis_status": "THESIS_UNDER_REVIEW",
+    }
+    assert _format_buy_range_line(verdict) == "Buy range: not issued (five-year: UNCERTAIN)"
+    assert _format_add_more_range_line(verdict) == "Add-more range: not issued (five-year: UNCERTAIN)"
+
+
+def test_buy_range_keeps_existing_gate_wording():
+    from stockbot.bot import _format_buy_range_line
+
+    assert _format_buy_range_line({"anti_chase_flag": True}) == (
+        "Buy range: not issued (anti-chase: pause new capital)"
+    )
+    assert _format_buy_range_line({"wc_gap_classification": "WORKING_CAPITAL_STRESS"}) == (
+        "Buy range: not issued (WC: WORKING_CAPITAL_STRESS)"
+    )
+    # No identifiable gate still yields the bare line.
+    assert _format_buy_range_line({"buy_range_allowed": False}) == "Buy range: not issued"
+
+
+def test_buy_range_display_does_not_start_suppressing_on_five_year():
+    """This change names the gate; it must not change what gets suppressed.
+    A model-issued zone still displays even with five-year UNCERTAIN."""
+    from stockbot.bot import _format_buy_range_line
+
+    verdict = {
+        "buy_zone_abs": [100.0, 110.0],
+        "buy_range_allowed": True,
+        "five_year_business_test": {"answer": "UNCERTAIN"},
+    }
+    assert _format_buy_range_line(verdict) == "Buy range: ₹100.00–₹110.00"
+
+
+def test_buy_range_shows_the_price_bar_it_has_to_clear():
+    """"Not issued" on a fairly-valued stock looked like a malfunction: the
+    card named no gate and never showed that a buy zone is fair value minus a
+    risk-scaled margin, so the price simply did not qualify."""
+    from stockbot.bot import _format_buy_range_line
+
+    line = _format_buy_range_line(
+        {
+            "buy_zone_abs": None,
+            "buy_range_allowed": False,
+            "risk": "MEDIUM",
+            "fair_value_abs": [210.0, 231.0],
+            "five_year_business_test": {"answer": "UNCERTAIN"},
+        }
+    )
+    assert line == "Buy range: not issued (five-year: UNCERTAIN · needs ≤₹176.40 at MEDIUM risk)"
+
+
+def test_buy_range_price_bar_alone_when_no_gate_fired():
+    from stockbot.bot import _format_buy_range_line
+
+    line = _format_buy_range_line(
+        {"buy_range_allowed": False, "risk": "MEDIUM", "fair_value_abs": [210.0, 231.0]}
+    )
+    assert line == "Buy range: not issued (needs ≤₹176.40 at MEDIUM risk)"
+
+
+def test_buy_range_omits_price_bar_when_not_computable():
+    """No fair value or an unknown risk level must not fabricate a number."""
+    from stockbot.bot import _format_buy_range_line
+
+    assert _format_buy_range_line({"buy_range_allowed": False, "risk": "MEDIUM"}) == (
+        "Buy range: not issued"
+    )
+    assert _format_buy_range_line(
+        {"buy_range_allowed": False, "risk": "??", "fair_value_abs": [210.0, 231.0]}
+    ) == "Buy range: not issued"
