@@ -403,6 +403,58 @@ def summarize_sip_contributions(chat_id: int) -> SipLedgerSummary:
     )
 
 
+def summarize_sip_contributions_by_symbol_for_month(
+    chat_id: int,
+    *,
+    year: int,
+    month: int,
+) -> dict[str, float]:
+    """Sum logged amounts per ticker for a calendar month (portfolio SIP track)."""
+    prefix = f"{year:04d}-{month:02d}"
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT ticker, amount FROM sip_contributions
+            WHERE chat_id = ? AND contributed_at LIKE ?
+            """,
+            (chat_id, f"{prefix}%"),
+        ).fetchall()
+    totals: dict[str, float] = {}
+    for row in rows:
+        sym = str(row["ticker"]).upper()
+        totals[sym] = round(totals.get(sym, 0.0) + float(row["amount"]), 2)
+    return totals
+
+
+def summarize_average_cost_by_symbol(chat_id: int) -> dict[str, float]:
+    """Weighted average buy price per ticker from logged SIP contributions."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT ticker, amount, price_at_contribution
+            FROM sip_contributions
+            WHERE chat_id = ?
+            """,
+            (chat_id,),
+        ).fetchall()
+    invested: dict[str, float] = {}
+    units: dict[str, float] = {}
+    for row in rows:
+        price = row["price_at_contribution"]
+        if price is None:
+            continue
+        sym = str(row["ticker"]).upper()
+        amount = float(row["amount"])
+        px = float(price)
+        invested[sym] = invested.get(sym, 0.0) + amount
+        units[sym] = units.get(sym, 0.0) + amount / px
+    return {
+        sym: round(invested[sym] / units[sym], 2)
+        for sym in invested
+        if units.get(sym, 0.0) > 0
+    }
+
+
 def get_latest_verdict_json(ticker: str) -> tuple[dict, datetime] | None:
     """Latest stored verdict for a ticker, with when it was produced.
 

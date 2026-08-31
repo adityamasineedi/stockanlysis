@@ -902,7 +902,10 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/refresh SYMBOL — clear cached analysis for symbol\n"
         "/refresh backfill — recompute gates + expected_return on cached rows\n"
         "/sip BEL 5000 — monthly plan with dip alerts and projections\n"
-        "/sip status|paid|pause|resume — manage the plan\n"
+        "/sip plan — ₹60k portfolio tables (3 buckets, live prices)\n"
+        "/sip track — planned vs logged this month\n"
+        "/sip paid BEL 3213 — log a portfolio buy\n"
+        "/sip status|paid|pause|resume — single-stock plan\n"
         "/spend — month-to-date cost\n"
         "/health — cost/token/quality audit (no LLM spend)\n\n"
         "Tip: after /prescan, just reply with BEL (no need to type prescan again).\n"
@@ -1056,20 +1059,24 @@ BOT_COMMANDS = [
     BotCommand("help", "Usage instructions"),
     BotCommand("spend", "Month-to-date cost"),
     BotCommand("health", "Cost/token/quality audit"),
-    BotCommand("sip", "Monthly plan, dip alerts, projections"),
+    BotCommand("sip", "Portfolio plan, track, or single-stock SIP"),
 ]
 
 
 SIP_USAGE = (
-    "<b>/sip — monthly plan</b>\n"
-    "<code>/sip BEL 5000</code> — ₹5,000/month into BEL\n"
-    "<code>/sip BEL 5000 stepup 10</code> — raise the instalment 10% each year\n"
-    "<code>/sip status</code> — invested so far and projections\n"
-    "<code>/sip paid</code> — log this month's instalment\n"
-    "<code>/sip paid 2500 topup</code> — log an extra dip top-up\n"
+    "<b>/sip — monthly investing</b>\n\n"
+    "<b>Portfolio (₹60k / 3 buckets)</b>\n"
+    "<code>/sip plan</code> — whole-share split table, live prices\n"
+    "<code>/sip track</code> — planned vs logged this month\n"
+    "<code>/sip paid KAYNES 3685</code> — log a buy\n"
+    "<code>/sip paid BEL 2500 topup</code> — log dip top-up\n\n"
+    "<b>Single stock</b>\n"
+    "<code>/sip BEL 5000</code> — ₹5,000/month into one name\n"
+    "<code>/sip BEL 5000 stepup 10</code> — raise instalment 10%/yr\n"
+    "<code>/sip status</code> · <code>/sip paid</code> · "
     "<code>/sip pause</code> / <code>/sip resume</code>\n\n"
-    "<i>A SIP here buys one stock, not a fund — no diversification. "
-    "See the SIP section of the portfolio constitution.</i>"
+    "<i>Portfolio lists live in <code>sip_portfolios.json</code>. "
+    "Whole shares only — cash aside accumulates in each bucket.</i>"
 )
 
 # The monthly nudge. Day-of-month is deliberate rather than "every 30 days":
@@ -1166,6 +1173,152 @@ def _parse_sip_setup(args: list[str]) -> tuple[str, float, float] | str:
     return (symbol, monthly, step_up)
 
 
+def _parse_sip_amount_token(token: str) -> float | None:
+    try:
+        return float(token.replace(",", "").replace("₹", ""))
+    except ValueError:
+        return None
+
+
+def _parse_portfolio_paid_args(args: list[str]) -> tuple[str, float, bool] | str:
+    """Parse ``/sip paid SYMBOL amount [topup]``."""
+    if len(args) < 2:
+        return "Send symbol and amount, e.g. <code>/sip paid BEL 3213</code>."
+    symbol = args[1].upper()
+    was_topup = any(a.lower() in {"topup", "top-up"} for a in args[2:])
+    amount: float | None = None
+    for token in args[2:]:
+        if token.lower() in {"topup", "top-up"}:
+            continue
+        parsed = _parse_sip_amount_token(token)
+        if parsed is not None:
+            amount = parsed
+            break
+    if amount is None or amount <= 0:
+        return f"Could not read amount in <code>{esc(' '.join(args))}</code>."
+    return (symbol, amount, was_topup)
+
+
+async def _reply_portfolio_sip_plan(update: Update, chat_id: int) -> None:
+    from stockbot.portfolio_sip import build_portfolio_sip_plan
+    from stockbot.portfolio_sip_messages import (
+        format_portfolio_plan_html,
+        split_telegram_chunks,
+    )
+    from stockbot.storage import summarize_average_cost_by_symbol
+
+    status = await update.message.reply_text(
+        "⏳ Building portfolio SIP plan (live prices for all buckets)…"
+    )
+    try:
+        avg_costs = await asyncio.to_thread(summarize_average_cost_by_symbol, chat_id)
+        plan = await asyncio.to_thread(
+            build_portfolio_sip_plan,
+            avg_costs=avg_costs or None,
+        )
+        html = format_portfolio_plan_html(plan)
+        chunks = split_telegram_chunks(html)
+    except FileNotFoundError as exc:
+        await status.edit_text(esc(str(exc)))
+        return
+    except Exception as exc:
+        logger.exception("portfolio SIP plan failed")
+        await status.edit_text(f"Portfolio SIP plan failed: {esc(exc)}")
+        return
+
+    await status.delete()
+    for index, chunk in enumerate(chunks):
+        suffix = f"\n\n{DISCLAIMER}" if index == len(chunks) - 1 else ""
+        await update.message.reply_text(chunk + suffix, parse_mode=ParseMode.HTML)
+
+
+async def _reply_portfolio_sip_track(update: Update, chat_id: int) -> None:
+    from stockbot.portfolio_sip import build_portfolio_sip_plan
+    from stockbot.portfolio_sip_messages import (
+        format_portfolio_track_html,
+        split_telegram_chunks,
+    )
+    from stockbot.storage import (
+        summarize_average_cost_by_symbol,
+        summarize_sip_contributions_by_symbol_for_month,
+    )
+
+    now = datetime.now(_IST)
+    month_label = now.strftime("%B %Y")
+    status = await update.message.reply_text(
+        f"⏳ Loading SIP track for {esc(month_label)}…"
+    )
+    try:
+        avg_costs = await asyncio.to_thread(summarize_average_cost_by_symbol, chat_id)
+        plan = await asyncio.to_thread(
+            build_portfolio_sip_plan,
+            avg_costs=avg_costs or None,
+        )
+        paid = await asyncio.to_thread(
+            summarize_sip_contributions_by_symbol_for_month,
+            chat_id,
+            year=now.year,
+            month=now.month,
+        )
+        html = format_portfolio_track_html(plan, paid, month_label=month_label)
+        chunks = split_telegram_chunks(html)
+    except FileNotFoundError as exc:
+        await status.edit_text(esc(str(exc)))
+        return
+    except Exception as exc:
+        logger.exception("portfolio SIP track failed")
+        await status.edit_text(f"Portfolio SIP track failed: {esc(exc)}")
+        return
+
+    await status.delete()
+    for index, chunk in enumerate(chunks):
+        suffix = f"\n\n{DISCLAIMER}" if index == len(chunks) - 1 else ""
+        await update.message.reply_text(chunk + suffix, parse_mode=ParseMode.HTML)
+
+
+async def _handle_portfolio_paid(
+    update: Update,
+    chat_id: int,
+    args: list[str],
+) -> None:
+    from stockbot.sip_messages import TOPUP_RISK_NOTE
+
+    parsed = _parse_portfolio_paid_args(args)
+    if isinstance(parsed, str):
+        await update.message.reply_text(f"{parsed}\n\n{SIP_USAGE}", parse_mode=ParseMode.HTML)
+        return
+
+    symbol, amount, was_topup = parsed
+    resolved = await asyncio.to_thread(resolve_ticker, symbol)
+    if isinstance(resolved, AmbiguousMatch) or resolved is None:
+        await update.message.reply_text(
+            f"Could not resolve <b>{esc(symbol)}</b>. "
+            "Use the NSE symbol, e.g. <code>/sip paid KAYNES 3685</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    price, _ = await asyncio.to_thread(_sip_price_and_high, resolved.symbol)
+    await asyncio.to_thread(
+        record_sip_contribution,
+        chat_id,
+        resolved.symbol,
+        amount,
+        price_at_contribution=price,
+        was_topup=was_topup,
+    )
+    kind = "top-up" if was_topup else "buy"
+    lines = [
+        f"✅ Logged ₹{amount:,.0f} {kind} for <b>{esc(resolved.symbol)}</b>"
+        + (f" at ₹{price:,.2f}." if price else " (price unavailable)."),
+        "",
+        "Send <code>/sip track</code> to see planned vs logged this month.",
+    ]
+    if was_topup:
+        lines.extend(["", f"<i>{TOPUP_RISK_NOTE}</i>"])
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
 async def handle_sip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
@@ -1173,6 +1326,18 @@ async def handle_sip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat_id = update.effective_chat.id
     args = list(context.args or [])
     sub = args[0].lower() if args else ""
+
+    if sub == "plan":
+        await _reply_portfolio_sip_plan(update, chat_id)
+        return
+
+    if sub == "track":
+        await _reply_portfolio_sip_track(update, chat_id)
+        return
+
+    if sub == "paid" and len(args) >= 2 and _parse_sip_amount_token(args[1]) is None:
+        await _handle_portfolio_paid(update, chat_id, args)
+        return
 
     if not args:
         plan = await asyncio.to_thread(get_sip_plan, chat_id)
@@ -1185,9 +1350,17 @@ async def handle_sip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     if sub in {"status", "pause", "resume", "paid"}:
         plan = await asyncio.to_thread(get_sip_plan, chat_id)
+        if plan is None and sub == "paid":
+            await update.message.reply_text(
+                "No single-stock SIP plan.\n"
+                "For portfolio buys use "
+                "<code>/sip paid SYMBOL amount</code>.\n\n" + SIP_USAGE,
+                parse_mode=ParseMode.HTML,
+            )
+            return
         if plan is None:
             await update.message.reply_text(
-                "No SIP plan yet.\n\n" + SIP_USAGE, parse_mode=ParseMode.HTML
+                "No single-stock SIP plan yet.\n\n" + SIP_USAGE, parse_mode=ParseMode.HTML
             )
             return
         await _handle_sip_subcommand(update, sub, args, plan)

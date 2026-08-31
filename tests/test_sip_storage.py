@@ -95,3 +95,27 @@ def test_plans_are_isolated_per_chat(store):
     assert store.get_sip_plan(2).ticker == "CRISIL"
     assert store.summarize_sip_contributions(2).contributions == 0
     assert len(store.list_active_sip_plans()) == 2
+
+
+def test_summarize_contributions_by_symbol_for_month(store):
+    store.record_sip_contribution(
+        42,
+        "BEL",
+        3000,
+        price_at_contribution=400.0,
+    )
+    # Force a known month prefix via direct SQL is awkward; use current month from ISO timestamp.
+    from datetime import UTC, datetime
+
+    from stockbot import storage
+
+    now = datetime.now(UTC)
+    with storage._connect() as conn:
+        conn.execute(
+            "UPDATE sip_contributions SET contributed_at = ? WHERE chat_id = ?",
+            (now.isoformat(), 42),
+        )
+    totals = store.summarize_sip_contributions_by_symbol_for_month(
+        42, year=now.year, month=now.month
+    )
+    assert totals["BEL"] == 3000.0

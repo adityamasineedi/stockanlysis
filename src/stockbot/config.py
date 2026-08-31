@@ -20,6 +20,7 @@ DATA_DIR = Path(os.environ.get("STOCKBOT_DATA_DIR") or (PROJECT_ROOT / "data"))
 SYMBOLS_DIR = DATA_DIR / "symbols"
 PORTFOLIO_DIR = DATA_DIR / "portfolio"
 WATCHLIST_PATH = PORTFOLIO_DIR / "watchlist.txt"
+SIP_PORTFOLIOS_PATH = PORTFOLIO_DIR / "sip_portfolios.json"
 CACHE_DIR = DATA_DIR / "cache"
 SCREENER_CACHE_DIR = CACHE_DIR / "screener"
 ANNUAL_REPORT_CACHE_DIR = CACHE_DIR / "annual_reports"

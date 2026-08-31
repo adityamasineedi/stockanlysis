@@ -1,0 +1,460 @@
+{
+  "version": 1,
+  "currency": "INR",
+  "max_monthly_budget": 60000,
+  "whole_shares_only": true,
+  "broker_rounding": "floor",
+  "portfolios": [
+    {
+      "id": "bucket1_defence_tech",
+      "label": "Bucket 1 — Existing / Defence-Tech",
+      "thesis": "Mid/small-cap defence, tech & pharma — intentional growth cluster; names may correlate in sector rotations.",
+      "enabled": true,
+      "monthly_budget": 20000,
+      "allocation_mode": "equal_split",
+      "symbols": [
+        {
+          "symbol": "MAZDOCK",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 4960,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 10000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": true,
+            "trigger_type": "pct_drawdown",
+            "reference": "52_week_high",
+            "threshold_pct": 5.5,
+            "band_min": 2480,
+            "band_max": 4960,
+            "max_topups_per_month": 2,
+            "max_topups_per_year": 6
+          },
+          "topup": { "min_amount": 2480, "max_amount": 4960 }
+        },
+        {
+          "symbol": "KAYNES",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 3685,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 7400,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": true,
+            "trigger_type": "pct_drawdown",
+            "reference": "52_week_high",
+            "threshold_pct": 8.6,
+            "band_min": 1842,
+            "band_max": 3685,
+            "max_topups_per_month": 2,
+            "max_topups_per_year": 6
+          },
+          "topup": { "min_amount": 1842, "max_amount": 3685 }
+        },
+        {
+          "symbol": "MOSCHIP",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 3213,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 4444,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": true,
+            "trigger_type": "pct_drawdown",
+            "reference": "avg_cost",
+            "threshold_pct": 13.6,
+            "band_min": 2222,
+            "band_max": 4444,
+            "max_topups_per_month": 2,
+            "max_topups_per_year": 6
+          },
+          "topup": { "min_amount": 1111, "max_amount": 4444 }
+        },
+        {
+          "symbol": "LAURUSLABS",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 1915,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 4000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": false,
+            "trigger_type": "none",
+            "reference": null,
+            "threshold_pct": 0,
+            "band_min": 0,
+            "band_max": 0,
+            "max_topups_per_month": 0,
+            "max_topups_per_year": 0
+          },
+          "topup": { "min_amount": 0, "max_amount": 0 }
+        },
+        {
+          "symbol": "ANANTRAJ",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 604,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 2000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": false,
+            "trigger_type": "none",
+            "reference": null,
+            "threshold_pct": 0,
+            "band_min": 0,
+            "band_max": 0,
+            "max_topups_per_month": 0,
+            "max_topups_per_year": 0
+          },
+          "topup": { "min_amount": 0, "max_amount": 0 }
+        },
+        {
+          "symbol": "VIYASH",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 527,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 2000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": true,
+            "trigger_type": "pct_drawdown",
+            "reference": "52_week_high",
+            "threshold_pct": 10.4,
+            "band_min": 527,
+            "band_max": 1054,
+            "max_topups_per_month": 2,
+            "max_topups_per_year": 6
+          },
+          "topup": { "min_amount": 527, "max_amount": 1054 }
+        },
+        {
+          "symbol": "SAILIFE",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 1460,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 3000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": false,
+            "trigger_type": "none",
+            "reference": null,
+            "threshold_pct": 0,
+            "band_min": 0,
+            "band_max": 0,
+            "max_topups_per_month": 0,
+            "max_topups_per_year": 0
+          },
+          "topup": { "min_amount": 0, "max_amount": 0 }
+        },
+        {
+          "symbol": "SHILPAMED",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 949,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 2000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": false,
+            "trigger_type": "none",
+            "reference": null,
+            "threshold_pct": 0,
+            "band_min": 0,
+            "band_max": 0,
+            "max_topups_per_month": 0,
+            "max_topups_per_year": 0
+          },
+          "topup": { "min_amount": 0, "max_amount": 0 }
+        },
+        {
+          "symbol": "NETWEB",
+          "exchange": "NSE",
+          "role": "rotation",
+          "enabled": true,
+          "target_amount_monthly": 0,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 5500,
+          "rotation": {
+            "enabled": true,
+            "mode": "round_robin",
+            "cycle_months": 3,
+            "months_active": [1, 4, 7, 10]
+          },
+          "dip": {
+            "enabled": true,
+            "trigger_type": "pct_drawdown",
+            "reference": "52_week_high",
+            "threshold_pct": 7.4,
+            "band_min": 2222,
+            "band_max": 4444,
+            "max_topups_per_month": 1,
+            "max_topups_per_year": 4
+          },
+          "topup": { "min_amount": 2222, "max_amount": 5500 }
+        }
+      ],
+      "cash_policy": {
+        "rollover_uninvested": true,
+        "overflow_symbol": null
+      }
+    },
+    {
+      "id": "bucket2_future_growth_exchange",
+      "label": "Bucket 2 — Future Growth / Exchange",
+      "thesis": "Financial infrastructure (exchange, depository, RTA) — one coherent bet; policy/regulation news moves the bucket together.",
+      "enabled": true,
+      "monthly_budget": 20000,
+      "allocation_mode": "equal_split",
+      "symbols": [
+        {
+          "symbol": "CDSL",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 4208,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 8500,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": false,
+            "trigger_type": "none",
+            "reference": null,
+            "threshold_pct": 0,
+            "band_min": 0,
+            "band_max": 0,
+            "max_topups_per_month": 0,
+            "max_topups_per_year": 0
+          },
+          "topup": { "min_amount": 0, "max_amount": 0 }
+        },
+        {
+          "symbol": "CAMS",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 2346,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 5000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": true,
+            "trigger_type": "pct_drawdown",
+            "reference": "52_week_high",
+            "threshold_pct": 5.3,
+            "band_min": 1173,
+            "band_max": 2346,
+            "max_topups_per_month": 2,
+            "max_topups_per_year": 6
+          },
+          "topup": { "min_amount": 1173, "max_amount": 2346 }
+        },
+        {
+          "symbol": "BSE",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 3282,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 10000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": true,
+            "trigger_type": "pct_drawdown",
+            "reference": "avg_cost",
+            "threshold_pct": 20.9,
+            "band_min": 5000,
+            "band_max": 10000,
+            "max_topups_per_month": 1,
+            "max_topups_per_year": 3
+          },
+          "topup": { "min_amount": 5000, "max_amount": 10000 }
+        },
+        {
+          "symbol": "MCX",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 6800,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 14000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": false,
+            "trigger_type": "none",
+            "reference": null,
+            "threshold_pct": 0,
+            "band_min": 0,
+            "band_max": 0,
+            "max_topups_per_month": 0,
+            "max_topups_per_year": 0
+          },
+          "topup": { "min_amount": 0, "max_amount": 0 }
+        }
+      ],
+      "cash_policy": {
+        "rollover_uninvested": true,
+        "overflow_symbol": null
+      }
+    },
+    {
+      "id": "bucket3_metals_etfs",
+      "label": "Bucket 3 — Metals + ETFs",
+      "thesis": "Cyclical commodity exposure (Al, Cu, miners) plus gold/silver ETFs — SIP smooths entry; expect cycle volatility.",
+      "enabled": true,
+      "monthly_budget": 20000,
+      "allocation_mode": "equal_split",
+      "symbols": [
+        {
+          "symbol": "GOLDBEES",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 3565,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 4000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": false,
+            "trigger_type": "none",
+            "reference": null,
+            "threshold_pct": 0,
+            "band_min": 0,
+            "band_max": 0,
+            "max_topups_per_month": 0,
+            "max_topups_per_year": 0
+          },
+          "topup": { "min_amount": 0, "max_amount": 0 }
+        },
+        {
+          "symbol": "SILVERBEES",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 1786,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 4000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": true,
+            "trigger_type": "pct_drawdown",
+            "reference": "52_week_high",
+            "threshold_pct": 9.5,
+            "band_min": 893,
+            "band_max": 1786,
+            "max_topups_per_month": 2,
+            "max_topups_per_year": 6
+          },
+          "topup": { "min_amount": 893, "max_amount": 1786 }
+        },
+        {
+          "symbol": "HINDALCO",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 8124,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 12000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": true,
+            "trigger_type": "pct_drawdown",
+            "reference": "52_week_high",
+            "threshold_pct": 9.3,
+            "band_min": 4062,
+            "band_max": 8124,
+            "max_topups_per_month": 2,
+            "max_topups_per_year": 6
+          },
+          "topup": { "min_amount": 4062, "max_amount": 8124 }
+        },
+        {
+          "symbol": "VEDL",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 2226,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 5000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": true,
+            "trigger_type": "pct_drawdown",
+            "reference": "52_week_high",
+            "threshold_pct": 15.1,
+            "band_min": 2226,
+            "band_max": 4451,
+            "max_topups_per_month": 2,
+            "max_topups_per_year": 6
+          },
+          "topup": { "min_amount": 2226, "max_amount": 4451 }
+        },
+        {
+          "symbol": "NATIONALUM",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 3052,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 6000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": true,
+            "trigger_type": "pct_drawdown",
+            "reference": "52_week_high",
+            "threshold_pct": 8.9,
+            "band_min": 1526,
+            "band_max": 3052,
+            "max_topups_per_month": 2,
+            "max_topups_per_year": 6
+          },
+          "topup": { "min_amount": 1526, "max_amount": 3052 }
+        },
+        {
+          "symbol": "HINDCOPPER",
+          "exchange": "NSE",
+          "role": "core",
+          "enabled": true,
+          "target_amount_monthly": 3677,
+          "min_amount_monthly": 0,
+          "max_amount_monthly": 7000,
+          "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+          "dip": {
+            "enabled": true,
+            "trigger_type": "pct_drawdown",
+            "reference": "52_week_high",
+            "threshold_pct": 8.5,
+            "band_min": 1839,
+            "band_max": 3677,
+            "max_topups_per_month": 2,
+            "max_topups_per_year": 6
+          },
+          "topup": { "min_amount": 1839, "max_amount": 3677 }
+        }
+      ],
+      "cash_policy": {
+        "rollover_uninvested": true,
+        "overflow_symbol": "GOLDBEES"
+      }
+    }
+  ],
+  "logging": {
+    "require_trade_id": false,
+    "allow_partial_fills": true,
+    "month_close_day": "last_trading_day"
+  }
+}
