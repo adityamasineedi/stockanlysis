@@ -618,7 +618,9 @@ def _default_price_fetch(symbol: str) -> tuple[float | None, float | None, float
     except Exception as exc:  # noqa: BLE001 - resilience boundary per symbol fetch
         logger.warning("portfolio SIP price fetch failed for %s: %s", symbol, exc)
         return (None, None, None)
-    high = three_month_high(data.ohlcv_adjusted)
+    # Must match current_price_abs (unadjusted closes). An adjusted high
+    # after a split/dividend sits below the quoted price and hides real dips.
+    high = three_month_high(data.ohlcv_unadjusted)
     return (data.current_price_abs, high, data.week52_high_abs)
 
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal
 
 import pandas as pd
@@ -106,11 +107,42 @@ def next_step_up_amount(
     return round(monthly_amount * ((1.0 + step_up_pct / 100.0) ** elapsed_years), 2)
 
 
+def elapsed_plan_years(started_at: datetime, now: datetime | None = None) -> int:
+    """Completed anniversaries since the plan started.
+
+    Drives the step-up: without it the reminder asks for the original
+    instalment forever while the projections in the same message compound a
+    rising one — the message contradicts itself.
+    """
+    current = now or datetime.now(UTC)
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=UTC)
+    years = current.year - started_at.year
+    # Not yet reached this year's anniversary → one fewer completed year.
+    if (current.month, current.day) < (started_at.month, started_at.day):
+        years -= 1
+    return max(years, 0)
+
+
+def current_instalment(
+    monthly_amount: float,
+    step_up_pct: float,
+    started_at: datetime,
+    now: datetime | None = None,
+) -> float:
+    """What this month's instalment actually is, step-up included."""
+    return next_step_up_amount(
+        monthly_amount, step_up_pct, elapsed_plan_years(started_at, now)
+    )
+
+
 def three_month_high(ohlcv: pd.DataFrame) -> float | None:
     """Highest close over roughly the last 3 months of daily bars.
 
-    Takes the frame already on ``PriceData.ohlcv_adjusted`` so the fetch layer
-    is untouched. NaN closes are dropped first: yfinance really does return
+    Takes a frame already on ``PriceData`` so the fetch layer is untouched.
+    Callers must pass the *same* series the price they compare against comes
+    from — ``ohlcv_unadjusted``, since ``current_price_abs`` is an unadjusted
+    close. NaN closes are dropped first: yfinance really does return
     rows with a NaN Close on thinly traded names (see the comment in
     ``fetch/prices.py``), and ``max()`` over them would poison the dip maths.
     Returns None rather than a guess when there is nothing usable.

@@ -415,18 +415,25 @@ class SipLedgerSummary:
     units_estimate: float | None
 
 
-def summarize_sip_contributions(chat_id: int) -> SipLedgerSummary:
-    """Invested total and accumulated units.
+def summarize_sip_contributions(chat_id: int, ticker: str) -> SipLedgerSummary:
+    """Invested total and accumulated units for one chat's holding in ``ticker``.
 
     Units are summed per contribution at that contribution's own price, which
     is the whole point of rupee-cost averaging — a single average price applied
     to the total would misstate it. Rows logged without a price cannot
     contribute units, so units go None rather than silently undercounting.
+
+    Filtering by ticker is not optional. ``save_sip_plan`` lets a chat re-point
+    its plan (BEL → CRISIL); without this filter the totals would merge both
+    stocks and the caller would multiply BEL-derived units by the live CRISIL
+    price, printing a gain that never happened. The abandoned rows stay in the
+    append-only ledger, they just stop counting toward the new holding.
     """
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT amount, price_at_contribution FROM sip_contributions WHERE chat_id = ?",
-            (chat_id,),
+            "SELECT amount, price_at_contribution FROM sip_contributions "
+            "WHERE chat_id = ? AND ticker = ?",
+            (chat_id, ticker.upper()),
         ).fetchall()
 
     total = sum(float(r["amount"]) for r in rows)

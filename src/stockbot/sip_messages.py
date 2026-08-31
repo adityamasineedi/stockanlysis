@@ -14,7 +14,9 @@ from stockbot.sip import (
     DEFAULT_SCENARIO_RATES_PCT,
     DipSeverity,
     classify_dip,
+    current_instalment,
     dip_pct_from_high,
+    elapsed_plan_years,
     next_step_up_amount,
     scenario_projections,
     suggest_topup,
@@ -101,10 +103,9 @@ def _money(value: float) -> str:
     return f"₹{value:,.0f}"
 
 
-def format_projection_block(
-    plan: SipPlan, rates: ScenarioRates, *, elapsed_years: int = 0
-) -> str:
+def format_projection_block(plan: SipPlan, rates: ScenarioRates) -> str:
     """The three-scenario growth table plus its assumptions."""
+    elapsed_years = elapsed_plan_years(plan.started_at)
     projections = scenario_projections(
         plan.monthly_amount,
         plan.horizon_years,
@@ -216,7 +217,7 @@ def format_monthly_reminder(
     high_3m: float | None,
 ) -> str:
     """The scheduled nudge: confirm the amount, show totals, flag any dip."""
-    due = _money(plan.monthly_amount)
+    due = _money(current_instalment(plan.monthly_amount, plan.step_up_pct, plan.started_at))
     lines = [
         f"🗓 <b>SIP due — {plan.ticker}</b>",
         f"This month's instalment: {due}.",
