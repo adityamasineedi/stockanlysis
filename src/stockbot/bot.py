@@ -1049,6 +1049,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/refresh backfill — recompute gates + expected_return on cached rows\n"
         "/capital 500000 max 10 — total capital and per-stock cap\n"
         "/hold BEL 25 412.50 — record a position (/hold to list)\n"
+        "/track — score the bot's past calls (/track analyze for verdicts)\n"
         "/sip BEL 5000 — monthly plan with dip alerts and projections\n"
         "/sip plan — ₹60k portfolio tables (3 buckets, live prices)\n"
         "/sip track — planned vs logged this month\n"
@@ -1155,6 +1156,40 @@ async def handle_symbol_pick(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _run_and_reply(shim, symbol, force=False)
 
 
+def _build_track_report(source: str) -> str:
+    """Calibration text for one source. Fetches prices, so runs off-thread."""
+    from stockbot.calibration_report import (
+        build_analyze_calibration,
+        build_prescan_calibration,
+        format_calibration_report,
+    )
+
+    builder = build_analyze_calibration if source == "analyze" else build_prescan_calibration
+    return format_calibration_report(builder())
+
+
+async def handle_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Has the bot been right? Reads history it has already been logging."""
+    if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
+        return
+    _clear_awaiting_symbol(context)
+    args = list(context.args or [])
+    source = "analyze" if args and args[0].lower() in {"analyze", "analyse"} else "prescan"
+
+    # One price fetch per distinct ticker, so this is slow enough to warrant a
+    # status message but costs nothing in LLM spend.
+    status = await update.message.reply_text("⏳ Scoring past calls against live prices…")
+    try:
+        text = await asyncio.to_thread(_build_track_report, source)
+    except Exception as exc:
+        logger.exception("Calibration report failed")
+        await status.edit_text(f"Could not build the track record: {esc(exc)}")
+        return
+    await status.edit_text(f"{text}\n\n{DISCLAIMER}", parse_mode=ParseMode.HTML)
+
+
 async def handle_spend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
@@ -1211,6 +1246,7 @@ BOT_COMMANDS = [
     BotCommand("sip", "Portfolio plan, track, or single-stock SIP"),
     BotCommand("capital", "Set total capital and per-stock cap"),
     BotCommand("hold", "Record and review what you own"),
+    BotCommand("track", "Has the bot been right? Past calls scored"),
 ]
 
 
@@ -2105,6 +2141,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("sip", handle_sip))
     application.add_handler(CommandHandler("capital", handle_capital))
     application.add_handler(CommandHandler("hold", handle_hold))
+    application.add_handler(CommandHandler("track", handle_track))
     application.add_handler(InlineQueryHandler(handle_inline_query))
     application.add_handler(CallbackQueryHandler(handle_symbol_pick))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_text))
