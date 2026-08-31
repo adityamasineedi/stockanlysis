@@ -129,7 +129,7 @@
           "exchange": "NSE",
           "role": "core",
           "enabled": true,
-          "target_amount_monthly": 527,
+          "target_amount_monthly": 530,
           "min_amount_monthly": 0,
           "max_amount_monthly": 2000,
           "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
@@ -171,7 +171,7 @@
           "exchange": "NSE",
           "role": "core",
           "enabled": true,
-          "target_amount_monthly": 949,
+          "target_amount_monthly": 1000,
           "min_amount_monthly": 0,
           "max_amount_monthly": 2000,
           "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
@@ -216,7 +216,7 @@
       ],
       "cash_policy": {
         "rollover_uninvested": true,
-        "overflow_symbol": null
+        "overflow_symbol": "MAZDOCK"
       }
     },
     {
@@ -274,7 +274,7 @@
           "exchange": "NSE",
           "role": "core",
           "enabled": true,
-          "target_amount_monthly": 3282,
+          "target_amount_monthly": 6564,
           "min_amount_monthly": 0,
           "max_amount_monthly": 10000,
           "rotation": { "enabled": false, "months_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
@@ -314,7 +314,7 @@
       ],
       "cash_policy": {
         "rollover_uninvested": true,
-        "overflow_symbol": null
+        "overflow_symbol": "CDSL"
       }
     },
     {
