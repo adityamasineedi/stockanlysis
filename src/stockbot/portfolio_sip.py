@@ -14,9 +14,15 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from stockbot.fetch.prices import fetch_price_data
+from stockbot.portfolio_sip_prescan import (
+    evaluate_prescan_gate,
+    prescan_outcome_map,
+    rank_symbols_by_prescan,
+)
 from stockbot.portfolio_sip_schema import (
     PortfolioBucket,
     PortfolioSipConfig,
+    PrescanGateConfig,
     SymbolConfig,
     is_rotation_active,
     load_portfolio_sip_config,
@@ -54,6 +60,7 @@ class AllocationLine:
     dip_label: str | None = None
     topup_range: tuple[float, float] | None = None
     rotation_skip: bool = False
+    prescan_skip: bool = False
     note: str | None = None
 
 
@@ -143,6 +150,7 @@ def _build_line(
     priority_rank: int | None = None,
     error: str | None = None,
     rotation_skip: bool = False,
+    prescan_skip: bool = False,
     note: str | None = None,
     avg_cost: float | None = None,
     high_3m: float | None = None,
@@ -157,6 +165,7 @@ def _build_line(
             priority_rank=priority_rank,
             error=error or ("price unavailable" if price is None else None),
             rotation_skip=rotation_skip,
+            prescan_skip=prescan_skip,
             note=note,
         )
     invested = round(shares * price, 2)
@@ -178,6 +187,7 @@ def _build_line(
         dip_label=dip_label,
         topup_range=topup,
         rotation_skip=rotation_skip,
+        prescan_skip=prescan_skip,
         note=note,
     )
 
@@ -193,12 +203,16 @@ def target_split_whole_share_lines(
     week52_highs: dict[str, float | None] | None = None,
     avg_costs: dict[str, float | None] | None = None,
     overflow_symbol: str | None = None,
+    prescan_gate: PrescanGateConfig | None = None,
+    prescan_map: dict[str, dict] | None = None,
 ) -> tuple[AllocationLine, ...]:
     """Allocate whole shares from per-symbol monthly targets within *budget*."""
     err = errors or {}
     highs = highs_3m or {}
     w52 = week52_highs or {}
     costs = avg_costs or {}
+    gate = prescan_gate or PrescanGateConfig(enabled=False)
+    pmap = prescan_map or {}
 
     rows: list[tuple[SymbolConfig, float, int, float]] = []
     skip_lines: list[AllocationLine] = []
@@ -228,6 +242,22 @@ def target_split_whole_share_lines(
                     priority_rank=rank,
                     rotation_skip=True,
                     note="rotation skip",
+                    avg_cost=costs.get(sym),
+                    high_3m=highs.get(sym),
+                    week52_high=w52.get(sym),
+                )
+            )
+            continue
+        gate_result = evaluate_prescan_gate(sym, pmap.get(sym), gate)
+        if gate_result.blocked:
+            skip_lines.append(
+                _build_line(
+                    symbol,
+                    0,
+                    px,
+                    priority_rank=rank,
+                    prescan_skip=True,
+                    note=gate_result.note,
                     avg_cost=costs.get(sym),
                     high_3m=highs.get(sym),
                     week52_high=w52.get(sym),
@@ -296,12 +326,14 @@ def target_split_whole_share_lines(
             (i + 1 for i, s in enumerate(symbols) if s.symbol == sym_cfg.symbol),
             index + 1,
         )
+        pending = evaluate_prescan_gate(sym_cfg.symbol, pmap.get(sym_cfg.symbol), gate)
         lines.append(
             _build_line(
                 sym_cfg,
                 shares,
                 px,
                 priority_rank=rank,
+                note=pending.note if pending.note and not pending.blocked else None,
                 avg_cost=costs.get(sym_cfg.symbol),
                 high_3m=highs.get(sym_cfg.symbol),
                 week52_high=w52.get(sym_cfg.symbol),
@@ -491,21 +523,57 @@ def allocate_portfolio(
     week52_highs: dict[str, float | None] | None = None,
     avg_costs: dict[str, float | None] | None = None,
     carried_cash: float = 0.0,
+    prescan_gate: PrescanGateConfig | None = None,
+    prescan_map: dict[str, dict] | None = None,
 ) -> PortfolioAllocation:
     budget = round(portfolio.monthly_budget + max(carried_cash, 0.0), 2)
     mode = portfolio.allocation_mode
+    gate = prescan_gate or PrescanGateConfig(enabled=False)
+    pmap = prescan_map or {}
+
+    symbols_for_alloc = portfolio.symbols
+    if mode == "prescan_rank":
+        symbols_for_alloc = rank_symbols_by_prescan(portfolio.symbols, pmap)
+        mode = "equal_split"
 
     if mode == "priority":
-        lines = priority_whole_share_lines(
-            symbol_names(portfolio),
+        active_symbols: list[str] = []
+        prescan_skip_lines: list[AllocationLine] = []
+        for index, symbol in enumerate(portfolio.symbols):
+            if not symbol.enabled:
+                continue
+            sym = symbol.symbol
+            gate_result = evaluate_prescan_gate(sym, pmap.get(sym), gate)
+            if gate_result.blocked:
+                prescan_skip_lines.append(
+                    _build_line(
+                        symbol,
+                        0,
+                        prices.get(sym),
+                        priority_rank=index + 1,
+                        prescan_skip=True,
+                        note=gate_result.note,
+                        error=(errors or {}).get(sym),
+                        avg_cost=(avg_costs or {}).get(sym),
+                        high_3m=(highs_3m or {}).get(sym),
+                        week52_high=(week52_highs or {}).get(sym),
+                    )
+                )
+                continue
+            active_symbols.append(sym)
+        alloc_lines = priority_whole_share_lines(
+            tuple(active_symbols),
             budget,
             prices,
             errors=errors,
             highs_3m=highs_3m,
         )
+        lines = tuple(prescan_skip_lines) + alloc_lines
+        order = {s.symbol: i for i, s in enumerate(portfolio.symbols)}
+        lines = tuple(sorted(lines, key=lambda row: order.get(row.symbol, 999)))
     elif mode in {"equal_split", "equal"}:
         lines = target_split_whole_share_lines(
-            portfolio.symbols,
+            symbols_for_alloc,
             budget,
             prices,
             month,
@@ -514,6 +582,8 @@ def allocate_portfolio(
             week52_highs=week52_highs,
             avg_costs=avg_costs,
             overflow_symbol=portfolio.cash_policy.overflow_symbol,
+            prescan_gate=gate,
+            prescan_map=pmap,
         )
     else:
         lines = equal_whole_share_lines(
@@ -597,6 +667,8 @@ def build_portfolio_sip_plan(
     enabled_portfolios = tuple(p for p in cfg.portfolios if p.enabled)
     all_symbols = tuple(sym for p in enabled_portfolios for sym in symbol_names(p))
     prices, highs, week52, errors = fetch_prices_for_symbols(all_symbols, fetcher=fetcher)
+    pmap = prescan_outcome_map()
+    gate = cfg.prescan_gate
     allocations = tuple(
         allocate_portfolio(
             p,
@@ -606,6 +678,8 @@ def build_portfolio_sip_plan(
             highs_3m=highs,
             week52_highs=week52,
             avg_costs=avg_costs,
+            prescan_gate=gate,
+            prescan_map=pmap,
         )
         for p in enabled_portfolios
     )

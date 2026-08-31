@@ -4,6 +4,12 @@
   "max_monthly_budget": 60000,
   "whole_shares_only": true,
   "broker_rounding": "floor",
+  "prescan_gate": {
+    "enabled": true,
+    "require_recent_days": 90,
+    "skip_when_missing": false,
+    "monthly_auto_prescan": true
+  },
   "portfolios": [
     {
       "id": "bucket1_defence_tech",

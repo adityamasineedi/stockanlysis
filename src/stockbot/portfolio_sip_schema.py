@@ -69,6 +69,14 @@ class PortfolioBucket:
 
 
 @dataclass(frozen=True)
+class PrescanGateConfig:
+    enabled: bool = True
+    require_recent_days: int = 90
+    skip_when_missing: bool = False
+    monthly_auto_prescan: bool = True
+
+
+@dataclass(frozen=True)
 class LoggingConfig:
     require_trade_id: bool = False
     allow_partial_fills: bool = True
@@ -84,6 +92,7 @@ class PortfolioSipConfig:
     broker_rounding: str
     portfolios: tuple[PortfolioBucket, ...]
     logging: LoggingConfig = LoggingConfig()
+    prescan_gate: PrescanGateConfig = PrescanGateConfig()
     default_allocation_mode: str = "equal_split"
 
     @property
@@ -169,6 +178,16 @@ def _bucket_from_v1(raw: dict[str, Any], default_mode: str) -> PortfolioBucket:
     )
 
 
+def _prescan_gate_from_raw(raw: dict[str, Any] | None) -> PrescanGateConfig:
+    item = raw or {}
+    return PrescanGateConfig(
+        enabled=bool(item.get("enabled", True)),
+        require_recent_days=int(item.get("require_recent_days", 90) or 90),
+        skip_when_missing=bool(item.get("skip_when_missing", False)),
+        monthly_auto_prescan=bool(item.get("monthly_auto_prescan", True)),
+    )
+
+
 def _load_v1(raw: dict[str, Any]) -> PortfolioSipConfig:
     default_mode = str(raw.get("allocation_mode", "equal_split"))
     portfolios = tuple(_bucket_from_v1(item, default_mode) for item in raw.get("portfolios", []))
@@ -186,6 +205,7 @@ def _load_v1(raw: dict[str, Any]) -> PortfolioSipConfig:
             allow_partial_fills=bool(logging_raw.get("allow_partial_fills", True)),
             month_close_day=str(logging_raw.get("month_close_day", "last_trading_day")),
         ),
+        prescan_gate=_prescan_gate_from_raw(raw.get("prescan_gate")),
         default_allocation_mode=default_mode,
     )
 
@@ -200,7 +220,7 @@ def load_portfolio_sip_config(path: Path | None = None) -> PortfolioSipConfig:
     raw = json.loads(target.read_text(encoding="utf-8"))
     if raw.get("version") == 1:
         return _load_v1(raw)
-  # Legacy v0 — synthesize v1
+    # Legacy v0 — synthesize v1
     default_mode = str(raw.get("allocation_mode", "equal"))
     if default_mode == "priority":
         mode = "priority"

@@ -210,4 +210,7 @@ def test_load_portfolio_sip_config_v1_from_repo_file():
     assert netweb.rotation.enabled
     assert netweb.rotation.months_active == (1, 4, 7, 10)
     metals = cfg.portfolios[2]
+    metals = cfg.portfolios[2]
     assert metals.cash_policy.overflow_symbol == "GOLDBEES"
+    assert cfg.prescan_gate.enabled
+    assert cfg.prescan_gate.monthly_auto_prescan

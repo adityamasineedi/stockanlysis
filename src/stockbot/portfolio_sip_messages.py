@@ -25,6 +25,10 @@ def _price(value: float | None) -> str:
 
 
 def format_allocation_line_html(line: AllocationLine) -> str:
+    if line.prescan_skip:
+        rank = f"P{line.priority_rank} " if line.priority_rank else ""
+        note = line.note or "prescan skip"
+        return f"{rank}<code>{escape(line.symbol):8}</code> — <i>{escape(note)}</i>"
     if line.rotation_skip:
         rank = f"P{line.priority_rank} " if line.priority_rank else ""
         return f"{rank}<code>{escape(line.symbol):8}</code> — <i>rotation skip</i>"
@@ -48,6 +52,8 @@ def _allocation_mode_label(allocation: PortfolioAllocation) -> str:
     mode = allocation.portfolio.allocation_mode
     if mode == "priority":
         return "priority order (P1 first)"
+    if mode == "prescan_rank":
+        return "prescan rank (higher Q first)"
     if mode in {"equal_split", "equal"}:
         return "target ₹ per name"
     return "equal ₹ per name"
@@ -76,6 +82,8 @@ def format_portfolio_plan_html(plan: PortfolioSipPlan) -> str:
     mode_key = plan.config.default_allocation_mode
     if mode_key == "priority":
         mode = "priority order (P1 first)"
+    elif mode_key == "prescan_rank":
+        mode = "prescan rank (higher Q first)"
     elif mode_key in {"equal_split", "equal"}:
         mode = "target ₹ per name"
     else:

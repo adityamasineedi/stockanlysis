@@ -15,6 +15,8 @@ import pytest
 from stockbot.bot import (
     SIP_REMINDER_DAY,
     _parse_sip_setup,
+    _portfolio_prescan_monthly_job,
+    _portfolio_sip_plan_monthly_job,
     _sip_monthly_job,
     schedule_sip_reminder,
 )
@@ -59,20 +61,23 @@ def test_schedule_sip_reminder_without_job_queue_is_not_fatal():
     assert schedule_sip_reminder(app) is False
 
 
-def test_schedule_sip_reminder_arms_a_monthly_job():
-    recorded = {}
+def test_schedule_sip_reminder_arms_monthly_jobs():
+    recorded: list[dict] = []
 
     class FakeQueue:
         def run_monthly(self, callback, when, day, **kwargs):
-            recorded.update(callback=callback, when=when, day=day)
+            recorded.append({"callback": callback, "when": when, "day": day})
             return object()
 
     assert schedule_sip_reminder(SimpleNamespace(job_queue=FakeQueue())) is True
-    assert recorded["day"] == SIP_REMINDER_DAY
-    assert recorded["callback"] is _sip_monthly_job
+    assert len(recorded) == 3
+    assert recorded[0]["day"] == SIP_REMINDER_DAY
+    assert recorded[0]["callback"] is _sip_monthly_job
+    assert recorded[1]["callback"] is _portfolio_prescan_monthly_job
+    assert recorded[2]["callback"] is _portfolio_sip_plan_monthly_job
     # Fires on IST, not the container's UTC.
-    assert recorded["when"].tzinfo is not None
-    assert recorded["when"].tzinfo.utcoffset(None).total_seconds() == 5.5 * 3600
+    assert recorded[0]["when"].tzinfo is not None
+    assert recorded[0]["when"].tzinfo.utcoffset(None).total_seconds() == 5.5 * 3600
 
 
 class _RecordingBot:

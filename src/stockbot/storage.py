@@ -455,6 +455,13 @@ def summarize_average_cost_by_symbol(chat_id: int) -> dict[str, float]:
     }
 
 
+def list_sip_contribution_chat_ids() -> frozenset[int]:
+    """Distinct chat IDs that have logged at least one SIP contribution."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT DISTINCT chat_id FROM sip_contributions").fetchall()
+    return frozenset(int(row["chat_id"]) for row in rows)
+
+
 def get_latest_verdict_json(ticker: str) -> tuple[dict, datetime] | None:
     """Latest stored verdict for a ticker, with when it was produced.
 

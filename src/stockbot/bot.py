@@ -904,6 +904,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/sip BEL 5000 — monthly plan with dip alerts and projections\n"
         "/sip plan — ₹60k portfolio tables (3 buckets, live prices)\n"
         "/sip track — planned vs logged this month\n"
+        "/sip prescan — batch prescan all portfolio names (quant-only)\n"
         "/sip paid BEL 3213 — log a portfolio buy\n"
         "/sip status|paid|pause|resume — single-stock plan\n"
         "/spend — month-to-date cost\n"
@@ -1068,6 +1069,8 @@ SIP_USAGE = (
     "<b>Portfolio (₹60k / 3 buckets)</b>\n"
     "<code>/sip plan</code> — whole-share split table, live prices\n"
     "<code>/sip track</code> — planned vs logged this month\n"
+    "<code>/sip prescan</code> — batch prescan portfolio names (quant-only)\n"
+    "<code>/sip prescan full</code> — prescan with AI eligibility\n"
     "<code>/sip paid KAYNES 3685</code> — log a buy\n"
     "<code>/sip paid BEL 2500 topup</code> — log dip top-up\n\n"
     "<b>Single stock</b>\n"
@@ -1197,6 +1200,61 @@ def _parse_portfolio_paid_args(args: list[str]) -> tuple[str, float, bool] | str
     if amount is None or amount <= 0:
         return f"Could not read amount in <code>{esc(' '.join(args))}</code>."
     return (symbol, amount, was_topup)
+
+
+async def _reply_portfolio_prescan(update: Update, *, skip_ai: bool = True) -> None:
+    from stockbot.portfolio_sip import load_portfolio_sip_config
+    from stockbot.portfolio_sip_prescan import (
+        all_portfolio_symbols,
+        batch_prescan_symbols,
+        format_prescan_batch_summary_html,
+    )
+
+    mode = "quant-only" if skip_ai else "with AI"
+    status = await update.message.reply_text(
+        f"⏳ Portfolio prescan ({mode}) — this may take several minutes…"
+    )
+    try:
+        cfg = await asyncio.to_thread(load_portfolio_sip_config)
+        symbols = all_portfolio_symbols(cfg)
+        items = await asyncio.to_thread(
+            batch_prescan_symbols,
+            symbols,
+            skip_ai=skip_ai,
+            delay_seconds=2.0,
+        )
+        html = format_prescan_batch_summary_html(items)
+    except FileNotFoundError as exc:
+        await status.edit_text(esc(str(exc)))
+        return
+    except Exception as exc:
+        logger.exception("portfolio prescan failed")
+        await status.edit_text(f"Portfolio prescan failed: {esc(exc)}")
+        return
+
+    await status.delete()
+    await update.message.reply_text(
+        f"{html}\n\n{DISCLAIMER}",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+def _build_portfolio_plan_chunks_sync(chat_id: int) -> list[str]:
+    from stockbot.portfolio_sip import build_portfolio_sip_plan
+    from stockbot.portfolio_sip_messages import (
+        format_portfolio_plan_html,
+        split_telegram_chunks,
+    )
+    from stockbot.storage import summarize_average_cost_by_symbol
+
+    avg_costs = summarize_average_cost_by_symbol(chat_id)
+    plan = build_portfolio_sip_plan(avg_costs=avg_costs or None)
+    html = format_portfolio_plan_html(plan)
+    return split_telegram_chunks(html)
+
+
+async def _build_portfolio_plan_chunks(chat_id: int) -> list[str]:
+    return await asyncio.to_thread(_build_portfolio_plan_chunks_sync, chat_id)
 
 
 async def _reply_portfolio_sip_plan(update: Update, chat_id: int) -> None:
@@ -1335,6 +1393,11 @@ async def handle_sip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await _reply_portfolio_sip_track(update, chat_id)
         return
 
+    if sub == "prescan":
+        skip_ai = not (len(args) > 1 and args[1].lower() == "full")
+        await _reply_portfolio_prescan(update, skip_ai=skip_ai)
+        return
+
     if sub == "paid" and len(args) >= 2 and _parse_sip_amount_token(args[1]) is None:
         await _handle_portfolio_paid(update, chat_id, args)
         return
@@ -1452,6 +1515,51 @@ async def _handle_sip_subcommand(update: Update, sub: str, args: list[str], plan
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
+async def _portfolio_prescan_monthly_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    from stockbot.portfolio_sip import load_portfolio_sip_config
+    from stockbot.portfolio_sip_prescan import (
+        all_portfolio_symbols,
+        batch_prescan_symbols,
+    )
+
+    try:
+        cfg = await asyncio.to_thread(load_portfolio_sip_config)
+    except FileNotFoundError:
+        logger.warning("portfolio prescan monthly job skipped — no sip_portfolios.json")
+        return
+    if not cfg.prescan_gate.monthly_auto_prescan:
+        return
+    symbols = all_portfolio_symbols(cfg)
+    logger.info("Monthly portfolio prescan starting for %d symbols", len(symbols))
+    await asyncio.to_thread(
+        batch_prescan_symbols,
+        symbols,
+        skip_ai=True,
+        delay_seconds=2.0,
+    )
+
+
+async def _portfolio_sip_plan_monthly_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    from stockbot.portfolio_sip_prescan import portfolio_reminder_chat_ids
+
+    chat_ids = await asyncio.to_thread(portfolio_reminder_chat_ids)
+    if not chat_ids:
+        logger.info("Portfolio SIP monthly reminder skipped — no target chat IDs")
+        return
+    for chat_id in chat_ids:
+        try:
+            chunks = await _build_portfolio_plan_chunks(chat_id)
+            for index, chunk in enumerate(chunks):
+                suffix = f"\n\n{DISCLAIMER}" if index == len(chunks) - 1 else ""
+                await context.bot.send_message(
+                    chat_id,
+                    f"<b>Monthly portfolio SIP plan</b>\n\n{chunk}{suffix}",
+                    parse_mode=ParseMode.HTML,
+                )
+        except Exception:
+            logger.exception("Portfolio SIP monthly plan failed for chat %s", chat_id)
+
+
 async def _sip_monthly_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Message every active plan. One failure must not stop the rest."""
     plans = await asyncio.to_thread(list_active_sip_plans)
@@ -1463,6 +1571,9 @@ async def _sip_monthly_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         except Exception:
             logger.exception("SIP reminder failed for chat %s", plan.chat_id)
+
+
+PORTFOLIO_PRESCAN_HOUR_IST = 8
 
 
 def schedule_sip_reminder(application: Application) -> bool:
@@ -1478,6 +1589,16 @@ def schedule_sip_reminder(application: Application) -> bool:
         return False
     job_queue.run_monthly(
         _sip_monthly_job,
+        when=time(hour=SIP_REMINDER_HOUR_IST, minute=0, tzinfo=_IST),
+        day=SIP_REMINDER_DAY,
+    )
+    job_queue.run_monthly(
+        _portfolio_prescan_monthly_job,
+        when=time(hour=PORTFOLIO_PRESCAN_HOUR_IST, minute=0, tzinfo=_IST),
+        day=SIP_REMINDER_DAY,
+    )
+    job_queue.run_monthly(
+        _portfolio_sip_plan_monthly_job,
         when=time(hour=SIP_REMINDER_HOUR_IST, minute=0, tzinfo=_IST),
         day=SIP_REMINDER_DAY,
     )
