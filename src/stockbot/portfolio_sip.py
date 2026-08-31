@@ -248,7 +248,9 @@ def target_split_whole_share_lines(
                 )
             )
             continue
-        gate_result = evaluate_prescan_gate(sym, pmap.get(sym), gate)
+        gate_result = evaluate_prescan_gate(
+            sym, pmap.get(sym), gate, prescan_exempt=symbol.prescan_exempt
+        )
         if gate_result.blocked:
             skip_lines.append(
                 _build_line(
@@ -326,7 +328,12 @@ def target_split_whole_share_lines(
             (i + 1 for i, s in enumerate(symbols) if s.symbol == sym_cfg.symbol),
             index + 1,
         )
-        pending = evaluate_prescan_gate(sym_cfg.symbol, pmap.get(sym_cfg.symbol), gate)
+        pending = evaluate_prescan_gate(
+            sym_cfg.symbol,
+            pmap.get(sym_cfg.symbol),
+            gate,
+            prescan_exempt=sym_cfg.prescan_exempt,
+        )
         lines.append(
             _build_line(
                 sym_cfg,
@@ -543,7 +550,9 @@ def allocate_portfolio(
             if not symbol.enabled:
                 continue
             sym = symbol.symbol
-            gate_result = evaluate_prescan_gate(sym, pmap.get(sym), gate)
+            gate_result = evaluate_prescan_gate(
+            sym, pmap.get(sym), gate, prescan_exempt=symbol.prescan_exempt
+        )
             if gate_result.blocked:
                 prescan_skip_lines.append(
                     _build_line(

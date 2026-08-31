@@ -246,6 +246,73 @@ def test_five_year_gate_allows_null_zone_when_uncertain():
     assert result.passed is True
 
 
+def test_five_year_uncertain_requires_evidence_when_financials_complete():
+    cols = [f"FY{20 + year}" for year in range(6)]
+    pnl = pd.DataFrame({col: [100.0 + year] for col, year in zip(cols, range(6), strict=True)}, index=["Net Profit"])
+    financials = Financials(
+        pnl=pnl,
+        balance_sheet=pd.DataFrame(),
+        cash_flow=pd.DataFrame(),
+        ratios=pd.DataFrame(),
+        quarterly=pd.DataFrame(),
+        basis="consolidated",
+        years_available=6,
+        source="test",
+        fetched_at=NOW,
+    )
+    result = validate_report(
+        _report(
+            {
+                "verdict": "WATCH",
+                "buy_zone_abs": None,
+                "buy_range_allowed": False,
+                "five_year_business_test": {
+                    "answer": "UNCERTAIN",
+                    "confidence": "LOW",
+                    "evidence_for": [],
+                    "evidence_against": [],
+                },
+            }
+        ),
+        _brief(financials=financials),
+    )
+    assert result.passed is False
+    assert any("five_year_uncertain_evidence" in f for f in result.failures)
+
+
+def test_five_year_uncertain_passes_with_named_evidence():
+    cols = [f"FY{20 + year}" for year in range(6)]
+    pnl = pd.DataFrame({col: [100.0 + year] for col, year in zip(cols, range(6), strict=True)}, index=["Net Profit"])
+    financials = Financials(
+        pnl=pnl,
+        balance_sheet=pd.DataFrame(),
+        cash_flow=pd.DataFrame(),
+        ratios=pd.DataFrame(),
+        quarterly=pd.DataFrame(),
+        basis="consolidated",
+        years_available=6,
+        source="test",
+        fetched_at=NOW,
+    )
+    result = validate_report(
+        _report(
+            {
+                "verdict": "WATCH",
+                "buy_zone_abs": None,
+                "buy_range_allowed": False,
+                "five_year_business_test": {
+                    "answer": "UNCERTAIN",
+                    "confidence": "MEDIUM",
+                    "evidence_for": ["ROCE stable above 15%"],
+                    "evidence_against": ["OPM compressed 300 bps"],
+                },
+            }
+        ),
+        _brief(financials=financials),
+    )
+    assert result.passed is True
+
+
 def _extreme_cash_financials() -> Financials:
     # 3y ΣOCF=10 / ΣPAT=510 → ~0.02 (Mazdock-style escalated weakness)
     empty = pd.DataFrame()

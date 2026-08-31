@@ -48,6 +48,7 @@ class SymbolConfig:
     rotation: RotationConfig = RotationConfig()
     dip: DipConfig = DipConfig()
     topup: TopupConfig = TopupConfig()
+    prescan_exempt: bool = False
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,9 @@ class PrescanGateConfig:
     require_recent_days: int = 90
     skip_when_missing: bool = False
     monthly_auto_prescan: bool = True
+    # Intentional portfolio names tagged HOLDING_MONITOR_ONLY by quant prescan
+    # are still eligible for phased SIP — prescan means skip /analyze, not skip SIP.
+    allow_holding_monitor: bool = True
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,7 @@ def _symbol_from_raw(raw: dict[str, Any]) -> SymbolConfig:
         rotation=_rotation_from_raw(raw.get("rotation")),
         dip=_dip_from_raw(raw.get("dip")),
         topup=_topup_from_raw(raw.get("topup")),
+        prescan_exempt=bool(raw.get("prescan_exempt", False)),
     )
 
 
@@ -185,6 +190,7 @@ def _prescan_gate_from_raw(raw: dict[str, Any] | None) -> PrescanGateConfig:
         require_recent_days=int(item.get("require_recent_days", 90) or 90),
         skip_when_missing=bool(item.get("skip_when_missing", False)),
         monthly_auto_prescan=bool(item.get("monthly_auto_prescan", True)),
+        allow_holding_monitor=bool(item.get("allow_holding_monitor", True)),
     )
 
 

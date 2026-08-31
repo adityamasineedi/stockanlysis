@@ -60,7 +60,7 @@ TOKEN_CAP = 50_000
 # business narrative so Stage 2 can run the five-year test on filing text,
 # not only FINANCIALS. Without a reserve, live ADVENZYMES kept only the
 # auditor report and dropped Management Discussion entirely.
-BUSINESS_TOKEN_RESERVE = 12_000
+BUSINESS_TOKEN_RESERVE = 15_000
 CHARS_PER_TOKEN_ESTIMATE = 4  # rough, dependency-free — no tokenizer in the stack
 MIN_AVG_CHARS_PER_PAGE = 20  # below this, treat the PDF as scanned/image-only
 

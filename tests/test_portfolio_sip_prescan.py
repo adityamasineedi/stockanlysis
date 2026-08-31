@@ -95,3 +95,27 @@ def test_prescan_gate_stale_when_skip_when_missing():
     result = evaluate_prescan_gate("OLD", row, gate)
     assert result.blocked
     assert "stale" in (result.note or "")
+
+
+def test_prescan_gate_allows_holding_monitor_for_intentional_portfolio():
+    gate = PrescanGateConfig(enabled=True, allow_holding_monitor=True)
+    row = {
+        "verdict": "HOLDING_MONITOR_ONLY",
+        "suitable_for_deep_analysis": False,
+        "logged_at": datetime.now(UTC).isoformat(),
+    }
+    result = evaluate_prescan_gate("KAYNES", row, gate)
+    assert not result.blocked
+    assert "monitor-only" in (result.note or "")
+
+
+def test_prescan_exempt_skips_gate():
+    gate = PrescanGateConfig(enabled=True)
+    row = {
+        "verdict": "DATA_UNAVAILABLE_RETRY",
+        "suitable_for_deep_analysis": False,
+        "logged_at": datetime.now(UTC).isoformat(),
+    }
+    result = evaluate_prescan_gate("GOLDBEES", row, gate, prescan_exempt=True)
+    assert not result.blocked
+    assert "exempt" in (result.note or "")

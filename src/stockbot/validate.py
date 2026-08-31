@@ -572,6 +572,63 @@ def _check_five_year_buy_gate(verdict: VerdictJSON) -> CheckResult:
     )
 
 
+def _financial_years_available(brief: Brief) -> int:
+    if brief.financials is None:
+        return 0
+    pnl = brief.financials.pnl
+    if pnl is None or pnl.empty:
+        return 0
+    return len(pnl.columns)
+
+
+def _check_five_year_uncertain_requires_evidence(
+    verdict: VerdictJSON, brief: Brief
+) -> CheckResult:
+    """Block lazy UNCERTAIN when pipeline data is complete — forces named trends."""
+    test = verdict.five_year_business_test
+    if test is None:
+        return CheckResult(
+            name="five_year_uncertain_evidence",
+            passed=True,
+            message="five_year omitted",
+        )
+    answer = (test.answer or "").strip().upper()
+    if answer != "UNCERTAIN":
+        return CheckResult(
+            name="five_year_uncertain_evidence",
+            passed=True,
+            message=f"answer={answer!r}",
+        )
+    if brief.missing:
+        return CheckResult(
+            name="five_year_uncertain_evidence",
+            passed=True,
+            message="pipeline gaps present",
+        )
+    if _financial_years_available(brief) < 5:
+        return CheckResult(
+            name="five_year_uncertain_evidence",
+            passed=True,
+            message="thin financials",
+        )
+    evidence_against = [str(item).strip() for item in (test.evidence_against or []) if str(item).strip()]
+    evidence_for = [str(item).strip() for item in (test.evidence_for or []) if str(item).strip()]
+    if evidence_against or evidence_for:
+        return CheckResult(
+            name="five_year_uncertain_evidence",
+            passed=True,
+            message="evidence listed",
+        )
+    return CheckResult(
+        name="five_year_uncertain_evidence",
+        passed=False,
+        message=(
+            "five_year UNCERTAIN with complete FINANCIALS but empty evidence_for/against — "
+            "cite specific multi-year trends from FINANCIALS or answer YES/NO"
+        ),
+    )
+
+
 _OCF_ROW_ALIASES = (
     "Cash from Operating Activity",
     "Cash from Operating Activities",
@@ -1087,6 +1144,7 @@ def validate_report(
         _check_confidence_cap(verdict, brief),
         _check_buy_gate(verdict),
         _check_five_year_buy_gate(verdict),
+        _check_five_year_uncertain_requires_evidence(verdict, brief),
         _check_wc_buy_gate(verdict, brief),
         _check_anti_chase_flag(verdict, valuation, brief),
         _check_anti_chase_blocks_buy_range(verdict),

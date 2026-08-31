@@ -8,7 +8,8 @@
     "enabled": true,
     "require_recent_days": 90,
     "skip_when_missing": false,
-    "monthly_auto_prescan": true
+    "monthly_auto_prescan": true,
+    "allow_holding_monitor": true
   },
   "portfolios": [
     {
@@ -330,6 +331,7 @@
           "exchange": "NSE",
           "role": "core",
           "enabled": true,
+          "prescan_exempt": true,
           "target_amount_monthly": 3565,
           "min_amount_monthly": 0,
           "max_amount_monthly": 4000,
@@ -351,6 +353,7 @@
           "exchange": "NSE",
           "role": "core",
           "enabled": true,
+          "prescan_exempt": true,
           "target_amount_monthly": 1786,
           "min_amount_monthly": 0,
           "max_amount_monthly": 4000,

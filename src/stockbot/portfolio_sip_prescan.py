@@ -16,6 +16,7 @@ from stockbot.portfolio_sip_schema import PrescanGateConfig, SymbolConfig
 logger = logging.getLogger(__name__)
 
 PROCEED_VERDICTS = frozenset({"AUTO_DEEP_ANALYSIS", "SECTOR_SPECIFIC_REVIEW"})
+MONITOR_ONLY_VERDICTS = frozenset({"HOLDING_MONITOR_ONLY"})
 
 
 @dataclass(frozen=True)
@@ -60,10 +61,15 @@ def evaluate_prescan_gate(
     symbol: str,
     row: dict[str, Any] | None,
     gate: PrescanGateConfig,
+    *,
+    prescan_exempt: bool = False,
 ) -> PrescanGateResult:
     """Return whether allocation should be blocked for this symbol."""
     if not gate.enabled:
         return PrescanGateResult(blocked=False)
+
+    if prescan_exempt:
+        return PrescanGateResult(blocked=False, note="prescan exempt (ETF/non-equity)")
 
     if row is None:
         if gate.skip_when_missing:
@@ -105,6 +111,13 @@ def evaluate_prescan_gate(
                 )
 
     if not suitable and verdict not in PROCEED_VERDICTS:
+        if gate.allow_holding_monitor and verdict in MONITOR_ONLY_VERDICTS:
+            return PrescanGateResult(
+                blocked=False,
+                note="prescan monitor-only (SIP ok)",
+                verdict=verdict or None,
+                suitable=False,
+            )
         return PrescanGateResult(
             blocked=True,
             note=f"prescan {verdict}",
