@@ -90,6 +90,7 @@ class PipelineResult:
         "insufficient_data",
         "budget_exceeded",
         "analysis_cost_exceeded",
+        "analysis_truncated",
         "analysis_runtime_exceeded",
         "render_failed",
         "busy",
@@ -109,6 +110,18 @@ class AnalysisCostExceeded(Exception):
         super().__init__(
             f"Per-analysis cost cap (₹{PER_ANALYSIS_COST_CAP_INR:.0f}) exceeded: "
             f"₹{spent_inr:.2f} spent so far on this analysis"
+        )
+
+
+class Stage2TruncationExhausted(Exception):
+    """Stage 2 hit max_tokens repeatedly without a complete report."""
+
+    def __init__(self, spent_inr: float, attempts: int):
+        self.spent_inr = spent_inr
+        self.attempts = attempts
+        super().__init__(
+            f"Stage 2 truncated {attempts} time(s) without completing "
+            f"(₹{spent_inr:.2f} spent — output hit max_tokens each time)"
         )
 
 
@@ -163,7 +176,10 @@ def _call_stage2_absorbing_truncation(
         if running_cost_inr > PER_ANALYSIS_COST_CAP_INR:
             raise AnalysisCostExceeded(running_cost_inr)
         return report_text, usage, running_cost_inr
-    raise AnalysisCostExceeded(running_cost_inr)  # truncation retries exhausted without ever completing
+    raise Stage2TruncationExhausted(
+        running_cost_inr,
+        MAX_TRUNCATION_RETRIES + 1,
+    )
 
 
 def _run_stage2_with_validation(
@@ -247,6 +263,8 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
         )
     except AnalysisCostExceeded as exc:
         return PipelineResult(status="analysis_cost_exceeded", spent_inr=exc.spent_inr)
+    except Stage2TruncationExhausted as exc:
+        return PipelineResult(status="analysis_truncated", spent_inr=exc.spent_inr)
     except AnalysisRuntimeExceeded:
         spent_so_far = stage1_usage["cost_inr"]
         return PipelineResult(status="analysis_runtime_exceeded", spent_inr=spent_so_far)

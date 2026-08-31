@@ -16,6 +16,7 @@ empty/thin-context guards.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import UTC, datetime
@@ -26,7 +27,7 @@ import pandas as pd
 from pydantic import BaseModel
 
 from stockbot.analysis_routing import Stage2Mode
-from stockbot.constitution_gates import should_anti_chase
+from stockbot.constitution_gates import apply_constitution_overrides, should_anti_chase
 from stockbot.expected_return import report_contains_yearly_return_ladder
 from stockbot.llm.verdict import (
     ValuationComputed,
@@ -38,6 +39,8 @@ from stockbot.llm.verdict import (
 from stockbot.models import Brief, ValidationResult
 
 logger = logging.getLogger(__name__)
+
+_JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 
 STALENESS_TRADING_DAYS = 5
 
@@ -187,6 +190,14 @@ AUTO_FIXABLE_CHECKS: frozenset[str] = frozenset(
     {
         "confidence_scale_over_ten",
         "no_backtick_wrapped_rupees",
+    }
+)
+
+# Constitution gates the model should set but Python can patch deterministically.
+CONSTITUTION_AUTO_FIX_CHECKS: frozenset[str] = frozenset(
+    {
+        "anti_chase_flag",
+        "anti_chase_buy_block",
     }
 )
 
@@ -990,15 +1001,50 @@ def classify_retry_mode(result: ValidationResult) -> Literal["narrow", "full"]:
     return "full"
 
 
+def _patch_verdict_json_block(report_text: str, verdict: VerdictJSON) -> str:
+    """Replace the last ```json verdict block with an updated payload."""
+    matches = list(_JSON_BLOCK_RE.finditer(report_text))
+    if not matches:
+        return report_text
+    last = matches[-1]
+    new_inner = json.dumps(verdict.model_dump(mode="json"), indent=2)
+    replacement = f"```json\n{new_inner}\n```"
+    return report_text[: last.start()] + replacement + report_text[last.end() :]
+
+
 def try_auto_fix_report(
     report_text: str, result: ValidationResult, brief: Brief, *, stage2_mode: Stage2Mode = "FULL"
 ) -> tuple[str, ValidationResult] | None:
-    """Apply deterministic prose fixes when failures are purely formatting."""
+    """Apply deterministic fixes when failures are purely formatting/constitution."""
     names = _failed_check_names(result)
-    if not names or not names <= AUTO_FIXABLE_CHECKS:
+    if not names:
         return None
 
     fixed = report_text
+    validation = result
+
+    if names <= CONSTITUTION_AUTO_FIX_CHECKS:
+        try:
+            verdict = extract_verdict_json(fixed)
+        except VerdictParseError:
+            return None
+        valuation = compute_valuation(verdict.valuation_inputs)
+        patched = apply_constitution_overrides(verdict, valuation, brief)
+        fixed = _patch_verdict_json_block(fixed, patched)
+        validation = validate_report(fixed, brief, stage2_mode=stage2_mode)
+        if validation.passed:
+            logger.info(
+                "Auto-fixed constitution validation failures without Stage 2 retry: %s",
+                sorted(names),
+            )
+            return fixed, validation
+        names = _failed_check_names(validation)
+        if not names:
+            return fixed, validation
+
+    if not names or not names <= AUTO_FIXABLE_CHECKS:
+        return (fixed, validation) if validation.passed else None
+
     if "confidence_scale_over_ten" in names:
 
         def _fix_confidence_scale(match: re.Match[str]) -> str:

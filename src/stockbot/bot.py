@@ -80,6 +80,7 @@ from stockbot.models import AmbiguousMatch, Analysis, TickerInfo
 from stockbot.monitor.health_audit import run_health_audit
 from stockbot.pipeline import (
     ANALYSIS_RUNTIME_CAP_SECONDS,
+    MAX_TRUNCATION_RETRIES,
     PipelineResult,
     run_full_analysis,
 )
@@ -551,9 +552,19 @@ async def _deliver_result(update: Update, result: PipelineResult, status_message
 
     if result.status == "analysis_cost_exceeded":
         await status_message.edit_text(
-            f"This analysis hit its per-run cost cap (₹{result.spent_inr:.2f} spent) before "
-            f"producing a validated verdict, and was stopped rather than left to keep retrying. "
-            f"Try again, or send /spend to check the monthly total."
+            f"This analysis hit its per-run cost cap (₹80) before producing a validated "
+            f"verdict (₹{result.spent_inr:.2f} spent on this attempt). "
+            f"Try again later, or send /spend to check the monthly total."
+        )
+        return
+
+    if result.status == "analysis_truncated":
+        attempts = MAX_TRUNCATION_RETRIES + 1
+        await status_message.edit_text(
+            f"Stage 2 output was cut off {attempts} times before the report could finish "
+            f"(₹{result.spent_inr:.2f} spent — not the ₹80 cap). Long FULL analyses "
+            f"(e.g. utilities) hit this most often. Wait a few minutes and retry, "
+            f"or send /spend to check the monthly total."
         )
         return
 

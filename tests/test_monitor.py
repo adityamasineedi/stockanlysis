@@ -42,6 +42,43 @@ def test_detects_large_stage1_input(tmp_path, monkeypatch):
     assert any("Stage 1 input" in t for t in titles)
 
 
+def test_cache_write_warning_only_on_second_stage2_call(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.sqlite3"
+    monkeypatch.setattr("stockbot.storage.DB_PATH", db_path)
+    monkeypatch.setattr("stockbot.costs.DB_PATH", db_path)
+    monkeypatch.setattr("stockbot.monitor.health_audit.DB_PATH", db_path)
+    monkeypatch.setattr("stockbot.monitor.health_audit.LOGS_DIR", tmp_path / "logs")
+
+    now = datetime.now(UTC)
+    log_call(
+        "claude-sonnet-5",
+        input_tokens=10_000,
+        output_tokens=8_000,
+        cache_creation_tokens=19_000,
+        cached_tokens=0,
+        stage="stage2",
+        ticker="TORNTPOWER",
+        called_at=now,
+    )
+    report_first = run_health_audit(days=1)
+    first_titles = [f.title for f in report_first.findings]
+    assert not any("cache" in t.lower() for t in first_titles)
+
+    log_call(
+        "claude-sonnet-5",
+        input_tokens=10_000,
+        output_tokens=8_000,
+        cache_creation_tokens=19_000,
+        cached_tokens=0,
+        stage="stage2",
+        ticker="TORNTPOWER",
+        called_at=now,
+    )
+    report_second = run_health_audit(days=1)
+    second_titles = [f.title for f in report_second.findings]
+    assert any("cache" in t.lower() for t in second_titles)
+
+
 def test_to_telegram_html_escapes_and_summarizes():
     from stockbot.monitor.health_audit import Finding, HealthAuditReport
 
