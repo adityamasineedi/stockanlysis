@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     force_stage2_full: bool = False
     # Block /analyze unless prescan eligibility passes (AUTO_DEEP or SECTOR_REVIEW).
     require_prescan_for_analyze: bool = True
+    # Relax constitution gates so WATCH/UNCERTAIN names with evidence can still
+    # get buy ranges; skips prescan for /analyze; softens WC/anti-chase/data gates.
+    trade_friendly_mode: bool = True
     # Comma-separated Telegram chat IDs allowed to use the bot. Empty = allow all
     # (private single-user bots). Set to your numeric chat id to block strangers.
     telegram_allowed_chat_ids: str = ""

@@ -101,7 +101,48 @@ def effective_confidence_cap(brief: Brief) -> int:
     return min(PIPELINE_CONFIDENCE_CAP, brief.confidence_ceiling)
 
 
+from stockbot.trade_policy import trade_friendly_mode
+
+
+def _constitution_rule_9_text() -> str:
+    if trade_friendly_mode():
+        return (
+            "9. Quality-First constitution (trade-friendly mode ON): complete "
+            "five_year_business_test before any Ideal Buy / Add More zone. If "
+            "answer is NO, withhold buy/add ranges. If UNCERTAIN, you MAY issue "
+            "buy_zone_abs when evidence_for lists at least two specific, "
+            "filing-backed trends (or one trend with confidence HIGH) and set "
+            "buy_range_allowed=true — label the zone as thesis-conditional in "
+            "§13. For defence/EPC/project names with extremely weak reported "
+            "cash conversion (e.g. 3y ΣCFO/ΣPAT < 0.25, or sharply negative "
+            "OCF vs profit), set wc_gap_classification; WORKING_CAPITAL_STRESS "
+            "still blocks ranges. INCONCLUSIVE/DATA_OR_SCOPE_ERROR may carry a "
+            "range when reconciled in prose. A lower price alone never creates "
+            "an add. When a buy range is allowed, present the position_building_plan "
+            "as a 4-tranche table per §13. Anti-chase pauses new capital after "
+            "abnormal short-term surges unless price is already inside the issued "
+            "buy zone. Profit review = rebalancing review, not an exact top."
+        )
+    return (
+        "9. Quality-First constitution (system prompt): complete "
+        "five_year_business_test before any Ideal Buy / Add More zone. If answer "
+        "is NO or UNCERTAIN, set buy_range_allowed=false, add_range_allowed=false, "
+        "buy_zone_abs=null, and do not invent buy/add levels. For defence/EPC/project "
+        "names with extremely weak reported cash conversion (e.g. 3y ΣCFO/ΣPAT < 0.25, "
+        "or sharply negative OCF vs profit), set wc_gap_classification and withhold "
+        "buy/add ranges unless the classification is TEMPORARY_BILLING_CYCLE with a "
+        "year-by-year CFO-to-PAT reconciliation in the report. A lower price alone "
+        "never creates an add. When a buy range is allowed, present the "
+        "position_building_plan as a 4-tranche table per §13 — tranche 1 may deploy "
+        "at current price once the quality/five-year/anti-chase gates pass; tranches "
+        "2-4 stay valuation-gated and conditional, never automatic solely because "
+        "price fell. Anti-chase pauses new capital (including tranche 1) after "
+        "abnormal short-term surges. Profit review = rebalancing review, not an exact top."
+    )
+
+
 def hard_injections(confidence_cap: int) -> str:
+    rule_9 = _constitution_rule_9_text()
     return f"""
 IMPORTANT — pipeline constraints, read before writing the report:
 
@@ -155,20 +196,7 @@ without cross-checking filings/results.
 highlights when present. Prefer these over news for backlog size; mark anything \
 not directly supported in FINANCIALS as [UNVERIFIED] in prose.
 
-9. Quality-First constitution (system prompt): complete five_year_business_test \
-before any Ideal Buy / Add More zone. If answer is NO or UNCERTAIN, set \
-buy_range_allowed=false, add_range_allowed=false, buy_zone_abs=null, and do \
-not invent buy/add levels. For defence/EPC/project names with extremely weak \
-reported cash conversion (e.g. 3y ΣCFO/ΣPAT < 0.25, or sharply negative OCF \
-vs profit), set wc_gap_classification and withhold buy/add ranges unless the \
-classification is TEMPORARY_BILLING_CYCLE with a year-by-year CFO-to-PAT \
-reconciliation in the report. A lower price alone never creates an add. \
-When a buy range is allowed, present the position_building_plan as a \
-4-tranche table per §13 — tranche 1 may deploy at current price once the \
-quality/five-year/anti-chase gates pass; tranches 2-4 stay valuation-gated \
-and conditional, never automatic solely because price fell. Anti-chase \
-pauses new capital (including tranche 1) after abnormal short-term surges. \
-Profit review = rebalancing review, not an exact top.
+9. {rule_9}
 
 10. Read <data_inventory> before §15A. If pipeline_missing is empty and \
 FINANCIALS span multiple years, base five_year_business_test on those \

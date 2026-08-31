@@ -108,3 +108,18 @@ def test_buy_zone_price_ceiling_none_without_inputs():
     assert buy_zone_price_ceiling({"fair_value_abs": [210.0, 231.0]}) is None
     assert buy_zone_price_ceiling({"risk": "NONSENSE", "fair_value_abs": [1.0, 2.0]}) is None
     assert buy_zone_price_ceiling({"risk": "MEDIUM", "fair_value_abs": [0.0, 0.0]}) is None
+
+
+def test_uncertain_with_evidence_not_blocked_in_trade_friendly_mode(monkeypatch):
+    from stockbot.action_ranges import capital_range_blocked_reason
+
+    monkeypatch.setattr("stockbot.trade_policy.settings.trade_friendly_mode", True)
+    verdict = {
+        "five_year_business_test": {
+            "answer": "UNCERTAIN",
+            "confidence": "HIGH",
+            "evidence_for": ["EPS up 3y", "debt down 3y"],
+            "evidence_against": ["margin flat"],
+        }
+    }
+    assert capital_range_blocked_reason(verdict) is None

@@ -57,10 +57,8 @@ def capital_range_blocked_reason(verdict_json: dict) -> str | None:
     blocker per the v3 prompt — printed a bare "not issued" with no reason,
     while the add-more line on the very same card said "(five-year: …)".
     """
-    from stockbot.constitution_gates import (
-        should_anti_chase_from_dict,
-        wc_gap_blocks_buy_zone,
-    )
+    from stockbot.constitution_gates import should_anti_chase_from_dict
+    from stockbot.trade_policy import five_year_blocks_capital_range, wc_gap_blocks_buy_zone
 
     if bool(verdict_json.get("anti_chase_flag")) or should_anti_chase_from_dict(verdict_json)[0]:
         return "anti-chase: pause new capital"
@@ -70,10 +68,9 @@ def capital_range_blocked_reason(verdict_json: dict) -> str | None:
     if wc_gap_blocks_buy_zone(wc_gap) and wc_norm:
         return f"WC: {wc_norm}"
 
-    five_year = verdict_json.get("five_year_business_test") or {}
-    answer = str(five_year.get("answer") or "").strip().upper() if isinstance(five_year, dict) else ""
-    if answer and answer != "YES":
-        return f"five-year test: {answer}"
+    five_year_reason = five_year_blocks_capital_range(verdict_json)
+    if five_year_reason is not None:
+        return five_year_reason
 
     return None
 
@@ -154,6 +151,14 @@ def resolve_add_more_zone_abs(verdict_json: dict) -> tuple[float, float] | None:
         fair_value_bear_abs=bear,
         buy_zone_abs=buy,
     )
+
+
+def format_bear_entry_reference_line(verdict_json: dict) -> str | None:
+    """Valuation anchor when constitution withholds a buy zone."""
+    bear = _resolve_bear_fv_floats(verdict_json)
+    if bear is None:
+        return None
+    return f"Entry ref (bear FV): ₹{bear[0]:.2f}–₹{bear[1]:.2f} — valuation anchor, not a buy zone"
 
 
 def _resolve_bear_fv_floats(verdict_json: dict) -> tuple[float, float] | None:

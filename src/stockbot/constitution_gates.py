@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
 from stockbot.models import Brief
+from stockbot.trade_policy import trade_friendly_mode, wc_gap_blocks_buy_zone
 
 if TYPE_CHECKING:
     from stockbot.llm.verdict import ValuationComputed, VerdictJSON
@@ -20,34 +21,29 @@ ANTI_CHASE_PE_THRESHOLD = 35.0
 _PRICE_ABOVE_BASE_FV_TOLERANCE = 0.005  # 0.5% — float wiggle
 _VALUATION_TENSION_BEAR_MULTIPLIER = 2.0
 
-# The only wc_gap_classification that unlocks buy/add ranges. Mirrors
-# validate.py's _WC_UNLOCK_CLASSIFICATION and issuer_routing.py's
-# WC_GAP_UNLOCKS_VALUATION (duplicated rather than imported — importing
-# validate here would close a cycle, since validate imports this module).
-_WC_GAP_UNLOCK_CLASSIFICATION = "TEMPORARY_BILLING_CYCLE"
+
+def _buy_zone_high(verdict: VerdictJSON) -> float | None:
+    if verdict.buy_zone_abs is None:
+        return None
+    return float(verdict.buy_zone_abs[1])
 
 
-def wc_gap_blocks_buy_zone(wc_gap_classification: object) -> bool:
-    """True when the model flagged a working-capital gap it did not resolve.
+def _buy_zone_high_from_dict(verdict_json: dict) -> float | None:
+    raw = verdict_json.get("buy_zone_abs")
+    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+        return None
+    try:
+        return float(raw[1])
+    except (TypeError, ValueError):
+        return None
 
-    Driven solely by the model's own structured ``wc_gap_classification`` —
-    the single source of truth for both the rendered report
-    (``apply_constitution_overrides``, before render) and the Telegram card
-    (``refresh_constitution_fields``), so the two can no longer disagree
-    about whether a buy zone was issued.
 
-    A null/blank classification means no WC gap was flagged and does not
-    block: the genuinely dangerous case (extreme reported cash conversion
-    with no classification) is already caught deterministically upstream by
-    ``validate._check_wc_buy_gate``, which reads the FINANCIALS numbers
-    rather than guessing from report prose.
-    """
-    if wc_gap_classification is None:
-        return False
-    text = str(wc_gap_classification).strip().upper()
-    if not text:
-        return False
-    return text != _WC_GAP_UNLOCK_CLASSIFICATION
+def _in_trade_friendly_buy_zone(price: float, buy_zone_high: float | None) -> bool:
+    return (
+        trade_friendly_mode()
+        and buy_zone_high is not None
+        and price <= buy_zone_high * 1.02
+    )
 
 
 def _trailing_pe(verdict: VerdictJSON, brief: Brief) -> float | None:
@@ -75,6 +71,9 @@ def should_anti_chase(
     """Return (True, reason) when anti_chase_flag must be set."""
     base_high = valuation.fair_value_base_abs[1]
     price = verdict.current_price_abs
+    buy_high = _buy_zone_high(verdict)
+    if _in_trade_friendly_buy_zone(price, buy_high):
+        return False, ""
     if price >= base_high * (1.0 - _PRICE_ABOVE_BASE_FV_TOLERANCE):
         return (
             True,
@@ -102,6 +101,10 @@ def should_anti_chase_from_dict(verdict_json: dict) -> tuple[bool, str]:
     """Anti-chase from stored verdict_json (Telegram card / cache — no Brief needed)."""
     price = verdict_json.get("current_price_abs")
     if price is None:
+        return False, ""
+
+    buy_high = _buy_zone_high_from_dict(verdict_json)
+    if _in_trade_friendly_buy_zone(float(price), buy_high):
         return False, ""
 
     base_high: float | None = None

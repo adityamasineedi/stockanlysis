@@ -30,6 +30,7 @@ from stockbot.analysis_routing import (
 )
 from stockbot.brief import assemble_brief, to_markdown
 from stockbot.config import settings
+from stockbot.data_readiness import assemble_brief_for_analysis
 from stockbot.constitution_gates import (
     apply_constitution_overrides,
     sync_live_price_into_verdict,
@@ -88,6 +89,7 @@ class PipelineResult:
         "ambiguous",
         "not_found",
         "insufficient_data",
+        "data_unready",
         "budget_exceeded",
         "analysis_cost_exceeded",
         "analysis_truncated",
@@ -233,7 +235,21 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     if not budget_ok:
         return PipelineResult(status="budget_exceeded", spent_inr=spent)
 
-    brief = assemble_brief(ticker)
+    brief, readiness = assemble_brief_for_analysis(ticker)
+    if not readiness.ready_for_llm:
+        logger.warning(
+            "%s data preflight blocked LLM spend: %s",
+            ticker.symbol,
+            "; ".join(readiness.blockers),
+        )
+        failures = list(readiness.blockers)
+        failures.extend(f"warning: {w}" for w in readiness.warnings)
+        return PipelineResult(
+            status="data_unready",
+            validation_failures=failures,
+            spent_inr=0.0,
+        )
+
     prescan_routing = analysis_routing_from_brief(brief)
     extraction, stage1_usage = run_stage1(brief)
     stage2_mode = resolve_stage2_mode(ticker, extraction, prescan=prescan_routing)

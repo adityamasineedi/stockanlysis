@@ -80,7 +80,20 @@ def _patch_common(monkeypatch, *, resolve_result=TICKER, cached=None, budget_ok=
     )
     monkeypatch.setattr(pipeline_module.storage, "get_cached", lambda ticker, max_age_days=7: cache_hit)
     monkeypatch.setattr(pipeline_module, "check_budget", lambda: (budget_ok, spent))
-    monkeypatch.setattr(pipeline_module, "assemble_brief", lambda ticker: _brief())
+
+    def _assemble_ready(ticker):
+        from stockbot.data_readiness import DataReadinessReport
+
+        return _brief(), DataReadinessReport(
+            symbol=ticker.symbol,
+            ready_for_llm=True,
+            blockers=(),
+            warnings=(),
+            fields=(),
+            confidence_ceiling=10,
+        )
+
+    monkeypatch.setattr(pipeline_module, "assemble_brief_for_analysis", _assemble_ready)
     monkeypatch.setattr(
         pipeline_module, "run_stage1", lambda brief: (ExtractionResult(), {"input_tokens": 100, "output_tokens": 50, "cost_inr": 5.0})
     )
@@ -134,7 +147,7 @@ def test_cache_hit_skips_budget_and_llm_entirely(monkeypatch):
         raise AssertionError("should not be called on a cache hit")
 
     monkeypatch.setattr(pipeline_module, "check_budget", _fail_if_called)
-    monkeypatch.setattr(pipeline_module, "assemble_brief", _fail_if_called)
+    monkeypatch.setattr(pipeline_module, "assemble_brief_for_analysis", _fail_if_called)
 
     result = run_full_analysis("TEST")
     assert result.status == "ok"
@@ -153,11 +166,39 @@ def test_budget_exceeded_short_circuits_before_any_llm_call(monkeypatch):
     def _fail_if_called(*args, **kwargs):
         raise AssertionError("should not reach the brief/LLM stage")
 
-    monkeypatch.setattr(pipeline_module, "assemble_brief", _fail_if_called)
+    monkeypatch.setattr(pipeline_module, "assemble_brief_for_analysis", _fail_if_called)
 
     result = run_full_analysis("TEST")
     assert result.status == "budget_exceeded"
     assert result.spent_inr == 1450.0
+
+
+def test_data_unready_blocks_before_llm(monkeypatch):
+    from stockbot.data_readiness import DataReadinessReport
+
+    _patch_common(monkeypatch)
+
+    def _assemble_unready(ticker):
+        return _brief(), DataReadinessReport(
+            symbol=ticker.symbol,
+            ready_for_llm=False,
+            blockers=("Financial statements missing",),
+            warnings=(),
+            fields=(),
+            confidence_ceiling=4,
+        )
+
+    monkeypatch.setattr(pipeline_module, "assemble_brief_for_analysis", _assemble_unready)
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("should not reach Stage 1")
+
+    monkeypatch.setattr(pipeline_module, "run_stage1", _fail_if_called)
+
+    result = run_full_analysis("TEST")
+    assert result.status == "data_unready"
+    assert result.spent_inr == 0.0
+    assert "Financial statements missing" in result.validation_failures[0]
 
 
 def test_successful_run_saves_and_returns_ok(monkeypatch):

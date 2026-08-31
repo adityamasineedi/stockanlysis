@@ -55,6 +55,7 @@ from stockbot.action_ranges import (
     add_more_range_blocked_reason,
     buy_zone_price_ceiling,
     capital_range_blocked_reason,
+    format_bear_entry_reference_line,
     resolve_add_more_zone_abs,
 )
 from stockbot.bot_suggestions import (
@@ -75,9 +76,10 @@ from stockbot.constitution_gates import (
     should_anti_chase_from_dict,
     wc_gap_blocks_buy_zone,
 )
+from stockbot.data_readiness import assemble_brief_for_analysis
 from stockbot.costs import month_to_date_spend
 from stockbot.expected_return import format_expected_return_telegram
-from stockbot.fetch.tickers import resolve_ticker
+from stockbot.fetch.tickers import load_symbol_table, resolve_ticker
 from stockbot.models import AmbiguousMatch, Analysis, TickerInfo
 from stockbot.monitor.health_audit import run_health_audit
 from stockbot.pipeline import (
@@ -86,6 +88,7 @@ from stockbot.pipeline import (
     PipelineResult,
     run_full_analysis,
 )
+from stockbot.trade_policy import prescan_required_for_analyze
 from stockbot.portfolio_screener.eligibility import (
     check_deep_analysis_eligibility,
     format_analyze_gate_block,
@@ -450,6 +453,9 @@ def format_verdict_reply(
         _format_add_more_range_line(v),
         _format_take_profit_targets_line(v),
     ]
+    entry_ref = format_bear_entry_reference_line(v)
+    if entry_ref and capital_range_blocked_reason(v) is not None:
+        action_range_lines.append(entry_ref)
     profit_review_line = _format_profit_review_line(v)
     if profit_review_line:
         action_range_lines.append(profit_review_line)
@@ -581,6 +587,17 @@ async def _deliver_result(
         await status_message.edit_text(
             f"Monthly budget reached (₹{result.spent_inr:.0f} spent this month). "
             f"No new analyses until next month — the cap is real, not advisory."
+        )
+        return
+
+    if result.status == "data_unready":
+        failures = "\n".join(f"- {esc(f)}" for f in (result.validation_failures or []))
+        await status_message.edit_text(
+            "Data preflight failed — no LLM tokens spent.\n"
+            "Free sources and fallbacks did not gather enough for a full report.\n\n"
+            f"{failures}\n\n"
+            "Run /preflight SYMBOL for the full source checklist, then retry /analyze.",
+            parse_mode=ParseMode.HTML,
         )
         return
 
@@ -735,7 +752,7 @@ async def _run_and_reply(
         return
 
     try:
-        if settings.require_prescan_for_analyze and not force:
+        if prescan_required_for_analyze() and not force:
             allowed = await _check_analyze_eligibility_gate(update, query)
             if not allowed:
                 return
@@ -927,6 +944,42 @@ async def handle_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
 
 
+async def handle_preflight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Free data-layer audit — no LLM spend."""
+    if await _reject_if_unauthorized(update):
+        return
+    _clear_awaiting_symbol(context)
+    query = " ".join(context.args or []).strip()
+    if not query:
+        await update.message.reply_text(
+            "Send a symbol to check data readiness before /analyze, e.g.\n"
+            "<code>/preflight ADVENZYMES</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    status = await update.message.reply_text(f"Preflight {esc(query)} — fetching free sources…")
+    try:
+        table = await asyncio.to_thread(load_symbol_table)
+        resolved = await asyncio.to_thread(resolve_ticker, query, table)
+    except Exception as exc:
+        await status.edit_text(f"Preflight failed: {esc(exc)}")
+        return
+    if resolved is None:
+        await status.edit_text("Couldn't find that company. Try the exact NSE symbol.")
+        return
+    if isinstance(resolved, AmbiguousMatch):
+        await status.edit_text(format_ambiguous_reply(resolved), parse_mode=ParseMode.HTML)
+        return
+    ticker: TickerInfo = resolved
+    try:
+        _brief, report = await asyncio.to_thread(assemble_brief_for_analysis, ticker)
+    except Exception as exc:
+        logger.exception("preflight failed for %r", query)
+        await status.edit_text(f"Preflight fetch failed: {esc(exc)}")
+        return
+    await status.edit_text(report.telegram_summary(), parse_mode=ParseMode.HTML)
+
+
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_unauthorized(update):
         return
@@ -946,6 +999,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/analyze <company> — deep analysis (digest .md attached by default)\n"
         "/analyze full <symbol> — attach full §1–§16 report .md\n"
         "/analyze force <symbol> — bypass gate (not recommended)\n"
+        "/preflight <symbol> — free data audit before /analyze (no LLM spend)\n"
+        "Trade-friendly mode ON: easier buy ranges on UNCERTAIN+evidence; prescan skipped for /analyze\n"
         "/refresh SYMBOL — clear cached analysis for symbol\n"
         "/refresh backfill — recompute gates + expected_return on cached rows\n"
         "/sip BEL 5000 — monthly plan with dip alerts and projections\n"
@@ -1672,6 +1727,7 @@ def build_application() -> Application:
     application = (
         Application.builder().token(settings.telegram_bot_token).post_init(_register_commands).build()
     )
+    application.add_handler(CommandHandler("preflight", handle_preflight))
     application.add_handler(CommandHandler("prescan", handle_prescan))
     application.add_handler(CommandHandler("candidates", handle_candidates))
     application.add_handler(CommandHandler("analyze", handle_analyze))

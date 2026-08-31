@@ -225,6 +225,30 @@ def test_five_year_gate_blocks_buy_zone_when_answer_not_yes():
     assert any("five_year_buy_gate" in f for f in result.failures)
 
 
+def test_five_year_uncertain_with_evidence_allows_buy_zone_in_trade_friendly(monkeypatch):
+    monkeypatch.setattr("stockbot.trade_policy.settings.trade_friendly_mode", True)
+    result = validate_report(
+        _report(
+            {
+                "verdict": "WATCH",
+                "buy_zone_abs": [370.0, 380.0],
+                "buy_range_allowed": True,
+                "five_year_business_test": {
+                    "answer": "UNCERTAIN",
+                    "confidence": "HIGH",
+                    "evidence_for": [
+                        "Revenue grew in 4 of last 5 years per FINANCIALS",
+                        "Net debt/EBITDA improved FY22-FY25",
+                    ],
+                    "evidence_against": ["OCF/PAT volatile on project billing"],
+                },
+            }
+        ),
+        _brief(),
+    )
+    assert result.passed is True
+
+
 def test_five_year_gate_allows_null_zone_when_uncertain():
     result = validate_report(
         _report(

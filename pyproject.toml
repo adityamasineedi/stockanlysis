@@ -33,6 +33,7 @@ stockbot-dry-run = "stockbot.dry_run:main"
 stockbot-ab-test = "stockbot.ab_test:main"
 stockbot-prescreen = "stockbot.portfolio_screener.cli:main"
 stockbot-prescan-query = "stockbot.portfolio_screener.prescan_query_cli:main"
+stockbot-preflight = "stockbot.preflight_cli:main"
 stockbot-monitor = "stockbot.monitor.cli:main"
 
 [build-system]

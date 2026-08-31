@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 from stockbot.analysis_routing import Stage2Mode
 from stockbot.constitution_gates import apply_constitution_overrides, should_anti_chase
+from stockbot.trade_policy import five_year_allows_buy_zone, wc_gap_blocks_buy_zone
 from stockbot.expected_return import report_contains_yearly_return_ladder
 from stockbot.llm.verdict import (
     ValuationComputed,
@@ -553,8 +554,9 @@ def _check_five_year_buy_gate(verdict: VerdictJSON) -> CheckResult:
             message="five_year_business_test omitted — gate not enforced on legacy JSON",
         )
     answer = (test.answer or "").strip().upper()
-    if answer == "YES":
-        return CheckResult(name="five_year_buy_gate", passed=True, message="YES")
+    if five_year_allows_buy_zone(test):
+        label = answer or "YES"
+        return CheckResult(name="five_year_buy_gate", passed=True, message=label)
 
     blocked_verdicts = {"BUY", "BUY ON CORRECTION"}
     range_claimed = verdict.buy_range_allowed is True or verdict.add_range_allowed is True
@@ -708,7 +710,7 @@ def _check_wc_buy_gate(verdict: VerdictJSON, brief: Brief) -> CheckResult:
     claiming = _claims_buy_or_add_range(verdict)
     extreme = brief_shows_extreme_cash_conversion(brief)
 
-    if classification in _WC_BLOCK_CLASSIFICATIONS and claiming:
+    if classification is not None and claiming and wc_gap_blocks_buy_zone(classification):
         return CheckResult(
             name="wc_buy_gate",
             passed=False,
@@ -719,27 +721,17 @@ def _check_wc_buy_gate(verdict: VerdictJSON, brief: Brief) -> CheckResult:
         )
 
     if extreme and claiming and classification != _WC_UNLOCK_CLASSIFICATION:
-        return CheckResult(
-            name="wc_buy_gate",
-            passed=False,
-            message=(
-                "Reported cash conversion is extremely weak in FINANCIALS; "
-                f"set wc_gap_classification={_WC_UNLOCK_CLASSIFICATION} with "
-                "year-by-year CFO-to-PAT evidence, or set buy_zone_abs=null and "
-                "buy_range_allowed=false"
-            ),
-        )
-
-    if (
-        classification is not None
-        and classification != _WC_UNLOCK_CLASSIFICATION
-        and claiming
-    ):
-        return CheckResult(
-            name="wc_buy_gate",
-            passed=False,
-            message=f"unknown/blocking wc_gap_classification={classification!r}",
-        )
+        if classification is None or wc_gap_blocks_buy_zone(classification):
+            return CheckResult(
+                name="wc_buy_gate",
+                passed=False,
+                message=(
+                    "Reported cash conversion is extremely weak in FINANCIALS; "
+                    f"set wc_gap_classification={_WC_UNLOCK_CLASSIFICATION} with "
+                    "year-by-year CFO-to-PAT evidence, or set buy_zone_abs=null and "
+                    "buy_range_allowed=false"
+                ),
+            )
 
     return CheckResult(
         name="wc_buy_gate",

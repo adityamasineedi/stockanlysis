@@ -18,8 +18,9 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from stockbot.brief import assemble_brief, to_markdown
+from stockbot.brief import to_markdown
 from stockbot.config import PROJECT_ROOT, setup_logging
+from stockbot.data_readiness import assemble_brief_for_analysis
 from stockbot.fetch.tickers import load_symbol_table, resolve_ticker
 from stockbot.models import AmbiguousMatch, TickerInfo
 
@@ -56,34 +57,37 @@ def _report_for_ticker(query: str, table) -> str:
 
     t0 = time.monotonic()
     try:
-        result = assemble_brief(ticker)
+        _brief, readiness = assemble_brief_for_analysis(ticker)
     except Exception as exc:  # noqa: BLE001 - this harness's job is to isolate one bad ticker
         lines.append(f"**FETCH FAILED (fatal — likely price/technicals)**: {exc}")
         lines.append("")
         return "\n".join(lines)
     elapsed = time.monotonic() - t0
 
-    basis = result.financials.basis if result.financials else "MISSING"
+    basis = _brief.financials.basis if _brief.financials else "MISSING"
     lines.extend(
         [
             f"- Fetched in {elapsed:.1f}s",
-            f"- Confidence ceiling: {result.confidence_ceiling}/10",
-            f"- Token count: {result.token_count}",
+            f"- **Ready for LLM:** {'yes' if readiness.ready_for_llm else 'no'}",
+            f"- Confidence ceiling: {_brief.confidence_ceiling}/10",
+            f"- Token count: {_brief.token_count}",
             f"- Financials basis: {basis}",
-            f"- Annual report truncated: {result.annual_report.truncated}",
-            f"- Annual report sections found: {list(result.annual_report.sections.keys())}",
+            f"- Annual report truncated: {_brief.annual_report.truncated}",
+            f"- Annual report sections found: {list(_brief.annual_report.sections.keys())}",
+            "",
+            readiness.markdown_summary(),
             "",
         ]
     )
 
-    if result.missing:
+    if _brief.missing:
         lines.append("### MISSING / degraded modules")
-        lines.extend(f"- {entry}" for entry in result.missing)
+        lines.extend(f"- {entry}" for entry in _brief.missing)
         lines.append("")
 
     lines.append("### Full brief")
     lines.append("")
-    lines.append(to_markdown(result))
+    lines.append(to_markdown(_brief))
     lines.append("")
     return "\n".join(lines)
 
