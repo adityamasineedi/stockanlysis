@@ -36,6 +36,9 @@ ANALYSIS_COST_WARN_INR = 55.0
 ANALYSIS_COST_CRITICAL_INR = 75.0
 ORPHAN_SESSION_MIN_INR = 25.0
 BRIEF_BLOAT_BYTES = 250_000
+# Prompt cache TTL is 1h — only flag a retry cache miss when the prior Stage 2
+# call for the same ticker fell inside that window.
+CACHE_RETRY_WINDOW = timedelta(hours=1)
 
 
 @dataclass(frozen=True)
@@ -222,6 +225,7 @@ def _audit_llm_calls(findings: list[Finding], days: int) -> dict[str, object]:
             by_ticker[str(row["ticker"]).upper()].append(row)
 
     stage2_prior_counts: dict[str, int] = defaultdict(int)
+    stage2_last_called_at: dict[str, datetime] = {}
 
     for row in rows:
         inp = int(row["input_tokens"])
@@ -289,11 +293,19 @@ def _audit_llm_calls(findings: list[Finding], days: int) -> dict[str, object]:
             ticker_key = str(row["ticker"] or "").upper()
             prior_stage2 = stage2_prior_counts[ticker_key]
             stage2_prior_counts[ticker_key] += 1
-            # First Stage 2 call per ticker always writes cache; reads appear on retries.
+            called_at = _parse_ts(str(row["called_at"]))
+            prior_at = stage2_last_called_at.get(ticker_key)
+            # First Stage 2 call per ticker always writes cache; reads appear
+            # on retries inside the 1h TTL. Calls spaced >1h apart are a new
+            # session, not a cache-reuse failure.
+            within_cache_ttl = (
+                prior_at is not None and (called_at - prior_at) <= CACHE_RETRY_WINDOW
+            )
             if (
                 cache_create > 5000
                 and cache_read == 0
                 and prior_stage2 >= 1
+                and within_cache_ttl
             ):
                 findings.append(
                     Finding(
@@ -301,16 +313,20 @@ def _audit_llm_calls(findings: list[Finding], days: int) -> dict[str, object]:
                         "token_waste",
                         "Stage 2 retry did not read prompt cache",
                         f"Call #{prior_stage2 + 1} for {ticker_key or '?'} wrote {cache_create:,} "
-                        f"cache tokens (₹{cost:.2f}) without a cache read — retries should reuse "
-                        f"within 1h.",
+                        f"cache tokens (₹{cost:.2f}) without a cache read — prior Stage 2 was "
+                        f"within 1h; retries should reuse the prompt cache.",
                         {
                             "called_at": row["called_at"],
                             "ticker": row["ticker"],
                             "cache_creation_tokens": cache_create,
                             "stage2_call_index": prior_stage2 + 1,
+                            "hours_since_prior": round(
+                                (called_at - prior_at).total_seconds() / 3600.0, 2
+                            ),
                         },
                     )
                 )
+            stage2_last_called_at[ticker_key] = called_at
 
     with _connect_analyses() as conn:
         analysis_rows = conn.execute(
