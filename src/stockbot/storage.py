@@ -108,6 +108,36 @@ def _connect() -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sip_contrib_chat ON sip_contributions(chat_id, contributed_at)"
     )
+    # The holder's own limits. Without these the constitution's
+    # "maximum_intended_position_pct" stays null and every concentration rule
+    # in it is unenforceable — it declines to invent the number, correctly.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS risk_policy (
+            chat_id INTEGER PRIMARY KEY,
+            total_capital_inr REAL NOT NULL,
+            max_position_pct REAL NOT NULL DEFAULT 10,
+            max_sector_pct REAL NOT NULL DEFAULT 25,
+            emergency_fund_months REAL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    # Current state, so rows are updated in place — unlike sip_contributions,
+    # which is the append-only historical record and stays that way.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS holdings (
+            chat_id INTEGER NOT NULL,
+            ticker TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            avg_cost REAL NOT NULL,
+            opened_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (chat_id, ticker)
+        )
+        """
+    )
     return conn
 
 
@@ -531,3 +561,166 @@ def get_latest_verdict_json(ticker: str) -> tuple[dict, datetime] | None:
     except (TypeError, ValueError):
         return None
     return verdict, datetime.fromisoformat(row["created_at"])
+
+
+@dataclass(frozen=True)
+class RiskPolicy:
+    """The holder's limits. The bot proposes; this decides."""
+
+    chat_id: int
+    total_capital_inr: float
+    max_position_pct: float
+    max_sector_pct: float
+    emergency_fund_months: float | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class Holding:
+    chat_id: int
+    ticker: str
+    quantity: float
+    avg_cost: float
+    opened_at: datetime
+    updated_at: datetime
+
+    @property
+    def cost_basis_inr(self) -> float:
+        return round(self.quantity * self.avg_cost, 2)
+
+
+def save_risk_policy(
+    chat_id: int,
+    total_capital_inr: float,
+    *,
+    max_position_pct: float = 10.0,
+    max_sector_pct: float = 25.0,
+    emergency_fund_months: float | None = None,
+) -> RiskPolicy:
+    """Create or update this chat's policy."""
+    now = datetime.now(UTC).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO risk_policy
+                (chat_id, total_capital_inr, max_position_pct, max_sector_pct,
+                 emergency_fund_months, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                total_capital_inr = excluded.total_capital_inr,
+                max_position_pct = excluded.max_position_pct,
+                max_sector_pct = excluded.max_sector_pct,
+                emergency_fund_months = excluded.emergency_fund_months,
+                updated_at = excluded.updated_at
+            """,
+            (
+                chat_id,
+                float(total_capital_inr),
+                float(max_position_pct),
+                float(max_sector_pct),
+                emergency_fund_months,
+                now,
+            ),
+        )
+    policy = get_risk_policy(chat_id)
+    assert policy is not None  # just written
+    return policy
+
+
+def get_risk_policy(chat_id: int) -> RiskPolicy | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM risk_policy WHERE chat_id = ?", (chat_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return RiskPolicy(
+        chat_id=int(row["chat_id"]),
+        total_capital_inr=float(row["total_capital_inr"]),
+        max_position_pct=float(row["max_position_pct"]),
+        max_sector_pct=float(row["max_sector_pct"]),
+        emergency_fund_months=(
+            float(row["emergency_fund_months"])
+            if row["emergency_fund_months"] is not None
+            else None
+        ),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def _row_to_holding(row: sqlite3.Row) -> Holding:
+    return Holding(
+        chat_id=int(row["chat_id"]),
+        ticker=str(row["ticker"]),
+        quantity=float(row["quantity"]),
+        avg_cost=float(row["avg_cost"]),
+        opened_at=datetime.fromisoformat(row["opened_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def save_holding(chat_id: int, ticker: str, quantity: float, avg_cost: float) -> Holding:
+    """Record a position, replacing any existing one for that ticker.
+
+    ``opened_at`` survives an update so the holding period stays measurable;
+    only the quantity, cost and ``updated_at`` move.
+    """
+    now = datetime.now(UTC).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO holdings
+                (chat_id, ticker, quantity, avg_cost, opened_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id, ticker) DO UPDATE SET
+                quantity = excluded.quantity,
+                avg_cost = excluded.avg_cost,
+                updated_at = excluded.updated_at
+            """,
+            (chat_id, ticker.upper(), float(quantity), float(avg_cost), now, now),
+        )
+    holding = get_holding(chat_id, ticker)
+    assert holding is not None  # just written
+    return holding
+
+
+def get_holding(chat_id: int, ticker: str) -> Holding | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM holdings WHERE chat_id = ? AND ticker = ?",
+            (chat_id, ticker.upper()),
+        ).fetchone()
+    return _row_to_holding(row) if row else None
+
+
+def list_holdings(chat_id: int) -> list[Holding]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM holdings WHERE chat_id = ? ORDER BY ticker", (chat_id,)
+        ).fetchall()
+    return [_row_to_holding(r) for r in rows]
+
+
+def delete_holding(chat_id: int, ticker: str) -> bool:
+    """Remove a position. Returns False when there was nothing to remove."""
+    with _connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM holdings WHERE chat_id = ? AND ticker = ?",
+            (chat_id, ticker.upper()),
+        )
+        return int(cursor.rowcount) > 0
+
+
+def seed_holding_from_sip(chat_id: int, ticker: str) -> Holding | None:
+    """Build a holding from logged SIP contributions.
+
+    The ledger already stores each contribution at its own price, so it knows
+    both the units accumulated and what they cost — exactly a position. Returns
+    None when the ledger cannot say (no rows, or any row logged without a
+    price), rather than seeding a holding that understates the quantity.
+    """
+    summary = summarize_sip_contributions(chat_id, ticker)
+    if summary.units_estimate is None or summary.units_estimate <= 0:
+        return None
+    avg_cost = summary.total_invested / summary.units_estimate
+    return save_holding(chat_id, ticker, summary.units_estimate, round(avg_cost, 2))

@@ -109,7 +109,14 @@ alone already has you in the position; a rising price after that is itself
 the reward, not a reason to rush the remaining tranches in. The remaining
 75% still waits for its own validated trigger — never for FOMO.
 
-Illustrative shape (limits come from user risk policy, not invented by the bot):
+Illustrative shape (limits come from user risk policy, not invented by the bot).
+`maximum_intended_position_pct` is now readable: `/capital` records total
+investable capital and a per-stock cap, and `/hold` records actual positions.
+Where both exist, tranches can be stated in rupees rather than percentages of
+an unstated total, and the `/analyze` card reports the position's real share of
+capital plus remaining headroom. Where either is missing the field stays
+`null` and no percentage is shown — an unknown denominator produces an
+authoritative-looking number that means nothing.
 
 ```json
 {
