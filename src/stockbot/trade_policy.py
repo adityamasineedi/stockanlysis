@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from stockbot.config import settings
 
 if TYPE_CHECKING:
-    from stockbot.llm.verdict import FiveYearBusinessTest, VerdictJSON
+    from stockbot.llm.verdict import FiveYearBusinessTest
 
 _WC_SOFT_CLASSIFICATIONS = frozenset({"INCONCLUSIVE", "DATA_OR_SCOPE_ERROR"})
 _MIN_UNCERTAIN_EVIDENCE = 2
@@ -95,8 +95,38 @@ def wc_gap_blocks_buy_zone(wc_gap_classification: object) -> bool:
     return text != "TEMPORARY_BILLING_CYCLE"
 
 
+def prescan_auto_deep_min_score() -> float:
+    if trade_friendly_mode():
+        return settings.prescan_auto_deep_min_score
+    return 70.0
+
+
+def effective_risk_discount_bands() -> dict[str, tuple[float, float]]:
+    """Buy-zone margin-of-safety bands — slightly wider in trade-friendly mode."""
+    if trade_friendly_mode():
+        return {
+            "LOW": (0.08, 0.15),
+            "MEDIUM": (0.15, 0.25),
+            "HIGH": (0.30, 1.00),
+        }
+    return {
+        "LOW": (0.10, 0.15),
+        "MEDIUM": (0.20, 0.25),
+        "HIGH": (0.35, 1.00),
+    }
+
+
+def anti_chase_pe_threshold() -> float:
+    return settings.anti_chase_pe_threshold
+
+
+def trade_friendly_base_fv_buffer_pct() -> float:
+    if trade_friendly_mode():
+        return settings.trade_friendly_base_fv_buffer_pct
+    return 0.005
+
+
 def business_context_blocks_preflight(*, financial_years: int | None) -> bool:
-    """When True, missing business narrative blocks paid analysis."""
     if financial_years is None:
         return True
     if financial_years >= 5:

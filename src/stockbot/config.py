@@ -70,6 +70,18 @@ class Settings(BaseSettings):
     # Relax constitution gates so WATCH/UNCERTAIN names with evidence can still
     # get buy ranges; skips prescan for /analyze; softens WC/anti-chase/data gates.
     trade_friendly_mode: bool = True
+    # Analysis cache — calendar days; refuse reuse if live price moved more than pct.
+    analysis_cache_max_age_days: int = 5
+    cache_price_refuse_pct: float = 0.10
+    # Liquidity — average daily turnover in ₹ crore (ADV). Prescan warns below warn;
+    # hard exclude only when ADV and market cap both tiny (illiquid micro-cap trap).
+    min_adv_inr_cr_warn: float = 0.50
+    min_adv_inr_cr_hard_exclude: float = 0.10
+    min_market_cap_cr_for_adv_exclude: float = 500.0
+    # Constitution thresholds (env-tunable).
+    anti_chase_pe_threshold: float = 40.0
+    trade_friendly_base_fv_buffer_pct: float = 0.03
+    prescan_auto_deep_min_score: float = 65.0
     # Comma-separated Telegram chat IDs allowed to use the bot. Empty = allow all
     # (private single-user bots). Set to your numeric chat id to block strangers.
     telegram_allowed_chat_ids: str = ""

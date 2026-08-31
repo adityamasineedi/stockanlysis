@@ -158,7 +158,7 @@ def test_build_staleness_banner_shows_analysis_and_live_price():
     assert "400.00" in banner
     assert "340.00" in banner
     assert "-15.0%" in banner
-    assert "fresh after new results" in banner
+    assert "/analyze fresh" in banner
 
 
 def test_invalidate_cached_analyses_deletes_rows():

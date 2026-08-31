@@ -58,7 +58,10 @@ def capital_range_blocked_reason(verdict_json: dict) -> str | None:
     while the add-more line on the very same card said "(five-year: …)".
     """
     from stockbot.constitution_gates import should_anti_chase_from_dict
-    from stockbot.trade_policy import five_year_blocks_capital_range, wc_gap_blocks_buy_zone
+    from stockbot.trade_policy import (
+        five_year_blocks_capital_range,
+        wc_gap_blocks_buy_zone,
+    )
 
     if bool(verdict_json.get("anti_chase_flag")) or should_anti_chase_from_dict(verdict_json)[0]:
         return "anti-chase: pause new capital"
@@ -102,10 +105,10 @@ def buy_zone_price_ceiling(verdict_json: dict) -> tuple[float, str] | None:
 
     This is necessary, not sufficient — the constitution gates still apply.
     """
-    from stockbot.validate import RISK_DISCOUNT_BANDS
+    from stockbot.trade_policy import effective_risk_discount_bands
 
     risk = str(verdict_json.get("risk") or "").strip().upper()
-    band = RISK_DISCOUNT_BANDS.get(risk)
+    band = effective_risk_discount_bands().get(risk)
     if band is None:
         return None
 

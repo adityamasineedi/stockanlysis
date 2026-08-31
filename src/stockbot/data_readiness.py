@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from stockbot.brief import assemble_brief, enrich_brief, to_markdown
+from stockbot.config import settings
 from stockbot.fetch.annual_report import BUSINESS_HEADING_PRIORITY
 from stockbot.fetch.fundamentals import fetch_fundamentals
 from stockbot.fetch.news import fetch_news
@@ -530,8 +531,12 @@ def assess_data_readiness(
             )
         )
 
-    # News
-    if brief.news is None:
+    if settings.min_adv_inr_cr_warn and brief.metadata and brief.metadata.adv_inr_cr is not None:
+        if brief.metadata.adv_inr_cr < settings.min_adv_inr_cr_warn:
+            warnings.append(
+                f"Low liquidity: ADV ₹{brief.metadata.adv_inr_cr:.2f} cr/day "
+                f"(prefer ≥₹{settings.min_adv_inr_cr_warn:.2f} cr) — slippage risk on SIP size."
+            )
         warnings.append("News/RSS unavailable — red-flag scan degraded.")
         fields.append(
             FieldStatus(

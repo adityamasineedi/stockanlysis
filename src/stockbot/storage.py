@@ -19,11 +19,11 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from stockbot.config import DB_PATH
+from stockbot.config import DB_PATH, settings
 from stockbot.fetch.prices import fetch_price_data
 from stockbot.models import Analysis, ValidationResult
 
-PRICE_MOVE_REFUSE_PCT = 0.10
+PRICE_MOVE_REFUSE_PCT = 0.10  # default; overridden by settings.cache_price_refuse_pct in lookup
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,12 @@ class BackfillResult:
     rows_scanned: int
     rows_updated: int
     rows_skipped: int
+
+
+@dataclass(frozen=True)
+class CacheLookup:
+    hit: CacheHit | None
+    miss_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -189,19 +195,31 @@ def _row_to_analysis(row: sqlite3.Row) -> Analysis:
     )
 
 
-def get_cached(ticker: str, max_age_days: int = 7) -> CacheHit | None:
+def lookup_cached(
+    ticker: str,
+    max_age_days: int | None = None,
+) -> CacheLookup:
+    """Return cache hit or a human-readable miss reason."""
+    max_days = max_age_days if max_age_days is not None else settings.analysis_cache_max_age_days
+    refuse_pct = settings.cache_price_refuse_pct
+
     with _connect() as conn:
         row = conn.execute(
             "SELECT * FROM analyses WHERE ticker = ? ORDER BY created_at DESC LIMIT 1",
             (ticker,),
         ).fetchone()
     if row is None:
-        return None
+        return CacheLookup(hit=None, miss_reason=None)
 
     created_at = datetime.fromisoformat(row["created_at"])
     age_days = (datetime.now(UTC) - created_at).total_seconds() / 86400
-    if age_days > max_age_days:
-        return None
+    if age_days > max_days:
+        return CacheLookup(
+            hit=None,
+            miss_reason=(
+                f"Cached report is {age_days:.0f} days old (max {max_days}d) — running fresh analysis."
+            ),
+        )
 
     verdict_json = json.loads(row["verdict_json"])
     original_price = verdict_json.get("analysis_price_abs") or verdict_json.get(
@@ -210,15 +228,31 @@ def get_cached(ticker: str, max_age_days: int = 7) -> CacheHit | None:
     try:
         live = fetch_price_data(ticker)
     except Exception:  # noqa: BLE001 - can't verify safety, so refuse below rather than guess
-        return None
-    if original_price and abs(live.current_price_abs - original_price) / original_price > PRICE_MOVE_REFUSE_PCT:
-        return None
+        return CacheLookup(
+            hit=None,
+            miss_reason="Could not verify live price for cached report — running fresh analysis.",
+        )
+    if original_price and abs(live.current_price_abs - original_price) / original_price > refuse_pct:
+        move_pct = abs(live.current_price_abs - original_price) / original_price * 100
+        return CacheLookup(
+            hit=None,
+            miss_reason=(
+                f"Price moved {move_pct:.1f}% since cached report (>{refuse_pct * 100:.0f}% limit) "
+                f"— running fresh analysis."
+            ),
+        )
 
-    return CacheHit(
-        analysis=_row_to_analysis(row),
-        current_price_abs=live.current_price_abs,
-        price_date=live.price_date,
+    return CacheLookup(
+        hit=CacheHit(
+            analysis=_row_to_analysis(row),
+            current_price_abs=live.current_price_abs,
+            price_date=live.price_date,
+        )
     )
+
+
+def get_cached(ticker: str, max_age_days: int = 7) -> CacheHit | None:
+    return lookup_cached(ticker, max_age_days=max_age_days).hit
 
 
 def build_staleness_banner(analysis: Analysis, current_price_abs: float) -> str:
@@ -231,19 +265,23 @@ def build_staleness_banner(analysis: Analysis, current_price_abs: float) -> str:
     if not analysis_price:
         return ""
 
+    age_days = (datetime.now(UTC).date() - analysis.run_date).days
+    age_note = f"{age_days}d old" if age_days > 0 else "same day"
+    synced = verdict.get("price_synced_at")
+    sync_note = f" · synced {str(synced)[:19]}" if synced else ""
+
     if abs(current_price_abs - float(analysis_price)) / float(analysis_price) < 0.001:
         return (
-            f"Report from {analysis_date} · price unchanged at ₹{current_price_abs:.2f} "
-            f"(live sync, no new LLM run)."
+            f"📋 Cached report ({age_note}) from {analysis_date} · "
+            f"price unchanged at ₹{current_price_abs:.2f}{sync_note} · gates refreshed, no LLM cost."
         )
 
     change_pct = (current_price_abs - float(analysis_price)) / float(analysis_price) * 100
     sign = "+" if change_pct >= 0 else ""
     return (
-        f"Report from {analysis_date} at ₹{float(analysis_price):.2f} · "
-        f"live price ₹{current_price_abs:.2f} ({sign}{change_pct:.1f}%). "
-        f"Qualitative analysis unchanged; gates recomputed at live price. "
-        f"Send /analyze {analysis.ticker} fresh after new results/filings."
+        f"📋 Cached report ({age_note}) from {analysis_date} at ₹{float(analysis_price):.2f} · "
+        f"live ₹{current_price_abs:.2f} ({sign}{change_pct:.1f}%){sync_note}. "
+        f"Prose unchanged; gates recomputed. Use /analyze fresh SYMBOL after results/filings."
     )
 
 

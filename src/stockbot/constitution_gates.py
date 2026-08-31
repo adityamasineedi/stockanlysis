@@ -10,15 +10,19 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
 from stockbot.models import Brief
-from stockbot.trade_policy import trade_friendly_mode, wc_gap_blocks_buy_zone
+from stockbot.trade_policy import (
+    anti_chase_pe_threshold,
+    trade_friendly_base_fv_buffer_pct,
+    trade_friendly_mode,
+    wc_gap_blocks_buy_zone,
+)
 
 if TYPE_CHECKING:
     from stockbot.llm.verdict import ValuationComputed, VerdictJSON
 
 # Price at/above base-case fair-value top, or rich trailing P/E with
 # non-HIGH earnings quality → pause new capital (constitution anti-chase).
-ANTI_CHASE_PE_THRESHOLD = 35.0
-_PRICE_ABOVE_BASE_FV_TOLERANCE = 0.005  # 0.5% — float wiggle
+_PRICE_ABOVE_BASE_FV_TOLERANCE = 0.005  # strict mode default; trade-friendly uses config buffer
 _VALUATION_TENSION_BEAR_MULTIPLIER = 2.0
 
 
@@ -63,6 +67,10 @@ def _trailing_pe(verdict: VerdictJSON, brief: Brief) -> float | None:
     return verdict.current_price_abs / eps
 
 
+def _base_fv_anti_chase_tolerance() -> float:
+    return trade_friendly_base_fv_buffer_pct()
+
+
 def should_anti_chase(
     verdict: VerdictJSON,
     valuation: ValuationComputed,
@@ -74,7 +82,7 @@ def should_anti_chase(
     buy_high = _buy_zone_high(verdict)
     if _in_trade_friendly_buy_zone(price, buy_high):
         return False, ""
-    if price >= base_high * (1.0 - _PRICE_ABOVE_BASE_FV_TOLERANCE):
+    if price >= base_high * (1.0 - _base_fv_anti_chase_tolerance()):
         return (
             True,
             f"price {price:.2f} at/above base fair-value top {base_high:.2f}",
@@ -83,13 +91,13 @@ def should_anti_chase(
     trailing_pe = _trailing_pe(verdict, brief)
     if (
         trailing_pe is not None
-        and trailing_pe >= ANTI_CHASE_PE_THRESHOLD
+        and trailing_pe >= anti_chase_pe_threshold()
         and (verdict.earnings_quality or "").upper() != "HIGH"
     ):
         return (
             True,
             (
-                f"trailing P/E {trailing_pe:.1f}x >= {ANTI_CHASE_PE_THRESHOLD:.0f}x "
+                f"trailing P/E {trailing_pe:.1f}x >= {anti_chase_pe_threshold():.0f}x "
                 f"with earnings_quality={verdict.earnings_quality!r}"
             ),
         )
@@ -119,9 +127,7 @@ def should_anti_chase_from_dict(verdict_json: dict) -> tuple[bool, str]:
             valuation = compute_valuation(ValuationInputs.model_validate(raw_inputs))
             base_high = valuation.fair_value_base_abs[1]
 
-    if base_high is not None and float(price) >= base_high * (
-        1.0 - _PRICE_ABOVE_BASE_FV_TOLERANCE
-    ):
+    if base_high is not None and float(price) >= base_high * (1.0 - _base_fv_anti_chase_tolerance()):
         return (
             True,
             f"price {float(price):.2f} at/above base fair-value top {base_high:.2f}",
@@ -137,11 +143,11 @@ def should_anti_chase_from_dict(verdict_json: dict) -> tuple[bool, str]:
             eps = 0.0
         if eps > 0:
             pe = float(price) / eps
-            if pe >= ANTI_CHASE_PE_THRESHOLD:
+            if pe >= anti_chase_pe_threshold():
                 return (
                     True,
                     (
-                        f"P/E vs base EPS {pe:.1f}x >= {ANTI_CHASE_PE_THRESHOLD:.0f}x "
+                        f"P/E vs base EPS {pe:.1f}x >= {anti_chase_pe_threshold():.0f}x "
                         f"with earnings_quality={earnings_quality!r}"
                     ),
                 )
@@ -157,7 +163,7 @@ def compute_valuation_tension(
     bear_high = valuation.fair_value_bear_abs[1]
     base_low, base_high = valuation.fair_value_base_abs
     base_mid = (base_low + base_high) / 2.0
-    if price >= base_high * (1.0 - _PRICE_ABOVE_BASE_FV_TOLERANCE):
+    if price >= base_high * (1.0 - _base_fv_anti_chase_tolerance()):
         return "HIGH"
     if bear_high > 0 and price >= bear_high * _VALUATION_TENSION_BEAR_MULTIPLIER:
         return "HIGH"

@@ -21,7 +21,7 @@ from stockbot.models import (
     ValidationResult,
 )
 from stockbot.pipeline import run_full_analysis
-from stockbot.storage import CacheHit
+from stockbot.storage import CacheHit, CacheLookup
 
 NOW = datetime.now(UTC)
 TICKER = TickerInfo(symbol="TEST", exchange="NSE", company_name="Test Co Limited", isin=None)
@@ -78,7 +78,11 @@ def _patch_common(monkeypatch, *, resolve_result=TICKER, cached=None, budget_ok=
         if cached is not None
         else None
     )
-    monkeypatch.setattr(pipeline_module.storage, "get_cached", lambda ticker, max_age_days=7: cache_hit)
+    monkeypatch.setattr(
+        pipeline_module.storage,
+        "lookup_cached",
+        lambda ticker, max_age_days=None: CacheLookup(hit=cache_hit),
+    )
     monkeypatch.setattr(pipeline_module, "check_budget", lambda: (budget_ok, spent))
 
     def _assemble_ready(ticker):

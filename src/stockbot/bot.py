@@ -76,8 +76,8 @@ from stockbot.constitution_gates import (
     should_anti_chase_from_dict,
     wc_gap_blocks_buy_zone,
 )
-from stockbot.data_readiness import assemble_brief_for_analysis
 from stockbot.costs import month_to_date_spend
+from stockbot.data_readiness import assemble_brief_for_analysis
 from stockbot.expected_return import format_expected_return_telegram
 from stockbot.fetch.tickers import load_symbol_table, resolve_ticker
 from stockbot.models import AmbiguousMatch, Analysis, TickerInfo
@@ -88,7 +88,6 @@ from stockbot.pipeline import (
     PipelineResult,
     run_full_analysis,
 )
-from stockbot.trade_policy import prescan_required_for_analyze
 from stockbot.portfolio_screener.eligibility import (
     check_deep_analysis_eligibility,
     format_analyze_gate_block,
@@ -115,6 +114,7 @@ from stockbot.storage import (
     set_sip_plan_active,
     summarize_sip_contributions,
 )
+from stockbot.trade_policy import prescan_required_for_analyze
 
 logger = logging.getLogger(__name__)
 
@@ -644,10 +644,16 @@ async def _deliver_result(
         return
 
     analysis = result.analysis
+    banner_parts: list[str] = []
+    if result.cache_miss_reason:
+        banner_parts.append(result.cache_miss_reason)
+    if result.staleness_banner:
+        banner_parts.append(result.staleness_banner)
+    combined_banner = "\n".join(banner_parts) if banner_parts else None
     await status_message.edit_text(
         format_verdict_reply(
             analysis,
-            staleness_banner=result.staleness_banner,
+            staleness_banner=combined_banner,
             full_attachment=full_report,
         ),
         parse_mode=ParseMode.HTML,
@@ -743,6 +749,7 @@ async def _run_and_reply(
     *,
     force: bool = False,
     full_report: bool = False,
+    skip_cache: bool = False,
 ) -> None:
     if not await _try_begin_analysis(query):
         active = await _active_analysis_query()
@@ -763,7 +770,9 @@ async def _run_and_reply(
         progress_task = asyncio.create_task(_send_progress_updates(status_message, query))
         try:
             try:
-                result = await asyncio.to_thread(run_full_analysis, query)
+                result = await asyncio.to_thread(
+                    run_full_analysis, query, skip_cache=skip_cache
+                )
             except Exception as exc:  # bot's resilience boundary — a crash here must still reply, not vanish
                 logger.exception("run_full_analysis failed for %r", query)
                 await status_message.edit_text(f"Something went wrong: {esc(exc)}")
@@ -781,7 +790,7 @@ async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     if await _reject_if_analysis_busy(update):
         return
-    query, force, full_report = _parse_analyze_command_args(context.args)
+    query, force, full_report, fresh = _parse_analyze_command_args(context.args)
     if not query:
         await _prompt_for_symbol(
             update,
@@ -793,23 +802,36 @@ async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
     _clear_awaiting_symbol(context)
-    await _run_and_reply(update, query, force=force, full_report=full_report)
+    await _run_and_reply(
+        update, query, force=force, full_report=full_report, skip_cache=fresh
+    )
 
 
-def _parse_analyze_command_args(args: list[str] | None) -> tuple[str, bool, bool]:
+def _parse_analyze_modifiers(args: list[str] | None) -> tuple[bool, bool, bool]:
     parts = list(args or [])
     force = False
     full_report = False
-    cleaned: list[str] = []
+    fresh = False
     for token in parts:
         low = token.lower()
         if low == "force":
             force = True
         elif low == "full":
             full_report = True
-        else:
-            cleaned.append(token)
-    return " ".join(cleaned).strip(), force, full_report
+        elif low == "fresh":
+            fresh = True
+    return force, full_report, fresh
+
+
+def _parse_analyze_command_args(args: list[str] | None) -> tuple[str, bool, bool, bool]:
+    parts = list(args or [])
+    force, full_report, fresh = _parse_analyze_modifiers(parts)
+    cleaned: list[str] = []
+    for token in parts:
+        if token.lower() in {"force", "full", "fresh"}:
+            continue
+        cleaned.append(token)
+    return " ".join(cleaned).strip(), force, full_report, fresh
 
 
 async def handle_prescan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -859,28 +881,19 @@ def _parse_prescan_plain_text(text: str) -> str | None:
     return None
 
 
-def _parse_analyze_plain_text(text: str) -> tuple[str, bool, bool] | None:
-    """Accept 'force BEL', 'full CAMS', or 'force full BEL' as plain-text shortcuts."""
+def _parse_analyze_plain_text(text: str) -> tuple[str, bool, bool, bool] | None:
+    """Accept 'force BEL', 'full CAMS', 'fresh BEL', or 'force full BEL' shortcuts."""
     stripped = text.strip()
     if not stripped:
         return None
     parts = stripped.split()
-    force = False
-    full_report = False
-    cleaned: list[str] = []
-    for token in parts:
-        low = token.lower()
-        if low == "force":
-            force = True
-        elif low == "full":
-            full_report = True
-        else:
-            cleaned.append(token)
+    force, full_report, fresh = _parse_analyze_modifiers(parts)
+    cleaned = [p for p in parts if p.lower() not in {"force", "full", "fresh"}]
     if not cleaned:
         return None
-    if not force and not full_report:
+    if not force and not full_report and not fresh:
         return None
-    return " ".join(cleaned), force, full_report
+    return " ".join(cleaned), force, full_report, fresh
 
 
 async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -899,8 +912,10 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     analyze_query = _parse_analyze_plain_text(text)
     if analyze_query is not None:
         _clear_awaiting_symbol(context)
-        query, force, full_report = analyze_query
-        await _run_and_reply(update, query, force=force, full_report=full_report)
+        query, force, full_report, fresh = analyze_query
+        await _run_and_reply(
+            update, query, force=force, full_report=full_report, skip_cache=fresh
+        )
         return
     if _consume_awaiting(context, AWAITING_PRESCAN_SYMBOL):
         if await _offer_symbol_picks(
@@ -998,6 +1013,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/analyze — tap from menu, then send the stock name\n"
         "/analyze <company> — deep analysis (digest .md attached by default)\n"
         "/analyze full <symbol> — attach full §1–§16 report .md\n"
+        "/analyze fresh <symbol> — skip cache, run new paid analysis\n"
         "/analyze force <symbol> — bypass gate (not recommended)\n"
         "/preflight <symbol> — free data audit before /analyze (no LLM spend)\n"
         "Trade-friendly mode ON: easier buy ranges on UNCERTAIN+evidence; prescan skipped for /analyze\n"

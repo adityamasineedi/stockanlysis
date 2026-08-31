@@ -38,7 +38,11 @@ def score_risk(
     if metrics.market_cap_cr is not None:
         size_score = linear_score(metrics.market_cap_cr, bad=500.0, good=20000.0)
 
-    liquidity_proxy = size_score  # without volume data, size is the proxy
+    liquidity_score = None
+    if metrics.adv_inr_cr is not None:
+        liquidity_score = linear_score(metrics.adv_inr_cr, bad=0.5, good=50.0)
+    elif size_score is not None:
+        liquidity_score = size_score  # fallback when ADV missing
 
     cyclicality_penalty = 55.0 if cyclical_sector else 80.0
 
@@ -49,7 +53,7 @@ def score_risk(
         (_VALUATION_RISK_SCORE.get(valuation_risk, 70.0), 0.15),
         (governance, 0.15),
         (size_score, 0.10),
-        (liquidity_proxy, 0.05),
+        (liquidity_score, 0.05),
     ]
     score, coverage = weighted_mean(parts)
     blended = score * (0.6 + 0.4 * coverage)

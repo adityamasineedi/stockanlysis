@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from stockbot.config import settings
 from stockbot.portfolio_screener.issuer_routing import (
     FINANCIAL_SCORECARD_ISSUERS,
     classify_issuer,
@@ -182,6 +183,18 @@ def apply_hard_filters(
                 o < p * 0.3 for o, p in zip(recent_ocf, recent_pat, strict=True)
             ):
                 reasons.append("persistent OCF << PAT — severe earnings quality gap")
+
+    if (
+        metrics.adv_inr_cr is not None
+        and metrics.market_cap_cr is not None
+        and metrics.adv_inr_cr < settings.min_adv_inr_cr_hard_exclude
+        and metrics.market_cap_cr < settings.min_market_cap_cr_for_adv_exclude
+    ):
+        reasons.append(
+            f"illiquid: ADV ₹{metrics.adv_inr_cr:.2f} cr/day "
+            f"(<{settings.min_adv_inr_cr_hard_exclude} cr) with mcap "
+            f"₹{metrics.market_cap_cr:.0f} cr"
+        )
 
     if reasons and not (human_override and thresholds.allow_human_override):
         return HardFilterResult(

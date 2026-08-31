@@ -11,6 +11,7 @@ from typing import Literal
 
 from stockbot.portfolio_screener.models import QuantScreenResult, StockMetrics
 from stockbot.portfolio_screener.score_utils import series_present
+from stockbot.trade_policy import prescan_auto_deep_min_score
 
 IssuerClass = Literal[
     "NON_FINANCIAL",
@@ -815,7 +816,7 @@ def decide_eligibility_route(
             quality_override=True,
         ))
 
-    if score >= 70 and cash.status != "CRITICAL":
+    if score >= prescan_auto_deep_min_score() and cash.status != "CRITICAL":
         return _fin(RoutingDecision(
             issuer_class=issuer,
             cash_conversion=cash,

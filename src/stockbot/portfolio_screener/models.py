@@ -54,6 +54,8 @@ class StockMetrics:
     sector: str | None = None
     industry: str | None = None
     market_cap_cr: float | None = None
+    adv_inr_cr: float | None = None
+    avg_daily_volume_shares: float | None = None
     current_price_abs: float | None = None
 
     revenue: float | None = None

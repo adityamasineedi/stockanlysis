@@ -240,6 +240,7 @@ def fetch_market_metadata(symbol: str) -> dict[str, float | str | None]:
         "sector": None,
         "industry": None,
         "market_cap_cr": None,
+        "average_volume_shares": None,
         "forward_pe": None,
         "trailing_pe": None,
         "pb": None,
@@ -289,6 +290,12 @@ def fetch_market_metadata(symbol: str) -> dict[str, float | str | None]:
         if shares:
             try:
                 meta["shares_outstanding"] = float(shares)
+            except (TypeError, ValueError):
+                pass
+        avg_vol = info.get("averageVolume")
+        if avg_vol:
+            try:
+                meta["average_volume_shares"] = float(avg_vol)
             except (TypeError, ValueError):
                 pass
         for yf_key, meta_key in (
@@ -384,6 +391,20 @@ def extract_metrics(
     m.market_cap_cr = float(mcap) if isinstance(mcap, (int, float)) else None
     if m.market_cap_cr is None:
         _mark_missing(m, "market_cap_cr", "market cap unavailable")
+
+    from stockbot.liquidity import compute_adv_inr_cr
+
+    avg_vol_raw = meta.get("average_volume_shares")
+    avg_vol = float(avg_vol_raw) if isinstance(avg_vol_raw, (int, float)) else None
+    adv_cr, avg_shares = compute_adv_inr_cr(
+        current_price_abs=m.current_price_abs,
+        average_volume_shares=avg_vol,
+        ohlcv=price.ohlcv_unadjusted if price is not None else None,
+    )
+    m.adv_inr_cr = adv_cr
+    m.avg_daily_volume_shares = avg_shares
+    if adv_cr is None:
+        _mark_missing(m, "adv_inr_cr", "average daily volume unavailable")
 
     for key, attr in (
         ("forward_pe", "forward_pe"),

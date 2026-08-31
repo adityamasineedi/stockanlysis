@@ -16,6 +16,7 @@ entire job is calling the pipeline.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import threading
 import time
@@ -28,14 +29,14 @@ from stockbot.analysis_routing import (
     analysis_routing_from_brief,
     resolve_stage2_mode,
 )
-from stockbot.brief import assemble_brief, to_markdown
+from stockbot.brief import to_markdown
 from stockbot.config import settings
-from stockbot.data_readiness import assemble_brief_for_analysis
 from stockbot.constitution_gates import (
     apply_constitution_overrides,
     sync_live_price_into_verdict,
 )
 from stockbot.costs import check_budget
+from stockbot.data_readiness import assemble_brief_for_analysis
 from stockbot.expected_return import merge_expected_return_into_verdict_json
 from stockbot.fetch.tickers import load_symbol_table, resolve_ticker
 from stockbot.llm.extract import run_stage1
@@ -47,7 +48,7 @@ from stockbot.llm.verdict import (
 )
 from stockbot.models import AmbiguousMatch, Analysis, TickerInfo, ValidationResult
 from stockbot.render import PlaceholderError, render_report
-from stockbot.storage import CacheHit, build_staleness_banner
+from stockbot.storage import build_staleness_banner
 from stockbot.validate import (
     classify_retry_mode,
     format_validation_errors,
@@ -104,6 +105,7 @@ class PipelineResult:
     render_error: str | None = None
     from_cache: bool = False
     staleness_banner: str | None = None
+    cache_miss_reason: str | None = None
 
 
 class AnalysisCostExceeded(Exception):
@@ -345,7 +347,12 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     return PipelineResult(status="ok", analysis=analysis)
 
 
-def run_full_analysis(query: str, max_cache_age_days: int = 7) -> PipelineResult:
+def run_full_analysis(
+    query: str,
+    *,
+    max_cache_age_days: int | None = None,
+    skip_cache: bool = False,
+) -> PipelineResult:
     symbol_table = load_symbol_table()
     resolved = resolve_ticker(query, symbol_table)
 
@@ -356,7 +363,15 @@ def run_full_analysis(query: str, max_cache_age_days: int = 7) -> PipelineResult
 
     ticker: TickerInfo = resolved
 
-    cached: CacheHit | None = storage.get_cached(ticker.symbol, max_age_days=max_cache_age_days)
+    cache_miss_reason: str | None = None
+    if skip_cache:
+        cached = None
+        cache_miss_reason = "Fresh analysis requested — cache skipped."
+    else:
+        lookup = storage.lookup_cached(ticker.symbol, max_age_days=max_cache_age_days)
+        cached = lookup.hit
+        cache_miss_reason = lookup.miss_reason
+
     if cached is not None:
         synced_json = sync_live_price_into_verdict(
             cached.analysis.verdict_json,
@@ -384,7 +399,10 @@ def run_full_analysis(query: str, max_cache_age_days: int = 7) -> PipelineResult
     if not acquired:
         return PipelineResult(status="busy")
     try:
-        return _run_paid_analysis(ticker)
+        result = _run_paid_analysis(ticker)
+        if cache_miss_reason:
+            return dataclasses.replace(result, cache_miss_reason=cache_miss_reason)
+        return result
     finally:
         _ANALYSIS_SLOTS.release()
 

@@ -325,19 +325,21 @@ def test_format_ambiguous_reply_lists_all_candidates():
 
 
 def test_parse_analyze_command_args():
-    assert _parse_analyze_command_args(["BEL"]) == ("BEL", False, False)
-    assert _parse_analyze_command_args(["force", "MAZDOCK"]) == ("MAZDOCK", True, False)
-    assert _parse_analyze_command_args(["Force", "TCS"]) == ("TCS", True, False)
-    assert _parse_analyze_command_args(["full", "CAMS"]) == ("CAMS", False, True)
-    assert _parse_analyze_command_args(["CAMS", "full"]) == ("CAMS", False, True)
-    assert _parse_analyze_command_args(["force", "full", "BSE"]) == ("BSE", True, True)
-    assert _parse_analyze_command_args([]) == ("", False, False)
+    assert _parse_analyze_command_args(["BEL"]) == ("BEL", False, False, False)
+    assert _parse_analyze_command_args(["force", "MAZDOCK"]) == ("MAZDOCK", True, False, False)
+    assert _parse_analyze_command_args(["Force", "TCS"]) == ("TCS", True, False, False)
+    assert _parse_analyze_command_args(["full", "CAMS"]) == ("CAMS", False, True, False)
+    assert _parse_analyze_command_args(["CAMS", "full"]) == ("CAMS", False, True, False)
+    assert _parse_analyze_command_args(["force", "full", "BSE"]) == ("BSE", True, True, False)
+    assert _parse_analyze_command_args(["fresh", "BEL"]) == ("BEL", False, False, True)
+    assert _parse_analyze_command_args([]) == ("", False, False, False)
 
 
 def test_parse_analyze_plain_text():
-    assert _parse_analyze_plain_text("force BEL") == ("BEL", True, False)
-    assert _parse_analyze_plain_text("full CAMS") == ("CAMS", False, True)
-    assert _parse_analyze_plain_text("force full MAZDOCK") == ("MAZDOCK", True, True)
+    assert _parse_analyze_plain_text("force BEL") == ("BEL", True, False, False)
+    assert _parse_analyze_plain_text("full CAMS") == ("CAMS", False, True, False)
+    assert _parse_analyze_plain_text("fresh BEL") == ("BEL", False, False, True)
+    assert _parse_analyze_plain_text("force full MAZDOCK") == ("MAZDOCK", True, True, False)
     assert _parse_analyze_plain_text("BEL") is None
     assert _parse_analyze_plain_text("force") is None
 

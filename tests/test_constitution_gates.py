@@ -105,9 +105,9 @@ def test_should_anti_chase_when_price_at_base_fv_top():
 
 
 def test_should_anti_chase_when_pe_rich_and_earnings_not_high():
-    verdict = _verdict(current_price_abs=360.0, earnings_quality="MEDIUM")
+    verdict = _verdict(current_price_abs=385.0, earnings_quality="MEDIUM")
     valuation = compute_valuation(verdict.valuation_inputs)
-    flag, reason = should_anti_chase(verdict, valuation, _brief_with_eps(10.0))
+    flag, reason = should_anti_chase(verdict, valuation, _brief_with_eps(9.0))
     assert flag is True
     assert "P/E" in reason
 

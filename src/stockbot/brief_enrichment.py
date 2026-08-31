@@ -12,6 +12,7 @@ from typing import Literal
 
 import pandas as pd
 
+from stockbot.liquidity import compute_adv_inr_cr
 from stockbot.models import (
     Brief,
     BriefMetadata,
@@ -193,6 +194,13 @@ def build_brief_metadata(
     pe_price_eps = (
         round(price.current_price_abs / ttm_eps, 2) if ttm_eps and ttm_eps > 0 else None
     )
+    adv_cr, _avg = compute_adv_inr_cr(
+        current_price_abs=price.current_price_abs,
+        average_volume_shares=float(meta["average_volume_shares"])
+        if meta.get("average_volume_shares") is not None
+        else None,
+        ohlcv=price.ohlcv_unadjusted,
+    )
     return BriefMetadata(
         ticker=ticker.symbol,
         company_name=ticker.company_name,
@@ -210,6 +218,7 @@ def build_brief_metadata(
         range_52w_low=round(price.week52_low_abs, 2),
         range_52w_high=round(price.week52_high_abs, 2),
         rsi_14=round(technicals.rsi14, 2) if technicals.rsi14 is not None else None,
+        adv_inr_cr=adv_cr,
     )
 
 
