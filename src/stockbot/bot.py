@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta, timezone
 from types import SimpleNamespace
 
 from telegram import BotCommand, Update
@@ -100,11 +100,25 @@ from stockbot.report_digest import (
     _compact_context_flags_line,
     build_compact_attachment_md,
 )
-from stockbot.storage import backfill_cached_verdicts, invalidate_cached_analyses
+from stockbot.storage import (
+    backfill_cached_verdicts,
+    get_cached,
+    get_sip_plan,
+    invalidate_cached_analyses,
+    list_active_sip_plans,
+    record_sip_contribution,
+    save_sip_plan,
+    set_sip_plan_active,
+    summarize_sip_contributions,
+)
 
 logger = logging.getLogger(__name__)
 
 HEALTH_AUDIT_DAYS = 14
+
+# SIP reminders fire on IST, not the container's UTC — a 10:00 reminder must
+# land at 10:00 for the user, and Railway runs in UTC.
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 ANALYSIS_RUNTIME_CAP_MINUTES = ANALYSIS_RUNTIME_CAP_SECONDS // 60
@@ -825,6 +839,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/analyze force <symbol> — bypass gate (not recommended)\n"
         "/refresh SYMBOL — clear cached analysis for symbol\n"
         "/refresh backfill — recompute gates + expected_return on cached rows\n"
+        "/sip BEL 5000 — monthly plan with dip alerts and projections\n"
+        "/sip status|paid|pause|resume — manage the plan\n"
         "/spend — month-to-date cost\n"
         "/health — cost/token/quality audit (no LLM spend)\n\n"
         "Tip: after /prescan, just reply with BEL (no need to type prescan again).\n"
@@ -972,7 +988,250 @@ BOT_COMMANDS = [
     BotCommand("help", "Usage instructions"),
     BotCommand("spend", "Month-to-date cost"),
     BotCommand("health", "Cost/token/quality audit"),
+    BotCommand("sip", "Monthly plan, dip alerts, projections"),
 ]
+
+
+SIP_USAGE = (
+    "<b>/sip — monthly plan</b>\n"
+    "<code>/sip BEL 5000</code> — ₹5,000/month into BEL\n"
+    "<code>/sip BEL 5000 stepup 10</code> — raise the instalment 10% each year\n"
+    "<code>/sip status</code> — invested so far and projections\n"
+    "<code>/sip paid</code> — log this month's instalment\n"
+    "<code>/sip paid 2500 topup</code> — log an extra dip top-up\n"
+    "<code>/sip pause</code> / <code>/sip resume</code>\n\n"
+    "<i>A SIP here buys one stock, not a fund — no diversification. "
+    "See the SIP section of the portfolio constitution.</i>"
+)
+
+# The monthly nudge. Day-of-month is deliberate rather than "every 30 days":
+# SIPs are anchored to a date, and a drifting reminder stops matching the
+# user's bank mandate.
+SIP_REMINDER_DAY = 1
+SIP_REMINDER_HOUR_IST = 10
+
+
+def _sip_price_and_high(ticker: str) -> tuple[float | None, float | None]:
+    """Live price and 3-month high, or (None, None) when the fetch fails.
+
+    A dead price feed must not kill the whole reminder — the instalment is due
+    regardless of whether we can check for a dip.
+    """
+    from stockbot.fetch.prices import fetch_price_data
+    from stockbot.sip import three_month_high
+
+    try:
+        price_data = fetch_price_data(ticker)
+    except Exception:
+        logger.exception("SIP price fetch failed for %s", ticker)
+        return (None, None)
+    return (price_data.current_price_abs, three_month_high(price_data.ohlcv_adjusted))
+
+
+def _sip_scenario_rates(ticker: str):
+    """Scenario CAGRs, preferring the stock's own stored analysis."""
+    from stockbot.sip_messages import resolve_scenario_rates
+
+    try:
+        cached = get_cached(ticker, max_age_days=3650)
+    except Exception:
+        logger.exception("SIP could not read stored analysis for %s", ticker)
+        cached = None
+    return resolve_scenario_rates(cached.analysis.verdict_json if cached else None)
+
+
+def _build_sip_status(chat_id: int, ticker: str) -> str:
+    from stockbot.sip_messages import format_status
+
+    plan = get_sip_plan(chat_id)
+    assert plan is not None  # caller checked
+    ledger = summarize_sip_contributions(chat_id)
+    price, _ = _sip_price_and_high(ticker)
+    return format_status(plan, ledger, _sip_scenario_rates(ticker), current_price=price)
+
+
+def _build_sip_reminder(chat_id: int, ticker: str) -> str:
+    from stockbot.sip_messages import format_monthly_reminder
+
+    plan = get_sip_plan(chat_id)
+    assert plan is not None  # caller iterates active plans
+    ledger = summarize_sip_contributions(chat_id)
+    price, high = _sip_price_and_high(ticker)
+    return format_monthly_reminder(
+        plan,
+        ledger,
+        _sip_scenario_rates(ticker),
+        current_price=price,
+        high_3m=high,
+    )
+
+
+def _parse_sip_setup(args: list[str]) -> tuple[str, float, float] | str:
+    """(symbol, monthly, step_up_pct) or an error string."""
+    if len(args) < 2:
+        return "Send a symbol and a monthly amount, e.g. <code>/sip BEL 5000</code>."
+    symbol = args[0]
+    try:
+        monthly = float(args[1].replace(",", "").replace("₹", ""))
+    except ValueError:
+        return f"<code>{esc(args[1])}</code> is not a number — try <code>/sip BEL 5000</code>."
+    if monthly <= 0:
+        return "The monthly amount must be more than zero."
+
+    step_up = 0.0
+    if len(args) >= 4 and args[2].lower() in {"stepup", "step-up", "step_up"}:
+        try:
+            step_up = float(args[3].replace("%", ""))
+        except ValueError:
+            return f"<code>{esc(args[3])}</code> is not a valid step-up percent."
+        if step_up < 0:
+            return "Step-up cannot be negative."
+    return (symbol, monthly, step_up)
+
+
+async def handle_sip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
+    _clear_awaiting_symbol(context)
+    chat_id = update.effective_chat.id
+    args = list(context.args or [])
+    sub = args[0].lower() if args else ""
+
+    if not args:
+        plan = await asyncio.to_thread(get_sip_plan, chat_id)
+        if plan is None:
+            await update.message.reply_text(SIP_USAGE, parse_mode=ParseMode.HTML)
+            return
+        text = await asyncio.to_thread(_build_sip_status, chat_id, plan.ticker)
+        await update.message.reply_text(f"{text}\n\n{DISCLAIMER}", parse_mode=ParseMode.HTML)
+        return
+
+    if sub in {"status", "pause", "resume", "paid"}:
+        plan = await asyncio.to_thread(get_sip_plan, chat_id)
+        if plan is None:
+            await update.message.reply_text(
+                "No SIP plan yet.\n\n" + SIP_USAGE, parse_mode=ParseMode.HTML
+            )
+            return
+        await _handle_sip_subcommand(update, sub, args, plan)
+        return
+
+    parsed = await asyncio.to_thread(_parse_sip_setup, args)
+    if isinstance(parsed, str):
+        await update.message.reply_text(
+            f"{parsed}\n\n{SIP_USAGE}", parse_mode=ParseMode.HTML
+        )
+        return
+
+    symbol, monthly, step_up = parsed
+    resolved = await asyncio.to_thread(resolve_ticker, symbol)
+    if isinstance(resolved, AmbiguousMatch) or resolved is None:
+        await update.message.reply_text(
+            f"Could not resolve <b>{esc(symbol)}</b> to one NSE symbol. "
+            "Send the exact symbol, e.g. <code>/sip BEL 5000</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    plan = await asyncio.to_thread(
+        save_sip_plan, chat_id, resolved.symbol, monthly, step_up_pct=step_up
+    )
+    text = await asyncio.to_thread(_build_sip_status, chat_id, plan.ticker)
+    await update.message.reply_text(
+        f"✅ Plan saved.\n\n{text}\n\n"
+        f"I'll remind you on day {SIP_REMINDER_DAY} of each month.\n\n{DISCLAIMER}",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def _handle_sip_subcommand(update: Update, sub: str, args: list[str], plan) -> None:
+    from stockbot.sip_messages import TOPUP_RISK_NOTE, format_plan_summary
+
+    chat_id = plan.chat_id
+    if sub == "status":
+        text = await asyncio.to_thread(_build_sip_status, chat_id, plan.ticker)
+        await update.message.reply_text(f"{text}\n\n{DISCLAIMER}", parse_mode=ParseMode.HTML)
+        return
+
+    if sub in {"pause", "resume"}:
+        active = sub == "resume"
+        await asyncio.to_thread(set_sip_plan_active, chat_id, active)
+        if active:
+            # Spec: never suggest stopping, and encourage restarting.
+            note = "▶️ Resumed. Falling markets are when averaging does its work."
+        else:
+            note = (
+                "⏸ Paused — your plan and history are kept. "
+                "Send <code>/sip resume</code> when you want it back."
+            )
+        await update.message.reply_text(note, parse_mode=ParseMode.HTML)
+        return
+
+    # /sip paid [amount] [topup]
+    amount = plan.monthly_amount
+    was_topup = any(a.lower() in {"topup", "top-up"} for a in args[1:])
+    for token in args[1:]:
+        try:
+            amount = float(token.replace(",", "").replace("₹", ""))
+            break
+        except ValueError:
+            continue
+    price, _ = await asyncio.to_thread(_sip_price_and_high, plan.ticker)
+    await asyncio.to_thread(
+        record_sip_contribution,
+        chat_id,
+        plan.ticker,
+        amount,
+        price_at_contribution=price,
+        was_topup=was_topup,
+    )
+    ledger = await asyncio.to_thread(summarize_sip_contributions, chat_id)
+    kind = "top-up" if was_topup else "instalment"
+    lines = [
+        f"✅ Logged ₹{amount:,.0f} {kind} for {esc(plan.ticker)}"
+        + (f" at ₹{price:,.2f}." if price else " (price unavailable)."),
+        "",
+        format_plan_summary(plan),
+        (
+            f"Invested so far: ₹{ledger.total_invested:,.0f} "
+            f"across {ledger.contributions} contribution(s)."
+        ),
+    ]
+    if was_topup:
+        lines.extend(["", f"<i>{TOPUP_RISK_NOTE}</i>"])
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def _sip_monthly_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Message every active plan. One failure must not stop the rest."""
+    plans = await asyncio.to_thread(list_active_sip_plans)
+    for plan in plans:
+        try:
+            text = await asyncio.to_thread(_build_sip_reminder, plan.chat_id, plan.ticker)
+            await context.bot.send_message(
+                plan.chat_id, f"{text}\n\n{DISCLAIMER}", parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            logger.exception("SIP reminder failed for chat %s", plan.chat_id)
+
+
+def schedule_sip_reminder(application: Application) -> bool:
+    """Arm the monthly job. Returns False when no JobQueue is available.
+
+    python-telegram-bot only builds a JobQueue when the [job-queue] extra is
+    installed; without it ``application.job_queue`` is None and scheduling
+    would raise at startup rather than at the first fire.
+    """
+    job_queue = application.job_queue
+    if job_queue is None:
+        logger.warning("No JobQueue — SIP reminders disabled (install the job-queue extra)")
+        return False
+    job_queue.run_monthly(
+        _sip_monthly_job,
+        when=time(hour=SIP_REMINDER_HOUR_IST, minute=0, tzinfo=_IST),
+        day=SIP_REMINDER_DAY,
+    )
+    return True
 
 
 async def _register_commands(application: Application) -> None:
@@ -1002,9 +1261,11 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("help", handle_help))
     application.add_handler(CommandHandler("spend", handle_spend))
     application.add_handler(CommandHandler("health", handle_health))
+    application.add_handler(CommandHandler("sip", handle_sip))
     application.add_handler(InlineQueryHandler(handle_inline_query))
     application.add_handler(CallbackQueryHandler(handle_symbol_pick))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_text))
+    schedule_sip_reminder(application)
     return application
 
 

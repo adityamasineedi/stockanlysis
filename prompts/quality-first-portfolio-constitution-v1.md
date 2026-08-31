@@ -31,6 +31,10 @@ growth, valuation multiples, buy levels, or target prices.
    valuation support exists, financial risk has not worsened, and no
    thesis-invalidation trigger is active.
 
+   *Exception — declared SIP plans (see §SIP below).* A plan the user has
+   explicitly set up via `/sip` may add on price decline alone. This is the one
+   place where principle 2 and the tranche rules in principle 3 do not apply.
+
 3. **Build positions in phases.** Do not deploy all intended capital at once.
    Use pre-defined tranches. The first tranche may deploy at current price once
    the quality gate, five-year test, and anti-chase check are satisfied —
@@ -173,6 +177,44 @@ Prefer business progress over daily price noise:
 When price reaches base/bull valuation range: review valuation, momentum, and
 concentration. Label `REVIEW_FOR_REBALANCING` — never a mechanical sell solely
 because a target was touched.
+
+## SIP plans (scoped exception to principles 2 and 3)
+
+A **declared SIP plan** is one the user set up explicitly via `/sip`: a fixed
+monthly contribution into a named stock, over a stated horizon. Inside that
+plan, and only inside it, price decline alone is a valid reason to contribute
+more:
+
+- Moderate dip (5-10% below the recent 3-month high) → an optional one-time
+  top-up of 0.5-1x the normal monthly amount.
+- Deep dip (>10% below that high) → 1-2x.
+
+This is a deliberate carve-out from the rules above — principle 2 ("A falling
+price is never sufficient reason to add"), principle 3's "never automatic
+solely because price fell", and the same wording under *Conditional phased
+capital*. Those rules continue to govern `/analyze` buy plans and every
+tranche decision without modification; nothing in this section relaxes them.
+
+**Why it is scoped, and what the user accepted.** Rupee-cost averaging into a
+falling asset is defensible for a diversified index, where no single company
+thesis is at stake. This bot's universe is NSE equities only, so a plan here
+runs into an individual stock and carries the concentration risk the rules
+above exist to prevent: averaging down into one name whose thesis has broken is
+how capital is permanently lost. The user was shown this and chose it anyway,
+so it is recorded here rather than left as an undocumented contradiction
+between the constitution and the code.
+
+Standing obligations inside a SIP plan:
+
+- Never suggest stopping a SIP during a decline; falling prices are when
+  averaging does its work. The user may always pause it themselves.
+- Never present a top-up as a computed correct amount — always a range, always
+  conditional on the user holding an emergency fund and being able to stay
+  invested for 5+ years.
+- Return projections are scenarios, not forecasts. Generic large-/mid-/small-cap
+  CAGR bands describe *funds*; a single stock disperses far wider. Prefer the
+  stock's own valuation-derived bear/base/bull scenarios where one exists, and
+  label any generic rate as a user-chosen assumption.
 
 ## Compliance boundary
 
