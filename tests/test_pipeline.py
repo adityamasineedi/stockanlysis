@@ -268,7 +268,7 @@ def test_per_analysis_cost_cap_stops_before_stage2_when_stage1_alone_exceeds_it(
     monkeypatch.setattr(
         pipeline_module,
         "run_stage1",
-        lambda brief: (ExtractionResult(), {"input_tokens": 1, "output_tokens": 1, "cost_inr": 90.0}),
+        lambda brief: (ExtractionResult(), {"input_tokens": 1, "output_tokens": 1, "cost_inr": 101.0}),
     )
 
     def _fail_if_called(*args, **kwargs):
@@ -278,7 +278,7 @@ def test_per_analysis_cost_cap_stops_before_stage2_when_stage1_alone_exceeds_it(
 
     result = run_full_analysis("TEST")
     assert result.status == "analysis_cost_exceeded"
-    assert result.spent_inr == 90.0
+    assert result.spent_inr == 101.0
 
 
 def test_per_analysis_cost_cap_stops_after_stage2_first_attempt(monkeypatch):
@@ -289,13 +289,13 @@ def test_per_analysis_cost_cap_stops_after_stage2_first_attempt(monkeypatch):
         lambda brief, extraction, extra_instruction=None, **kwargs: (
             "```json\n{\"verdict\": \"WATCH\"}\n```",  # fails validation too, but cost cap wins first
             None,
-            {"input_tokens": 1, "output_tokens": 1, "cost_inr": 76.0},  # 5 + 76 = 81 > 80
+            {"input_tokens": 1, "output_tokens": 1, "cost_inr": 96.0},  # 5 + 96 = 101 > 100
         ),
     )
 
     result = run_full_analysis("TEST")
     assert result.status == "analysis_cost_exceeded"
-    assert result.spent_inr == pytest.approx(81.0)
+    assert result.spent_inr == pytest.approx(101.0)
 
 
 def test_per_analysis_cost_cap_stops_after_a_retry_pushes_it_over(monkeypatch):
@@ -304,20 +304,20 @@ def test_per_analysis_cost_cap_stops_after_a_retry_pushes_it_over(monkeypatch):
 
     def _stage2(brief, extraction, extra_instruction=None, **kwargs):
         calls["count"] += 1
-        # always fails validation (bare-bones JSON) and costs 40 each time:
-        # attempt 1 -> running 5+40=45 (under cap, retries);
-        # attempt 2 (retry) -> running 45+40=85 (over cap, must stop here)
+        # always fails validation (bare-bones JSON) and costs 50 each time:
+        # attempt 1 -> running 5+50=55 (under cap, retries);
+        # attempt 2 (retry) -> running 55+50=105 (over cap, must stop here)
         return (
             '```json\n{"verdict": "WATCH"}\n```',
             None,
-            {"input_tokens": 1, "output_tokens": 1, "cost_inr": 40.0},
+            {"input_tokens": 1, "output_tokens": 1, "cost_inr": 50.0},
         )
 
     monkeypatch.setattr(pipeline_module, "run_stage2", _stage2)
 
     result = run_full_analysis("TEST")
     assert result.status == "analysis_cost_exceeded"
-    assert result.spent_inr == pytest.approx(85.0)
+    assert result.spent_inr == pytest.approx(105.0)
     assert calls["count"] == 2
 
 
@@ -416,4 +416,33 @@ def test_budget_rechecked_after_stage1_before_stage2(monkeypatch):
     result = run_full_analysis("TEST")
     assert result.status == "budget_exceeded"
     assert result.spent_inr == 1400.0
+    assert result.validation_failures == [
+        "Stage 1 billed ₹5.00 before the monthly cap blocked Stage 2."
+    ]
     assert calls["n"] == 2
+
+
+def test_runtime_exceeded_reports_total_spent_not_stage1_only(monkeypatch):
+    """Regression: WAAREEENER billed ₹57.79 but bot showed ₹14.14 (Stage 1 only)."""
+    _patch_common(monkeypatch)
+    runtime_checks = {"n": 0}
+
+    def _runtime_exceeded(started_at):
+        runtime_checks["n"] += 1
+        return runtime_checks["n"] >= 2
+
+    monkeypatch.setattr(pipeline_module, "_runtime_exceeded", _runtime_exceeded)
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_stage2",
+        lambda brief, extraction, extra_instruction=None, **kwargs: (
+            "```json\n{\"verdict\": \"WATCH\"}\n```",
+            None,
+            {"input_tokens": 100, "output_tokens": 50, "cost_inr": 43.0},
+        ),
+    )
+
+    result = run_full_analysis("TEST")
+    assert result.status == "analysis_runtime_exceeded"
+    assert result.spent_inr == pytest.approx(48.0)  # stage1 5 + one stage2 43
+    assert result.validation_failures

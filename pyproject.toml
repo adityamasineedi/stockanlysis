@@ -35,6 +35,7 @@ stockbot-prescreen = "stockbot.portfolio_screener.cli:main"
 stockbot-prescan-query = "stockbot.portfolio_screener.prescan_query_cli:main"
 stockbot-preflight = "stockbot.preflight_cli:main"
 stockbot-monitor = "stockbot.monitor.cli:main"
+stockbot-stage2-benchmark = "stockbot.stage2_benchmark:main"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]

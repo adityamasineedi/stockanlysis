@@ -683,6 +683,8 @@ def run_stage2(
     max_tokens: int | None = None,
     model: str | None = None,
     mode: Stage2Mode = "FULL",
+    *,
+    enable_thinking: bool | None = None,
 ) -> tuple[str, VerdictJSON, dict]:
     # model override exists only for pre-Opus cost-conscious debugging (e.g.
     # running the real master prompt + hard injections against Sonnet 5,
@@ -694,11 +696,17 @@ def run_stage2(
         call_max_tokens = max_tokens or LITE_MAX_TOKENS
         thinking = None
     else:
-        call_model = model or MODEL
+        call_model = model or settings.stage2_full_model or MODEL
         call_max_tokens = max_tokens or MAX_TOKENS
-        # {"type": "adaptive"} is the only accepted shape on Sonnet 5 —
-        # budget_tokens is rejected outright (400), not just deprecated.
-        thinking = {"type": "adaptive"}
+        use_thinking = (
+            settings.stage2_full_thinking if enable_thinking is None else enable_thinking
+        )
+        if use_thinking is False:
+            thinking = None
+        else:
+            # {"type": "adaptive"} is the only accepted shape on Sonnet 5 —
+            # budget_tokens is rejected outright (400), not just deprecated.
+            thinking = {"type": "adaptive"}
     system_prompt = load_stage2_system_prompt(mode)
     user_message = build_user_message(brief, extraction, extra_instruction)
 
@@ -743,6 +751,8 @@ def run_stage2(
         "output_tokens": response.usage.output_tokens,
         "cost_inr": cost_inr,
         "stage2_mode": mode,
+        "model": call_model,
+        "thinking_enabled": thinking is not None,
     }
 
     return report_text, verdict, usage

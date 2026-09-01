@@ -65,20 +65,14 @@ MAX_STAGE2_RETRIES = 1
 # must not consume a validation retry (v3 migration note) — but it still
 # needs its own bound so a persistently-truncating call can't loop forever
 # independent of the cost cap below (which would eventually stop it anyway,
-# but a call could burn several truncations before crossing ₹80).
+# but a call could burn several truncations before crossing the per-run cap).
 MAX_TRUNCATION_RETRIES = 2
 
-# Hard per-analysis kill switch. Separate from costs.check_budget()'s
-# monthly cap — that one is checked BEFORE an analysis starts; this one
-# stops a single analysis mid-flight. Added after a real run spent ₹243
-# across repeated Stage 1 + Stage 2 (+ retries) failures on one ticker —
-# nothing was stopping it. ₹80 is a hard ceiling meant to bound the worst
-# case (Stage 1 + Stage 2 + one retry), not a number any single healthy
-# analysis should get near.
-PER_ANALYSIS_COST_CAP_INR = 80.0
+# Hard per-analysis kill switch — values from settings (env-tunable).
+PER_ANALYSIS_COST_CAP_INR = settings.per_analysis_cost_cap_inr
 # Stop starting new paid Stage 2 attempts once wall-clock exceeds this —
 # prevents retry loops from burning budget after an abandoned session.
-ANALYSIS_RUNTIME_CAP_SECONDS = 600
+ANALYSIS_RUNTIME_CAP_SECONDS = settings.analysis_runtime_cap_seconds
 
 # Paid-path concurrency. Cache hits skip this. Recreated when settings change
 # only at process start — config is read once at import of settings.
@@ -133,11 +127,19 @@ class Stage2TruncationExhausted(Exception):
 
 
 class AnalysisRuntimeExceeded(Exception):
-    def __init__(self, elapsed_seconds: float):
+    def __init__(
+        self,
+        elapsed_seconds: float,
+        spent_inr: float,
+        validation_failures: list[str] | None = None,
+    ):
         self.elapsed_seconds = elapsed_seconds
+        self.spent_inr = spent_inr
+        self.validation_failures = validation_failures
         super().__init__(
             f"Analysis runtime cap ({ANALYSIS_RUNTIME_CAP_SECONDS}s) exceeded "
-            f"after {elapsed_seconds:.0f}s — stopping before further LLM calls"
+            f"after {elapsed_seconds:.0f}s — ₹{spent_inr:.2f} spent, "
+            f"stopping before further LLM calls"
         )
 
 
@@ -160,7 +162,10 @@ def _call_stage2_absorbing_truncation(
     same ceiling is forbidden: stage2_max_tokens escalates each attempt.
     """
     if _runtime_exceeded(started_at):
-        raise AnalysisRuntimeExceeded(time.monotonic() - started_at)
+        raise AnalysisRuntimeExceeded(
+            time.monotonic() - started_at,
+            running_cost_inr,
+        )
     for truncation_attempt in range(MAX_TRUNCATION_RETRIES + 1):
         call_max_tokens = stage2_max_tokens(stage2_mode, truncation_attempt)
         try:
@@ -225,7 +230,11 @@ def _run_stage2_with_validation(
     attempt = 1
     while not validation.passed and attempt <= MAX_STAGE2_RETRIES:
         if _runtime_exceeded(started_at):
-            raise AnalysisRuntimeExceeded(time.monotonic() - started_at)
+            raise AnalysisRuntimeExceeded(
+                time.monotonic() - started_at,
+                running_cost_inr,
+                validation_failures=list(validation.failures),
+            )
         retry_mode = classify_retry_mode(validation)
         feedback = format_validation_errors(validation, retry_mode=retry_mode)
         logger.warning(
@@ -289,7 +298,17 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     # (or a slow Stage 1) that filled the cap does not proceed into Stage 2.
     budget_ok, spent = check_budget()
     if not budget_ok:
-        return PipelineResult(status="budget_exceeded", spent_inr=spent)
+        stage1_cost = stage1_usage["cost_inr"]
+        note = (
+            f"Stage 1 billed ₹{stage1_cost:.2f} before the monthly cap blocked Stage 2."
+            if stage1_cost > 0
+            else None
+        )
+        return PipelineResult(
+            status="budget_exceeded",
+            spent_inr=spent,
+            validation_failures=[note] if note else None,
+        )
 
     try:
         report_text, stage2_usage, validation = _run_stage2_with_validation(
@@ -307,12 +326,20 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
             spent_inr=exc.spent_inr,
             truncation_attempts=exc.attempts,
         )
-    except AnalysisRuntimeExceeded:
-        spent_so_far = stage1_usage["cost_inr"]
-        return PipelineResult(status="analysis_runtime_exceeded", spent_inr=spent_so_far)
+    except AnalysisRuntimeExceeded as exc:
+        return PipelineResult(
+            status="analysis_runtime_exceeded",
+            spent_inr=exc.spent_inr,
+            validation_failures=exc.validation_failures,
+        )
 
     if not validation.passed:
-        return PipelineResult(status="insufficient_data", validation_failures=validation.failures)
+        total_cost_inr = stage1_usage["cost_inr"] + stage2_usage["cost_inr"]
+        return PipelineResult(
+            status="insufficient_data",
+            validation_failures=validation.failures,
+            spent_inr=total_cost_inr,
+        )
 
     # extract_verdict_json already succeeded inside validate_report — re-parse
     # here rather than threading a fourth return value through the retry loop
@@ -343,6 +370,10 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     verdict_json["analysis_price_date"] = verdict.price_date.isoformat()
     verdict_json["stage2_mode"] = stage2_mode
     verdict_json["stage2_routing_reasons"] = list(prescan_routing.reasons)
+    verdict_json["stage2_model_used"] = stage2_usage.get("model", settings.stage2_full_model)
+    verdict_json["stage2_thinking_enabled"] = stage2_usage.get(
+        "thinking_enabled", settings.stage2_full_thinking
+    )
     if settings.force_stage2_full:
         verdict_json["stage2_mode_forced"] = True
     verdict_json = merge_expected_return_into_verdict_json(verdict_json)

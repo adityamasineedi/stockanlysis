@@ -425,7 +425,8 @@ def _audit_analyses(findings: list[Finding], days: int) -> dict[str, object]:
                     "critical",
                     "cost_leak",
                     "Single analysis near per-run cap",
-                    f"{ticker} cost ₹{cost:.2f} (cap ₹80) — check retries/truncation/Stage 2 FULL path.",
+                    f"{ticker} cost ₹{cost:.2f} (cap ₹{settings.per_analysis_cost_cap_inr:.0f}) — "
+                    "check retries/truncation/Stage 2 FULL path.",
                     {"ticker": ticker, "cost_inr": cost, "created_at": row["created_at"]},
                 )
             )

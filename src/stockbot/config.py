@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # Optional — portfolio pre-screener ranking (gpt-4o-mini default when set).
     openai_api_key: str = ""
     monthly_budget_inr: float = 1400.0
+    # Wall-clock cap for one /analyze (brief fetch + Stage 1 + Stage 2 + retries).
+    # FULL Sonnet runs with validation retry often need 12–15 min; 600s was too tight.
+    analysis_runtime_cap_seconds: int = 900
+    # Hard per-run LLM spend ceiling (Stage 1 + Stage 2 + truncation/validation retries).
+    per_analysis_cost_cap_inr: float = 100.0
     # Spot USD/INR for LLM cost conversion. Refresh periodically — do not
     # leave a years-old rate here (was 88 for a long stretch while spot ~95).
     usd_inr_rate: float = 95.5
@@ -65,6 +70,9 @@ class Settings(BaseSettings):
     # Debug / quality check: always run Sonnet full 16-section Stage 2 even when
     # routing would pick the cheaper Haiku lite path.
     force_stage2_full: bool = False
+    # Stage 2 FULL model (after A/B benchmark sign-off). Default Sonnet + thinking.
+    stage2_full_model: str = "claude-sonnet-5"
+    stage2_full_thinking: bool = True
     # Block /analyze unless prescan eligibility passes (AUTO_DEEP or SECTOR_REVIEW).
     require_prescan_for_analyze: bool = True
     # Relax constitution gates so WATCH/UNCERTAIN names with evidence can still

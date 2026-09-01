@@ -18,9 +18,10 @@ the bot's event loop for the several minutes a real analysis takes,
 without turning the pipeline itself async.
 
 Real timing, measured live: a full run (brief fetch + Stage 1 + Stage 2)
-takes roughly 5-10 minutes end to end, and a Stage 2 validation retry adds
-another 5-8 minutes on top of that — Sonnet's adaptive thinking plus a
-full 16-section report is genuinely slow to generate, not stuck.
+takes roughly 8–12 minutes end to end, and a Stage 2 validation retry adds
+another 5–8 minutes on top of that — Sonnet's adaptive thinking plus a
+full 16-section report is genuinely slow to generate, not stuck. The runtime
+cap defaults to 15 minutes (ANALYSIS_RUNTIME_CAP_SECONDS) so one retry can finish.
 The original "~45s" estimate in ANALYZING_TEMPLATE was never measured
 against a real run and badly undersold this; a restart mid-analysis
 abandons the in-flight background thread with no recovery — the API call
@@ -86,6 +87,7 @@ from stockbot.monitor.health_audit import run_health_audit
 from stockbot.pipeline import (
     ANALYSIS_RUNTIME_CAP_SECONDS,
     MAX_TRUNCATION_RETRIES,
+    PER_ANALYSIS_COST_CAP_INR,
     PipelineResult,
     run_full_analysis,
 )
@@ -135,7 +137,9 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 ANALYSIS_RUNTIME_CAP_MINUTES = ANALYSIS_RUNTIME_CAP_SECONDS // 60
-ANALYZING_TEMPLATE = "⏳ Analyzing {company}... (usually 5-15 min — please don't restart the bot)"
+ANALYZING_TEMPLATE = (
+    "⏳ Analyzing {company}... (usually 8–{cap_min} min — please don't restart the bot)"
+)
 DISCLAIMER = (
     "<i>Educational research only — not investment advice. "
     "Do your own due diligence before any trade.</i>"
@@ -227,7 +231,7 @@ _analysis_lock = asyncio.Lock()
 _analysis_in_progress: str | None = None
 
 BUSY_ANALYSIS_REPLY = (
-    "Deep analysis in progress for {company} (usually 5–15 min). "
+    "Deep analysis in progress for {company} (usually 8–{cap_min} min). "
     "Please wait for the result — other bot commands are paused until it finishes."
 )
 
@@ -258,7 +262,9 @@ async def _reject_if_analysis_busy(update: Update) -> bool:
     active = await _active_analysis_query()
     if active is None:
         return False
-    reply = BUSY_ANALYSIS_REPLY.format(company=esc(active))
+    reply = BUSY_ANALYSIS_REPLY.format(
+        company=esc(active), cap_min=ANALYSIS_RUNTIME_CAP_MINUTES
+    )
     if update.message is not None:
         await update.message.reply_text(reply)
     elif update.callback_query is not None:
@@ -632,14 +638,20 @@ async def _deliver_result(
     if result.status == "busy":
         await status_message.edit_text(
             "Another analysis is already running. Please wait for it to finish "
-            "(usually 5–15 min), then try again."
+            "(usually 8–{cap_min} min), then try again.".format(
+                cap_min=ANALYSIS_RUNTIME_CAP_MINUTES
+            )
         )
         return
 
     if result.status == "budget_exceeded":
+        extra = ""
+        if result.validation_failures:
+            extra = "\n\n" + "\n".join(esc(f) for f in result.validation_failures)
         await status_message.edit_text(
             f"Monthly budget reached (₹{result.spent_inr:.0f} spent this month). "
             f"No new analyses until next month — the cap is real, not advisory."
+            f"{extra}"
         )
         return
 
@@ -656,16 +668,21 @@ async def _deliver_result(
 
     if result.status == "insufficient_data":
         failures = "\n".join(f"- {esc(f)}" for f in (result.validation_failures or []))
+        spent_note = (
+            f"\n\n(₹{result.spent_inr:.2f} spent on this attempt — logged, not saved as a report.)"
+            if result.spent_inr
+            else ""
+        )
         await status_message.edit_text(
             "Insufficient data for a confident view after validation. "
-            f"This is an honest answer, not a bug.\n\n{failures}"
+            f"This is an honest answer, not a bug.{spent_note}\n\n{failures}"
         )
         return
 
     if result.status == "analysis_cost_exceeded":
         await status_message.edit_text(
-            f"This analysis hit its per-run cost cap (₹80) before producing a validated "
-            f"verdict (₹{result.spent_inr:.2f} spent on this attempt). "
+            f"This analysis hit its per-run cost cap (₹{PER_ANALYSIS_COST_CAP_INR:.0f}) before "
+            f"producing a validated verdict (₹{result.spent_inr:.2f} spent on this attempt). "
             f"Try again later, or send /spend to check the monthly total."
         )
         return
@@ -675,17 +692,32 @@ async def _deliver_result(
         await status_message.edit_text(
             f"Stage 2 output was cut off {attempts} time(s) (each try used a higher token "
             f"budget) before the report could finish (₹{result.spent_inr:.2f} spent — "
-            f"not the ₹80 cap). Long FULL analyses with fat annual reports hit this "
-            f"rarest now. Send /spend to check the monthly total, or retry later."
+            f"not the ₹{PER_ANALYSIS_COST_CAP_INR:.0f} cap). Long FULL analyses with fat "
+            f"annual reports hit this rarest now. Send /spend to check the monthly total, "
+            f"or retry later."
         )
         return
 
     if result.status == "analysis_runtime_exceeded":
-        await status_message.edit_text(
-            f"Analysis stopped after {ANALYSIS_RUNTIME_CAP_MINUTES} minutes to avoid burning "
-            f"more LLM budget (₹{result.spent_inr:.2f} spent so far — Stage 1 only if Stage 2 "
-            f"never completed). Try /prescan first, then /analyze again when you can wait."
+        cap_min = ANALYSIS_RUNTIME_CAP_MINUTES
+        lines = [
+            f"Analysis hit the {cap_min}-minute time cap "
+            f"(₹{result.spent_inr:.2f} billed on this attempt — all stages included).",
+        ]
+        if result.validation_failures:
+            lines.append(
+                "Stage 2 ran but validation did not pass — a retry was blocked by the time cap."
+            )
+            failures = "\n".join(f"- {esc(f)}" for f in result.validation_failures[:6])
+            lines.append(f"\nValidation issues:\n{failures}")
+        else:
+            lines.append(
+                "Brief fetch or Stage 2 may still have been in progress when the cap hit."
+            )
+        lines.append(
+            f"\nRetry /analyze when you can wait up to {cap_min} min — do not restart the bot mid-run."
         )
+        await status_message.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
         return
 
     if result.status == "render_failed":
@@ -814,7 +846,9 @@ async def _run_and_reply(
     if not await _try_begin_analysis(query):
         active = await _active_analysis_query()
         await update.message.reply_text(
-            BUSY_ANALYSIS_REPLY.format(company=esc(active or query))
+            BUSY_ANALYSIS_REPLY.format(
+                company=esc(active or query), cap_min=ANALYSIS_RUNTIME_CAP_MINUTES
+            )
         )
         return
 
@@ -825,7 +859,9 @@ async def _run_and_reply(
                 return
 
         status_message = await update.message.reply_text(
-            ANALYZING_TEMPLATE.format(company=esc(query))
+            ANALYZING_TEMPLATE.format(
+                company=esc(query), cap_min=ANALYSIS_RUNTIME_CAP_MINUTES
+            )
         )
         progress_task = asyncio.create_task(_send_progress_updates(status_message, query))
         try:
@@ -833,9 +869,24 @@ async def _run_and_reply(
                 result = await asyncio.to_thread(
                     run_full_analysis, query, skip_cache=skip_cache
                 )
-            except Exception as exc:  # bot's resilience boundary — a crash here must still reply, not vanish
+            except Exception as exc:
+                from anthropic import APIConnectionError, APITimeoutError, RateLimitError
+
                 logger.exception("run_full_analysis failed for %r", query)
-                await status_message.edit_text(f"Something went wrong: {esc(exc)}")
+                if isinstance(exc, (APIConnectionError, APITimeoutError)):
+                    await status_message.edit_text(
+                        "Network error reaching the LLM API — nothing was saved. "
+                        "Wait a minute and retry /analyze (transient errors retry automatically). "
+                        f"Detail: {esc(str(exc))}"
+                    )
+                elif isinstance(exc, RateLimitError):
+                    await status_message.edit_text(
+                        "LLM rate limit hit — nothing was saved. "
+                        "Wait a few minutes and retry /analyze. "
+                        f"Detail: {esc(str(exc))}"
+                    )
+                else:
+                    await status_message.edit_text(f"Something went wrong: {esc(exc)}")
                 return
         finally:
             progress_task.cancel()
