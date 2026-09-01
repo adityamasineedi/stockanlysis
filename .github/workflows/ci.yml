@@ -24,13 +24,23 @@ jobs:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    container: ghcr.io/railwayapp/cli:latest
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_PROJECT_ID: 7f563882-8241-4b94-98d5-c9f2b68cfefa
+      RAILWAY_ENVIRONMENT: production
     steps:
       - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        # Pin below v5.3 — latest CLI regressed non-interactive RAILWAY_TOKEN auth in CI.
+        run: npm install -g @railway/cli@5.2.0
+      - name: Verify Railway token is configured
+        run: |
+          if [ -z "${RAILWAY_TOKEN:-}" ]; then
+            echo "::error::RAILWAY_TOKEN secret is missing. Create a project token in Railway → stockanlysis → Settings → Tokens (production) and add it to GitHub repo secrets."
+            exit 1
+          fi
       - name: Deploy to Railway (production)
-        run: railway up --service stockanlysis --detach
+        run: railway up --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT" --service stockanlysis --detach
 
   notify-deploy:
     needs: deploy
