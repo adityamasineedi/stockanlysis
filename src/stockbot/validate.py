@@ -209,6 +209,15 @@ CONSTITUTION_AUTO_FIX_CHECKS: frozenset[str] = frozenset(
     {
         "anti_chase_flag",
         "anti_chase_buy_block",
+        "buy_zone_discount",
+    }
+)
+
+# Prose/structure fixes — deterministic, no full Stage 2 regeneration.
+STRUCTURAL_AUTO_FIX_CHECKS: frozenset[str] = frozenset(
+    {
+        "output_order",
+        "technical_figures_not_recomputed",
     }
 )
 
@@ -1057,6 +1066,8 @@ def _check_technical_figures_not_recomputed(report_text: str, brief: Brief) -> C
             continue
         stated = float(match.group(1))
         if abs(stated - expected) > TECHNICAL_FIGURE_TOLERANCE:
+            if _is_sma_period_confusion(name, stated, expected):
+                continue
             mismatches.append(f"{name}: report states {stated}, computed value was {expected:.2f}")
 
     return CheckResult(
@@ -1143,6 +1154,81 @@ def classify_retry_mode(result: ValidationResult) -> Literal["narrow", "full"]:
     return "full"
 
 
+_SMA_PERIOD_CONFUSION: dict[str, float] = {"SMA50": 50.0, "SMA200": 200.0}
+
+
+def _is_sma_period_confusion(name: str, stated: float, expected: float) -> bool:
+    """Model sometimes writes the lookback period (50/200) instead of the SMA price."""
+    period = _SMA_PERIOD_CONFUSION.get(name)
+    if period is None:
+        return False
+    return abs(stated - period) < 0.01 and abs(stated - expected) > TECHNICAL_FIGURE_TOLERANCE
+
+
+def _fix_sma_period_confusion_prose(report_text: str, brief: Brief) -> str:
+    """Replace period-confused SMA literals with mandated placeholder tokens."""
+    text = report_text
+    replacements = [
+        ("SMA50", _SMA50_RE, brief.technicals.sma50, "sma50"),
+        ("SMA200", _SMA200_RE, brief.technicals.sma200, "sma200"),
+    ]
+    for name, pattern, expected, token in replacements:
+        if expected is None:
+            continue
+
+        def _repl(match: re.Match[str], *, _name: str = name, _exp: float = expected, _tok: str = token) -> str:
+            stated = float(match.group(1))
+            if not _is_sma_period_confusion(_name, stated, _exp):
+                return match.group(0)
+            return match.group(0).replace(match.group(1), f"{{{{{_tok}}}}}")
+
+        scan_text = _PLACEHOLDER_TOKEN_RE.sub("", text)
+        if not pattern.search(scan_text):
+            continue
+        text = pattern.sub(_repl, text)
+    return text
+
+
+def _collapse_extra_json_fences(report_text: str) -> str:
+    """Keep only the last ```json block — pipeline parses the last one anyway."""
+    matches = list(_JSON_FENCE_RE.finditer(report_text))
+    if len(matches) <= 1:
+        return report_text
+    collapsed = report_text
+    for match in reversed(matches[:-1]):
+        collapsed = collapsed[: match.start()] + collapsed[match.end() :]
+    return collapsed
+
+
+def _clamp_buy_zone_to_risk_band(
+    verdict: VerdictJSON, valuation: ValuationComputed
+) -> VerdictJSON:
+    """Pull an over-deep buy zone up to the risk-band floor — model overshoots on cyclicals."""
+    if verdict.buy_zone_abs is None or verdict.buy_range_allowed is False:
+        return verdict
+    band = effective_risk_discount_bands().get(verdict.risk)
+    if band is None:
+        return verdict
+    band_min, band_max = band
+    fv_mid = (valuation.fair_value_base_abs[0] + valuation.fair_value_base_abs[1]) / 2
+    if fv_mid <= 0:
+        return verdict
+
+    buy_low, buy_high = verdict.buy_zone_abs
+    min_allowed_low = fv_mid * (1 - band_max - DISCOUNT_TOLERANCE)
+    max_allowed_high = fv_mid * (1 - band_min + DISCOUNT_TOLERANCE)
+    new_low = max(buy_low, min_allowed_low)
+    new_high = min(buy_high, max_allowed_high)
+    if new_low >= new_high:
+        span = max(fv_mid * 0.02, 1.0)
+        new_high = new_low + span
+    if (new_low, new_high) == (buy_low, buy_high):
+        return verdict
+    return verdict.model_copy(
+        update={"buy_zone_abs": (round(new_low, 2), round(new_high, 2))}
+    )
+
+
 def _patch_verdict_json_block(report_text: str, verdict: VerdictJSON) -> str:
     """Replace the last ```json verdict block with an updated payload."""
     matches = list(_JSON_BLOCK_RE.finditer(report_text))
@@ -1159,33 +1245,29 @@ def try_auto_fix_report(
 ) -> tuple[str, ValidationResult] | None:
     """Apply deterministic fixes when failures are purely formatting/constitution."""
     names = _failed_check_names(result)
-    if not names:
+    all_auto_fixable = (
+        CONSTITUTION_AUTO_FIX_CHECKS | STRUCTURAL_AUTO_FIX_CHECKS | AUTO_FIXABLE_CHECKS
+    )
+    if not names or not names <= all_auto_fixable:
         return None
 
     fixed = report_text
-    validation = result
 
-    if names <= CONSTITUTION_AUTO_FIX_CHECKS:
+    if "output_order" in names:
+        fixed = _collapse_extra_json_fences(fixed)
+    if "technical_figures_not_recomputed" in names:
+        fixed = _fix_sma_period_confusion_prose(fixed, brief)
+
+    if names & CONSTITUTION_AUTO_FIX_CHECKS:
         try:
             verdict = extract_verdict_json(fixed)
         except VerdictParseError:
             return None
         valuation = compute_valuation(verdict.valuation_inputs)
+        if "buy_zone_discount" in names:
+            verdict = _clamp_buy_zone_to_risk_band(verdict, valuation)
         patched = apply_constitution_overrides(verdict, valuation, brief)
         fixed = _patch_verdict_json_block(fixed, patched)
-        validation = validate_report(fixed, brief, stage2_mode=stage2_mode)
-        if validation.passed:
-            logger.info(
-                "Auto-fixed constitution validation failures without Stage 2 retry: %s",
-                sorted(names),
-            )
-            return fixed, validation
-        names = _failed_check_names(validation)
-        if not names:
-            return fixed, validation
-
-    if not names or not names <= AUTO_FIXABLE_CHECKS:
-        return (fixed, validation) if validation.passed else None
 
     if "confidence_scale_over_ten" in names:
 
@@ -1199,7 +1281,7 @@ def try_auto_fix_report(
     revalidated = validate_report(fixed, brief, stage2_mode=stage2_mode)
     if revalidated.passed:
         logger.info("Auto-fixed validation failures without Stage 2 retry: %s", sorted(names))
-    return fixed, revalidated
+    return (fixed, revalidated) if revalidated.passed else None
 
 
 def _check_no_yearly_return_ladder(report_text: str) -> CheckResult:

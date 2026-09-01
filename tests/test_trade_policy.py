@@ -59,6 +59,15 @@ def test_wc_inconclusive_soft_in_trade_friendly(monkeypatch):
     assert wc_gap_blocks_buy_zone("WORKING_CAPITAL_STRESS") is True
 
 
+def test_wc_inconclusive_require_clarification_soft_in_trade_friendly(monkeypatch):
+    monkeypatch.setattr("stockbot.trade_policy.settings.trade_friendly_mode", True)
+    assert wc_gap_blocks_buy_zone("INCONCLUSIVE_REQUIRE_CLARIFICATION") is False
+
+
+def test_wc_inconclusive_require_clarification_blocks_in_strict_mode():
+    assert wc_gap_blocks_buy_zone("INCONCLUSIVE_REQUIRE_CLARIFICATION") is True
+
+
 def test_business_context_preflight_relaxed_with_three_years(monkeypatch):
     monkeypatch.setattr("stockbot.trade_policy.settings.trade_friendly_mode", True)
     assert business_context_blocks_preflight(financial_years=4) is False

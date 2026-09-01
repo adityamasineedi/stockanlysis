@@ -19,6 +19,13 @@ _WC_SOFT_CLASSIFICATIONS = frozenset({"INCONCLUSIVE", "DATA_OR_SCOPE_ERROR"})
 _MIN_UNCERTAIN_EVIDENCE = 2
 
 
+def _wc_classification_is_soft(text: str) -> bool:
+    if text in _WC_SOFT_CLASSIFICATIONS:
+        return True
+    # Model variants like INCONCLUSIVE_REQUIRE_CLARIFICATION — same intent as INCONCLUSIVE.
+    return text.startswith("INCONCLUSIVE")
+
+
 def trade_friendly_mode() -> bool:
     return settings.trade_friendly_mode
 
@@ -88,7 +95,7 @@ def wc_gap_blocks_buy_zone(wc_gap_classification: object) -> bool:
     text = str(wc_gap_classification).strip().upper()
     if not text:
         return False
-    if trade_friendly_mode() and text in _WC_SOFT_CLASSIFICATIONS:
+    if trade_friendly_mode() and _wc_classification_is_soft(text):
         return False
     return text != "TEMPORARY_BILLING_CYCLE"
 

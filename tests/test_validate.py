@@ -1090,3 +1090,38 @@ def test_deployment_thin_context_passes_when_section2_cites_missing():
     )
     result = validate_report(_report(prose=prose), brief)
     assert not any("thin_context_business_model" in f for f in result.failures)
+
+
+def test_passes_when_sma_period_confused_with_lookback_number():
+    """Regression: model writes SMA50=50.0 (period) instead of the actual price."""
+    report = _report(prose="Price is above SMA50 at 50.0 and below SMA200 at 200.0.")
+    result = validate_report(report, _brief())
+    assert result.passed is True
+
+
+def test_auto_fix_collapses_multiple_json_fences():
+    verdict = {**BASE_VERDICT}
+    extra = json.dumps({"verdict": "WATCH"})
+    report = (
+        f"**SHOULD I BUY?**\n- **Decision:** WATCH\n\n"
+        f"```json\n{extra}\n```\n\n"
+        f"```json\n{json.dumps(verdict)}\n```\n\n"
+        f"*Research and education, not investment advice. Verify the numbers before "
+        f"acting, and consider a SEBI-registered investment adviser.*\n"
+    )
+    initial = validate_report(report, _brief())
+    assert any("output_order" in f for f in initial.failures)
+    fixed = try_auto_fix_report(report, initial, _brief())
+    assert fixed is not None
+    _fixed_report, revalidated = fixed
+    assert revalidated.passed is True
+
+
+def test_auto_fix_clamps_over_deep_buy_zone():
+    report = _report({"risk": "MEDIUM", "buy_zone_abs": [200.0, 250.0]})
+    initial = validate_report(report, _brief())
+    assert any("buy_zone_discount" in f for f in initial.failures)
+    fixed = try_auto_fix_report(report, initial, _brief())
+    assert fixed is not None
+    _fixed_report, revalidated = fixed
+    assert revalidated.passed is True
