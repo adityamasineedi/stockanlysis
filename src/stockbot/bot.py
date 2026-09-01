@@ -639,12 +639,12 @@ async def _deliver_result(
         return
 
     if result.status == "analysis_truncated":
-        attempts = MAX_TRUNCATION_RETRIES + 1
+        attempts = result.truncation_attempts or (MAX_TRUNCATION_RETRIES + 1)
         await status_message.edit_text(
-            f"Stage 2 output was cut off {attempts} times before the report could finish "
-            f"(₹{result.spent_inr:.2f} spent — not the ₹80 cap). Long FULL analyses "
-            f"(e.g. utilities) hit this most often. Wait a few minutes and retry, "
-            f"or send /spend to check the monthly total."
+            f"Stage 2 output was cut off {attempts} time(s) (each try used a higher token "
+            f"budget) before the report could finish (₹{result.spent_inr:.2f} spent — "
+            f"not the ₹80 cap). Long FULL analyses with fat annual reports hit this "
+            f"rarest now. Send /spend to check the monthly total, or retry later."
         )
         return
 

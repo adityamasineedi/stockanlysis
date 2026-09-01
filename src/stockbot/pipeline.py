@@ -45,6 +45,7 @@ from stockbot.llm.verdict import (
     compute_valuation,
     extract_verdict_json,
     run_stage2,
+    stage2_max_tokens,
 )
 from stockbot.models import AmbiguousMatch, Analysis, TickerInfo, ValidationResult
 from stockbot.render import PlaceholderError, render_report
@@ -106,6 +107,7 @@ class PipelineResult:
     from_cache: bool = False
     staleness_banner: str | None = None
     cache_miss_reason: str | None = None
+    truncation_attempts: int | None = None
 
 
 class AnalysisCostExceeded(Exception):
@@ -150,31 +152,48 @@ def _call_stage2_absorbing_truncation(
     stage2_mode: Stage2Mode,
     started_at: float,
 ) -> tuple[str, dict, float]:
-    """Runs one Stage 2 call, transparently re-issuing it (same
-    extra_instruction, i.e. not a validation attempt) if truncated. Returns
-    (report_text, usage, updated running_cost_inr). Truncation is an
-    infrastructure failure, not a validation failure — it must not consume
-    one of the scarce MAX_STAGE2_RETRIES slots."""
+    """Runs one Stage 2 call, re-issuing with a *higher* max_tokens if truncated.
+
+    Truncation is an infrastructure failure, not a validation failure — it
+    must not consume one of the scarce MAX_STAGE2_RETRIES slots. Retrying the
+    same ceiling is forbidden: stage2_max_tokens escalates each attempt.
+    """
     if _runtime_exceeded(started_at):
         raise AnalysisRuntimeExceeded(time.monotonic() - started_at)
     for truncation_attempt in range(MAX_TRUNCATION_RETRIES + 1):
+        call_max_tokens = stage2_max_tokens(stage2_mode, truncation_attempt)
         try:
             report_text, _verdict, usage = run_stage2(
                 brief,
                 extraction,
                 extra_instruction=extra_instruction,
                 mode=stage2_mode,
+                max_tokens=call_max_tokens,
             )
         except TruncatedResponseError as exc:
             running_cost_inr += exc.cost_inr
             if running_cost_inr > PER_ANALYSIS_COST_CAP_INR:
                 raise AnalysisCostExceeded(running_cost_inr) from exc
+            next_budget = stage2_max_tokens(stage2_mode, truncation_attempt + 1)
+            can_escalate = (
+                truncation_attempt < MAX_TRUNCATION_RETRIES
+                and next_budget > call_max_tokens
+            )
             logger.warning(
-                "Stage 2 response truncated (infra failure %d/%d, not a validation attempt): %s",
+                "Stage 2 truncated at max_tokens=%d (infra %d/%d, ₹%.2f so far); "
+                "next attempt budget=%s: %s",
+                call_max_tokens,
                 truncation_attempt + 1,
-                MAX_TRUNCATION_RETRIES,
+                MAX_TRUNCATION_RETRIES + 1,
+                running_cost_inr,
+                next_budget if can_escalate else "none (at cap or retries exhausted)",
                 exc,
             )
+            if not can_escalate:
+                raise Stage2TruncationExhausted(
+                    running_cost_inr,
+                    truncation_attempt + 1,
+                ) from exc
             continue
         running_cost_inr += usage["cost_inr"]
         if running_cost_inr > PER_ANALYSIS_COST_CAP_INR:
@@ -282,7 +301,11 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     except AnalysisCostExceeded as exc:
         return PipelineResult(status="analysis_cost_exceeded", spent_inr=exc.spent_inr)
     except Stage2TruncationExhausted as exc:
-        return PipelineResult(status="analysis_truncated", spent_inr=exc.spent_inr)
+        return PipelineResult(
+            status="analysis_truncated",
+            spent_inr=exc.spent_inr,
+            truncation_attempts=exc.attempts,
+        )
     except AnalysisRuntimeExceeded:
         spent_so_far = stage1_usage["cost_inr"]
         return PipelineResult(status="analysis_runtime_exceeded", spent_inr=spent_so_far)

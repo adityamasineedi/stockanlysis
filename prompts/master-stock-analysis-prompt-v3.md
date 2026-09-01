@@ -164,6 +164,7 @@ Apply metrics that fit the business. The wrong yardstick produces confident nons
 - **Insurance:** VNB margin, APE, embedded value, P/EV, persistency, solvency.
 - **IT services:** constant-currency growth, deal TCV, EBIT margin, attrition, client concentration.
 - **Commodity / cyclical:** P/E misleads — it looks cheapest at cycle peaks. Use EV/EBITDA, capacity utilisation, spreads, normalised mid-cycle earnings.
+- **Shipping / asset-heavy cyclicals:** discount to reported NAV or P/NAV alongside normalised mid-cycle earnings. Trailing P/E at cycle peaks is the same trap as commodity/cyclical — cheap-looking multiples on peak EPS are not bargains.
 - **Pharma:** USFDA observations, pipeline, US price erosion, R&D spend, domestic/export mix.
 - **Consumer / FMCG:** volume growth separate from value growth, distribution, gross margin vs inputs.
 - **Capital goods / infra / EPC:** order book, book-to-bill, working-capital days, receivable days.
@@ -178,7 +179,7 @@ Apply metrics that fit the business. The wrong yardstick produces confident nons
 - Every number gets a plain-language sentence. Not "ROCE = 24%" but: *"ROCE is 24%, meaning the company earns roughly ₹24 of operating profit for every ₹100 of capital it uses. That is generally healthy — compare it with peers and its own history."*
 - Define any term on first use, in one bracketed phrase.
 - Short sentences. Be direct. If evidence is mixed, say so once rather than hedging throughout.
-- **Length: 1,200–1,800 words.** If a section has nothing to say, say so in one line rather than padding.
+- **Length: ~3,000–4,500 words** for the full 16 sections plus Beginner Summary (a complete report cannot fit 1,200–1,800). Mark §9 (peers), §12 (technicals), and §14 (risk/reward) as terse-by-default when evidence is thin — one tight paragraph each rather than padding.
 - **Every EPS figure must carry its basis on first use in each section**: "FY26 EPS ₹1.80", "TTM EPS ₹1.91", "FY27E EPS ₹2.20". Never write a bare "EPS" figure — a reader (and a validator) cannot reconcile two different EPS numbers across sections without knowing which basis each one is. When §11 computes a P/E multiple, state which EPS it is built on.
 
 ### PLACEHOLDER TOKENS — mandatory
@@ -198,6 +199,7 @@ Available tokens (complete set — including the headline Fair Value range):
 {{fair_value_bear}}         {{fair_value_base}}         {{fair_value_bull}}
 {{fair_value_base_low}}     {{fair_value_base_high}}
 {{buy_zone_low}}            {{buy_zone_high}}           {{upside_pct}}          {{downside_pct}}
+{{add_zone_low}}            {{add_zone_high}}           {{avoid_chase_above}}
 {{promoter_pct}}            {{pledge_pct}}
 ```
 
@@ -210,6 +212,7 @@ Available tokens (complete set — including the headline Fair Value range):
 - **The headline "Fair Value" figure is always the BASE case's own range — `{{fair_value_base_low}}`–`{{fair_value_base_high}}` — never bear-low-to-bull-high.** Bear and bull are separate scenarios; spanning bear's low to bull's high produces a number that can be enormous (100%+ wide) and means nothing as a single headline figure. Use `{{fair_value_bear}}` / `{{fair_value_base}}` / `{{fair_value_bull}}` (single-number midpoints) only in prose sentences discussing each scenario individually, never as the report's one "Fair Value" line.
 - `{{upside_pct}}` and `{{downside_pct}}` are signed the same way: positive means the target (base fair value / bear fair value respectively) sits above the current price, negative means the current price already exceeds it. A negative `{{upside_pct}}` means there is no upside to the base case — say so directly ("already trading X% above our base fair value"), don't reword it as if it were positive. A negative `{{downside_pct}}` means the current price is already below even the bear case.
 - Numbers drawn from `FINANCIALS` (revenue, PAT, debt, margins) have no tokens — write them literally, copied exactly from the supplied tables.
+- `{{add_zone_low}}` / `{{add_zone_high}}` / `{{avoid_chase_above}}` are Python-computed like buy zone tokens — use them in §13 when `add_range_allowed` is true; write `not issued` in prose only when gates block add ranges (do not invent alternate add-zone prices).
 - Never use `{{pledge_pct}}` if pledge is on the MISSING list.
 - Invent no tokens. If you need one that doesn't exist, write the number literally and flag it.
 
@@ -291,7 +294,8 @@ Sector-appropriate metrics against the company's own history, expected growth an
 2. For a business with no such contracted visibility, bear EPS should sit at or below TTM EPS. Model an actual decline where operating leverage runs in reverse: a retailer with mostly fixed rent and staff cost sees margins fall faster than revenue.
 3. The bear multiple must anchor to the company's own historical low multiple where that is supplied. If it is not supplied, say so and use a structural floor appropriate to the growth rate — not simply "somewhat below current".
 4. For any stock above 40x trailing earnings, the bear case must model multiple compression of at least 40% from the current multiple. High multiples do not compress gently.
-5. **Output requirement (not optional):** for stocks above 40x trailing, §11 must contain an explicit one-line sanity check in this form: `Bear downside check: {{downside_pct}} vs 30% floor for >40x trailing — PASS / FAIL — <reason>.` **FAIL means revise and re-check — never report FAIL and move on.** If the check would FAIL (downside magnitude under 30%) and there is no specific contracted growth evidence in the supplied context (order book booked, capacity commissioned), revise bear EPS and/or the bear multiple, then write a second line `Bear downside check (revised): … — PASS — …`. If you PASS with downside under 30%, the reason must name the contracted evidence — a general growth narrative is not allowed. The final line left in the report for this check must be PASS.
+5. **Output requirement (not optional):** for stocks above 40x trailing, §11 must contain an explicit one-line sanity check in this form: `Bear downside check: {{downside_pct}} vs 30% floor for >40x trailing — PASS / FAIL — <reason>.` **FAIL means revise and re-check — never report FAIL and move on.** If the check would FAIL (downside magnitude under 30%) and there is no specific contracted growth evidence in the supplied context (order book booked, capacity commissioned), revise bear EPS and/or the bear multiple, then write a second line using **literal revised percentages** in the FAIL line (do not reuse `{{downside_pct}}` on the FAIL line — Python substitutes one final value and both lines would show the same token). Example FAIL line: `… — FAIL — downside only 22% …` then `Bear downside check (revised): {{downside_pct}} vs 30% floor — PASS — …`. If you PASS with downside under 30%, the reason must name the contracted evidence — a general growth narrative is not allowed. The final line left in the report for this check must be PASS.
+6. **Cyclical peak trap (≤10x trailing P/E):** deep cyclicals often look cheapest at peak margins. When trailing P/E is **10x or below** and operating margin is at or near the top of the supplied history, §11 must include: `Cyclical peak earnings check: PASS / FAIL — <one-line reason naming peak-margin or one-off earnings risk>`. Bear case must model earnings normalisation (not just mild multiple compression). Python enforces ≥25% downside to bear midpoint when P/E ≤10x.
 
 If bear EPS exceeds TTM EPS, state the specific contracted reason in `bear_growth_justification` in the output JSON (see Output Format) — this field is otherwise `null`.
 
@@ -309,7 +313,7 @@ Margin of safety scaled to Risk Level (when a zone is allowed):
 - MEDIUM → 20–25%
 - HIGH → 35%+, or no buy zone if risks aren't compensable
 
-Present: {{current_price}} · {{buy_zone_low}}–{{buy_zone_high}} · Add More Zone (list **required_conditions** and **do_not_add_if**) · Avoid Chasing Above · Fair Value range {{fair_value_base_low}}–{{fair_value_base_high}}.
+Present: {{current_price}} · {{buy_zone_low}}–{{buy_zone_high}} · Add More {{add_zone_low}}–{{add_zone_high}} (when `add_range_allowed`; else state not issued) · Avoid chasing above {{avoid_chase_above}} · Fair Value range {{fair_value_base_low}}–{{fair_value_base_high}}.
 
 Good company, wrong price → say **GOOD COMPANY, BAD PRICE — WAIT.** Never force a BUY.
 Add ranges must never be justified by “price fell” alone.
@@ -406,9 +410,11 @@ Bear downside check: {{downside_pct}} vs 30% floor for >40x trailing — PASS �
 
 ### Example — §11 bear downside FAIL then revise (do not stop at FAIL)
 
+Use **literal** percentages on the FAIL line; only the revised PASS line may use `{{downside_pct}}`.
+
 ```text
 Bear [ESTIMATE]: EPS ₹11.00 × 20–24x.
-Bear downside check: {{downside_pct}} vs 30% floor for >40x trailing — FAIL — downside only 22% with no contracted growth evidence. Revising bear EPS from ₹11.00 to ₹9.50 and bear multiple from 20–24x to 16–20x.
+Bear downside check: -22.0% vs 30% floor for >40x trailing — FAIL — downside only 22% with no contracted growth evidence. Revising bear EPS from ₹11.00 to ₹9.50 and bear multiple from 20–24x to 16–20x.
 Bear downside check (revised): {{downside_pct}} vs 30% floor — PASS — downside now 38% with EPS below TTM and multiple compressed 45% from current.
 ```
 
@@ -532,7 +538,7 @@ Do not put JSON before the prose. Do not put the Beginner Summary after the JSON
 
 You supply `valuation_inputs` (an EPS estimate and a P/E multiple range for each of bear/base/bull) — never a computed price. Python multiplies these into fair-value ranges; do not attempt that multiplication yourself, and do not include a fair-value price field here.
 
-**Output only valid JSON in the code block.** If you cannot complete a field from the supplied evidence, use `null` (or an empty list where the schema expects an array) rather than omitting the key, inventing a value, or leaving a blank string that pretends to be data. The JSON must parse with a standard parser — no trailing commas, no comments, no single quotes.
+**Output only valid JSON in the code block.** If you cannot complete a field from the supplied evidence, use JSON `null` (the literal null value, **not** the string `"null"`) or an empty list where the schema expects an array. Allowed string values for `thesis_status`: `THESIS_CONFIRMING`, `THESIS_UNDER_REVIEW`, `THESIS_AT_RISK`, `THESIS_BROKEN`, or JSON null when not applicable. Allowed values for `wc_gap_classification`: `TEMPORARY_BILLING_CYCLE`, `WORKING_CAPITAL_STRESS`, `DATA_OR_SCOPE_ERROR`, `INCONCLUSIVE`, or JSON null when not applicable.
 
 ```json
 {
@@ -569,10 +575,10 @@ You supply `valuation_inputs` (an EPS estimate and a P/E multiple range for each
   },
   "buy_range_allowed": true,
   "add_range_allowed": false,
-  "thesis_status": "THESIS_CONFIRMING|THESIS_UNDER_REVIEW|THESIS_AT_RISK|THESIS_BROKEN|null",
+  "thesis_status": null,
   "anti_chase_flag": false,
   "thesis_invalidation_triggers": [],
-  "wc_gap_classification": "TEMPORARY_BILLING_CYCLE|WORKING_CAPITAL_STRESS|DATA_OR_SCOPE_ERROR|INCONCLUSIVE|null",
+  "wc_gap_classification": null,
   "profit_review": {
     "status": "NOT_TRIGGERED|REVIEW_FOR_REBALANCING",
     "trigger_reason": [],

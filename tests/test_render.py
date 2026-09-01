@@ -81,6 +81,45 @@ def _unconfirmed_pledge_shareholding() -> Shareholding:
     return Shareholding(62.89, None, None, None, "Q1", "NSE", NOW)
 
 
+def test_add_zone_and_avoid_chase_tokens_substitute():
+    verdict = _verdict(
+        add_range_allowed=True,
+        buy_range_allowed=True,
+        five_year_business_test={
+            "answer": "YES",
+            "confidence": "HIGH",
+            "evidence_for": ["a"],
+            "evidence_against": [],
+        },
+    )
+    report = (
+        "Add more {{add_zone_low}}–{{add_zone_high}}; avoid chasing above {{avoid_chase_above}}."
+    )
+    rendered = render_report(
+        report, _price(), _technicals(), verdict, _valuation(), _confirmed_shareholding()
+    )
+    assert "₹300.00" in rendered  # bear low
+    assert "₹340.00" in rendered  # add high capped at bear high (< buy low 370)
+    assert "₹425.00" in rendered  # base midpoint avoid_chase_above
+
+
+def test_add_zone_tokens_show_not_issued_when_blocked():
+    verdict = _verdict(
+        add_range_allowed=False,
+        five_year_business_test={
+            "answer": "UNCERTAIN",
+            "confidence": "MEDIUM",
+            "evidence_for": [],
+            "evidence_against": ["cyclical"],
+        },
+    )
+    report = "Add more {{add_zone_low}}–{{add_zone_high}}."
+    rendered = render_report(
+        report, _price(), _technicals(), verdict, _valuation(), _confirmed_shareholding()
+    )
+    assert "not issued" in rendered
+
+
 def test_substitutes_all_tokens_when_data_is_complete():
     report = (
         "Trades at {{current_price}} ({{price_date}}), between its "

@@ -3,7 +3,7 @@
 You receive the same `<context>` blocks as the full master analysis (price,
 financials, shareholding, Stage 1 extraction). You do **not** have web search.
 
-Write a **compact** report (~800–1500 words of prose) with these sections only:
+Write a **compact** report (~1,500–2,500 words of prose) with these sections only:
 
 1. **QUICK VERDICT** — verdict, price tokens, buy zone (or "not issued"), fair
    value base range tokens, risk, confidence X/10, holding period.
