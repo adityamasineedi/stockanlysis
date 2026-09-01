@@ -180,6 +180,12 @@ VALID_BRACKET_TAGS: frozenset[str] = frozenset(
         "ANALYSIS",
         "ESTIMATE",
         "UNVERIFIED",
+        # Brief XML block names the model sometimes cites as [BRACKET] tags — valid sources.
+        "METADATA",
+        "NEWS_SUMMARY",
+        "AR_BUSINESS_SUMMARY",
+        "STREET_CONSENSUS",
+        "PRESCAN_SUMMARY",
     }
 )
 _BRACKET_TAG_RE = re.compile(r"\[([A-Z][A-Z0-9_]*)\]")
@@ -210,6 +216,8 @@ CONSTITUTION_AUTO_FIX_CHECKS: frozenset[str] = frozenset(
         "anti_chase_flag",
         "anti_chase_buy_block",
         "buy_zone_discount",
+        "bear_adequacy_low_cyclical",
+        "bear_adequacy_high_multiple",
     }
 )
 
@@ -1066,7 +1074,7 @@ def _check_technical_figures_not_recomputed(report_text: str, brief: Brief) -> C
             continue
         stated = float(match.group(1))
         if abs(stated - expected) > TECHNICAL_FIGURE_TOLERANCE:
-            if _is_sma_period_confusion(name, stated, expected):
+            if _is_sma_wrong_literal(name, stated, expected):
                 continue
             mismatches.append(f"{name}: report states {stated}, computed value was {expected:.2f}")
 
@@ -1165,8 +1173,19 @@ def _is_sma_period_confusion(name: str, stated: float, expected: float) -> bool:
     return abs(stated - period) < 0.01 and abs(stated - expected) > TECHNICAL_FIGURE_TOLERANCE
 
 
-def _fix_sma_period_confusion_prose(report_text: str, brief: Brief) -> str:
-    """Replace period-confused SMA literals with mandated placeholder tokens."""
+def _is_sma_wrong_literal(name: str, stated: float, expected: float) -> bool:
+    """Period confusion (50/200) or garbage literals (1.0) instead of the real SMA price."""
+    if abs(stated - expected) <= TECHNICAL_FIGURE_TOLERANCE:
+        return False
+    if _is_sma_period_confusion(name, stated, expected):
+        return True
+    if name in _SMA_PERIOD_CONFUSION and stated < max(10.0, expected * 0.1):
+        return True
+    return False
+
+
+def _fix_sma_wrong_literals_prose(report_text: str, brief: Brief) -> str:
+    """Replace wrong SMA literals with mandated placeholder tokens."""
     text = report_text
     replacements = [
         ("SMA50", _SMA50_RE, brief.technicals.sma50, "sma50"),
@@ -1178,7 +1197,7 @@ def _fix_sma_period_confusion_prose(report_text: str, brief: Brief) -> str:
 
         def _repl(match: re.Match[str], *, _name: str = name, _exp: float = expected, _tok: str = token) -> str:
             stated = float(match.group(1))
-            if not _is_sma_period_confusion(_name, stated, _exp):
+            if not _is_sma_wrong_literal(_name, stated, _exp):
                 return match.group(0)
             return match.group(0).replace(match.group(1), f"{{{{{_tok}}}}}")
 
@@ -1187,6 +1206,79 @@ def _fix_sma_period_confusion_prose(report_text: str, brief: Brief) -> str:
             continue
         text = pattern.sub(_repl, text)
     return text
+
+
+def _fix_output_order_beginner_before_json(report_text: str) -> str:
+    """Move SHOULD I BUY block before the JSON fence when the model put it after."""
+    fixed = _collapse_extra_json_fences(report_text)
+    fences = list(_JSON_FENCE_RE.finditer(fixed))
+    if not fences:
+        return fixed
+    fence = fences[-1]
+    if _BEGINNER_SUMMARY_NEEDLE in fixed[: fence.start()]:
+        return fixed
+
+    before_json = fixed[: fence.start()].rstrip()
+    json_block = fixed[fence.start() : fence.end()]
+    after_json = fixed[fence.end() :].lstrip()
+
+    footer_match = re.search(
+        rf"(\*Research and education, not investment advice.*?)\s*\Z",
+        after_json,
+        re.DOTALL | re.IGNORECASE,
+    )
+    footer = footer_match.group(1).strip() if footer_match else ""
+    middle = after_json[: footer_match.start()].strip() if footer_match else after_json.strip()
+
+    beginner_idx = middle.find(_BEGINNER_SUMMARY_NEEDLE)
+    if beginner_idx < 0:
+        return fixed
+
+    beginner_block = middle[beginner_idx:].strip()
+    extra_after_json = middle[:beginner_idx].strip()
+
+    parts = [before_json]
+    if extra_after_json:
+        parts.append(extra_after_json)
+    parts.extend([beginner_block, json_block])
+    if footer:
+        parts.append(footer)
+    return "\n\n".join(parts)
+
+
+def _deepen_bear_valuation_inputs(
+    verdict: VerdictJSON, valuation: ValuationComputed, brief: Brief
+) -> VerdictJSON:
+    """Scale eps_bear down until bear fair-value mid meets the master-prompt floor."""
+    trailing_eps = _trailing_eps(brief)
+    if trailing_eps is None or trailing_eps <= 0:
+        return verdict
+
+    price = verdict.current_price_abs
+    current_pe = price / trailing_eps
+    bear_mid = (valuation.fair_value_bear_abs[0] + valuation.fair_value_bear_abs[1]) / 2
+    if bear_mid <= 0:
+        return verdict
+
+    downside_pct = (price - bear_mid) / price * 100
+    min_pct: float | None = None
+    if current_pe <= LOW_CYCLICAL_PE_THRESHOLD:
+        min_pct = MIN_BEAR_DOWNSIDE_PCT_LOW_CYCLICAL
+    elif current_pe > HIGH_MULTIPLE_PE_THRESHOLD:
+        min_pct = MIN_BEAR_DOWNSIDE_PCT_ABOVE_HIGH_MULTIPLE
+    if min_pct is None or downside_pct >= min_pct:
+        return verdict
+
+    target_mid = price * (1 - (min_pct + 0.15) / 100)
+    scale = target_mid / bear_mid
+    if scale >= 1.0:
+        return verdict
+
+    inputs = verdict.valuation_inputs
+    new_eps_bear = max(inputs.eps_bear * scale, 0.01)
+    return verdict.model_copy(
+        update={"valuation_inputs": inputs.model_copy(update={"eps_bear": round(new_eps_bear, 2)})}
+    )
 
 
 def _collapse_extra_json_fences(report_text: str) -> str:
@@ -1243,20 +1335,20 @@ def _patch_verdict_json_block(report_text: str, verdict: VerdictJSON) -> str:
 def try_auto_fix_report(
     report_text: str, result: ValidationResult, brief: Brief, *, stage2_mode: Stage2Mode = "FULL"
 ) -> tuple[str, ValidationResult] | None:
-    """Apply deterministic fixes when failures are purely formatting/constitution."""
+    """Apply deterministic fixes for any auto-fixable failures (partial sets OK)."""
     names = _failed_check_names(result)
     all_auto_fixable = (
         CONSTITUTION_AUTO_FIX_CHECKS | STRUCTURAL_AUTO_FIX_CHECKS | AUTO_FIXABLE_CHECKS
     )
-    if not names or not names <= all_auto_fixable:
+    if not names or not (names & all_auto_fixable):
         return None
 
     fixed = report_text
 
     if "output_order" in names:
-        fixed = _collapse_extra_json_fences(fixed)
+        fixed = _fix_output_order_beginner_before_json(fixed)
     if "technical_figures_not_recomputed" in names:
-        fixed = _fix_sma_period_confusion_prose(fixed, brief)
+        fixed = _fix_sma_wrong_literals_prose(fixed, brief)
 
     if names & CONSTITUTION_AUTO_FIX_CHECKS:
         try:
@@ -1266,6 +1358,10 @@ def try_auto_fix_report(
         valuation = compute_valuation(verdict.valuation_inputs)
         if "buy_zone_discount" in names:
             verdict = _clamp_buy_zone_to_risk_band(verdict, valuation)
+            valuation = compute_valuation(verdict.valuation_inputs)
+        if "bear_adequacy_low_cyclical" in names or "bear_adequacy_high_multiple" in names:
+            verdict = _deepen_bear_valuation_inputs(verdict, valuation, brief)
+            valuation = compute_valuation(verdict.valuation_inputs)
         patched = apply_constitution_overrides(verdict, valuation, brief)
         fixed = _patch_verdict_json_block(fixed, patched)
 
@@ -1280,7 +1376,10 @@ def try_auto_fix_report(
 
     revalidated = validate_report(fixed, brief, stage2_mode=stage2_mode)
     if revalidated.passed:
-        logger.info("Auto-fixed validation failures without Stage 2 retry: %s", sorted(names))
+        logger.info(
+            "Auto-fixed validation failures without Stage 2 retry: %s",
+            sorted(names & all_auto_fixable),
+        )
     return (fixed, revalidated) if revalidated.passed else None
 
 

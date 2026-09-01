@@ -1099,6 +1099,22 @@ def test_passes_when_sma_period_confused_with_lookback_number():
     assert result.passed is True
 
 
+def test_passes_when_sma_garbage_literal_one():
+    """Regression: model writes SMA50=1.0 — placeholder collision, not a real price."""
+    report = _report(prose="Trading near SMA50 of 1.0 and SMA200 of 1.0.")
+    result = validate_report(report, _brief())
+    assert result.passed is True
+
+
+def test_deployment_passes_on_brief_xml_citation_tags():
+    prose = (
+        "Sector from [METADATA]. Order book [AR_BUSINESS_SUMMARY]. "
+        "Headlines [NEWS_SUMMARY]. Street [STREET_CONSENSUS].\n"
+    )
+    result = validate_report(_report(prose=prose), _brief())
+    assert not any("citation_ids_valid" in f for f in result.failures)
+
+
 def test_auto_fix_collapses_multiple_json_fences():
     verdict = {**BASE_VERDICT}
     extra = json.dumps({"verdict": "WATCH"})
@@ -1122,6 +1138,47 @@ def test_auto_fix_clamps_over_deep_buy_zone():
     initial = validate_report(report, _brief())
     assert any("buy_zone_discount" in f for f in initial.failures)
     fixed = try_auto_fix_report(report, initial, _brief())
+    assert fixed is not None
+    _fixed_report, revalidated = fixed
+    assert revalidated.passed is True
+
+
+def test_auto_fix_deepens_bear_case_for_low_cyclical_pe():
+    overrides = {
+        "current_price_abs": 50.0,
+        "buy_zone_abs": None,
+        "buy_range_allowed": False,
+        "valuation_inputs": {
+            "eps_bear": 4.50,
+            "multiple_bear": [9.0, 10.0],
+            "eps_base": 5.00,
+            "multiple_base": [9.0, 10.0],
+            "eps_bull": 5.50,
+            "multiple_bull": [10.0, 11.0],
+        },
+    }
+    report = _report(overrides, prose=CYCLICAL_PEAK_PASS_PROSE)
+    brief = _brief(financials=_financials_with_eps(ttm_eps=10.0, fy_eps=9.0))
+    initial = validate_report(report, brief)
+    assert any("bear_adequacy_low_cyclical" in f for f in initial.failures)
+    fixed = try_auto_fix_report(report, initial, brief)
+    assert fixed is not None
+    _fixed_report, revalidated = fixed
+    assert revalidated.passed is True
+
+
+def test_auto_fix_moves_beginner_summary_before_json():
+    verdict = {**BASE_VERDICT}
+    bad = (
+        f"### 1. QUICK VERDICT\nWATCH\n\n"
+        f"```json\n{json.dumps(verdict)}\n```\n\n"
+        f"**SHOULD I BUY?**\n- **Decision:** WATCH\n\n"
+        f"*Research and education, not investment advice. Verify the numbers before "
+        f"acting, and consider a SEBI-registered investment adviser.*\n"
+    )
+    initial = validate_report(bad, _brief())
+    assert any("output_order" in f and "before the JSON" in f for f in initial.failures)
+    fixed = try_auto_fix_report(bad, initial, _brief())
     assert fixed is not None
     _fixed_report, revalidated = fixed
     assert revalidated.passed is True
