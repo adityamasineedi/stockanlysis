@@ -824,6 +824,68 @@ def test_bear_checks_not_applicable_below_40x_multiple():
     assert not any("bear_adequacy_high_multiple" in f for f in result.failures)
 
 
+CYCLICAL_PEAK_PASS_PROSE = (
+    "### 11. VALUATION\n"
+    "Cyclical peak earnings check: PASS — OPM at top of supplied history.\n"
+)
+
+
+def test_fails_when_bear_case_insufficiently_adverse_for_low_cyclical_pe():
+    overrides = {
+        "current_price_abs": 50.0,
+        "valuation_inputs": {
+            "eps_bear": 4.50,
+            "multiple_bear": [9.0, 10.0],  # bear mid ~47.25, ~5.5% downside
+            "eps_base": 5.00,
+            "multiple_base": [9.0, 10.0],
+            "eps_bull": 5.50,
+            "multiple_bull": [10.0, 11.0],
+        },
+    }
+    report = _report(overrides, prose=CYCLICAL_PEAK_PASS_PROSE)
+    brief = _brief(financials=_financials_with_eps(ttm_eps=10.0, fy_eps=9.0))
+    result = validate_report(report, brief)
+    assert result.passed is False
+    assert any("bear_adequacy_low_cyclical" in f for f in result.failures)
+
+
+def test_passes_when_bear_adequate_for_low_cyclical_pe():
+    overrides = {
+        "current_price_abs": 50.0,
+        "valuation_inputs": {
+            "eps_bear": 2.00,
+            "multiple_bear": [15.0, 17.0],  # bear mid ~32, ~36% downside
+            "eps_base": 4.00,
+            "multiple_base": [12.0, 14.0],
+            "eps_bull": 5.00,
+            "multiple_bull": [14.0, 16.0],
+        },
+    }
+    report = _report(overrides, prose=CYCLICAL_PEAK_PASS_PROSE)
+    brief = _brief(financials=_financials_with_eps(ttm_eps=10.0, fy_eps=9.0))
+    result = validate_report(report, brief)
+    assert not any("bear_adequacy_low_cyclical" in f for f in result.failures)
+    assert not any("cyclical_peak_earnings_prose" in f for f in result.failures)
+
+
+def test_cyclical_peak_prose_required_below_10x_pe():
+    overrides = {
+        "current_price_abs": 50.0,
+        "valuation_inputs": {
+            "eps_bear": 2.00,
+            "multiple_bear": [15.0, 17.0],
+            "eps_base": 4.00,
+            "multiple_base": [12.0, 14.0],
+            "eps_bull": 5.00,
+            "multiple_bull": [14.0, 16.0],
+        },
+    }
+    report = _report(overrides, prose="### 11. VALUATION\nNo cyclical line here.\n")
+    brief = _brief(financials=_financials_with_eps(ttm_eps=10.0, fy_eps=9.0))
+    result = validate_report(report, brief)
+    assert any("cyclical_peak_earnings_prose" in f for f in result.failures)
+
+
 def test_bear_checks_not_applicable_when_financials_missing():
     result = validate_report(_report(), _brief(financials=None))
     assert not any("bear_eps_sanity" in f for f in result.failures)

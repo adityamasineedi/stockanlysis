@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 
+from stockbot.action_ranges import resolve_add_more_zone_abs
 from stockbot.llm.verdict import ValuationComputed, VerdictJSON
 from stockbot.models import PriceData, Shareholding, Technicals
 
@@ -54,6 +55,9 @@ _MONEY_TOKENS = {
     "fair_value_base_high",
     "buy_zone_low",
     "buy_zone_high",
+    "add_zone_low",
+    "add_zone_high",
+    "avoid_chase_above",
 }
 _PERCENT_TOKENS = {"upside_pct", "downside_pct", "promoter_pct", "pledge_pct"}
 
@@ -115,6 +119,8 @@ def _build_tokens(
     current_price = verdict.current_price_abs
     fair_value_base_mid = _midpoint(valuation.fair_value_base_abs)
     fair_value_bear_mid = _midpoint(valuation.fair_value_bear_abs)
+    verdict_dict = verdict.model_dump(mode="json")
+    add_zone = resolve_add_more_zone_abs(verdict_dict)
 
     return {
         "current_price": current_price,
@@ -142,6 +148,9 @@ def _build_tokens(
         "buy_zone_high": (
             verdict.buy_zone_abs[1] if verdict.buy_zone_abs is not None else "not issued"
         ),
+        "add_zone_low": add_zone[0] if add_zone is not None else "not issued",
+        "add_zone_high": add_zone[1] if add_zone is not None else "not issued",
+        "avoid_chase_above": fair_value_base_mid,
         # Both computed the same direction — (target - current) / current —
         # so the sign convention is consistent instead of one token always
         # being forced positive: positive means the target sits above the

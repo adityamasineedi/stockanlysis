@@ -56,6 +56,8 @@ STALENESS_TRADING_DAYS = 5
 # understates the single most important number for a buy decision.
 HIGH_MULTIPLE_PE_THRESHOLD = 40.0
 MIN_BEAR_DOWNSIDE_PCT_ABOVE_HIGH_MULTIPLE = 30.0
+LOW_CYCLICAL_PE_THRESHOLD = 10.0
+MIN_BEAR_DOWNSIDE_PCT_LOW_CYCLICAL = 25.0
 
 # "X% below base fair value midpoint" per the master prompt's §13. Interpreted
 # here as: the discount spanned by buy_zone_abs (top to bottom) relative to
@@ -185,6 +187,10 @@ _TOKEN_NAME_RE = re.compile(r"\{\{(\w+)\}\}")
 _JSON_FENCE_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 _BEAR_DOWNSIDE_LINE_RE = re.compile(
     r"Bear\s+downside\s+check(?:\s*\(revised\))?\s*:.*",
+    re.IGNORECASE,
+)
+_CYCLICAL_PEAK_LINE_RE = re.compile(
+    r"Cyclical\s+peak\s+earnings\s+check\s*:.*",
     re.IGNORECASE,
 )
 _FOOTER_NEEDLE = "Research and education, not investment advice"
@@ -908,6 +914,84 @@ def _check_bear_adequacy_for_high_multiple(
     )
 
 
+def _check_bear_adequacy_for_low_cyclical_multiple(
+    verdict: VerdictJSON, valuation: ValuationComputed, brief: Brief
+) -> CheckResult:
+    """Master prompt §11 rule #6: ≤10x P/E cyclicals need a real bear case."""
+    trailing_eps = _trailing_eps(brief)
+    if trailing_eps is None or trailing_eps <= 0:
+        return CheckResult(
+            name="bear_adequacy_low_cyclical",
+            passed=True,
+            message="trailing EPS unavailable, not applicable",
+        )
+
+    current_pe = verdict.current_price_abs / trailing_eps
+    if current_pe > LOW_CYCLICAL_PE_THRESHOLD:
+        return CheckResult(
+            name="bear_adequacy_low_cyclical",
+            passed=True,
+            message=f"not applicable ({current_pe:.0f}x > {LOW_CYCLICAL_PE_THRESHOLD:.0f}x)",
+        )
+
+    fair_value_bear_mid = (valuation.fair_value_bear_abs[0] + valuation.fair_value_bear_abs[1]) / 2
+    downside_pct = (verdict.current_price_abs - fair_value_bear_mid) / verdict.current_price_abs * 100
+    if downside_pct >= MIN_BEAR_DOWNSIDE_PCT_LOW_CYCLICAL:
+        return CheckResult(
+            name="bear_adequacy_low_cyclical",
+            passed=True,
+            message=f"ok, downside {downside_pct:.1f}%",
+        )
+    return CheckResult(
+        name="bear_adequacy_low_cyclical",
+        passed=False,
+        message=(
+            f"bear case insufficiently adverse for a {current_pe:.1f}x cyclical: only "
+            f"{downside_pct:.1f}% downside, need >={MIN_BEAR_DOWNSIDE_PCT_LOW_CYCLICAL:.0f}%"
+        ),
+    )
+
+
+def _check_cyclical_peak_earnings_prose(
+    report_text: str, verdict: VerdictJSON, brief: Brief
+) -> CheckResult:
+    """Master prompt §11 rule #6: ≤10x trailing requires explicit cyclical peak line."""
+    trailing_eps = _trailing_eps(brief)
+    if trailing_eps is None or trailing_eps <= 0:
+        return CheckResult(
+            name="cyclical_peak_earnings_prose",
+            passed=True,
+            message="trailing EPS unavailable, not applicable",
+        )
+    current_pe = verdict.current_price_abs / trailing_eps
+    if current_pe > LOW_CYCLICAL_PE_THRESHOLD:
+        return CheckResult(
+            name="cyclical_peak_earnings_prose",
+            passed=True,
+            message=f"not applicable ({current_pe:.0f}x > {LOW_CYCLICAL_PE_THRESHOLD:.0f}x)",
+        )
+
+    section = _section_eleven(report_text)
+    lines = _CYCLICAL_PEAK_LINE_RE.findall(section)
+    if not lines:
+        return CheckResult(
+            name="cyclical_peak_earnings_prose",
+            passed=False,
+            message=(
+                f"{current_pe:.1f}x stock requires "
+                "'Cyclical peak earnings check: … PASS/FAIL …' in §11"
+            ),
+        )
+    last = lines[-1]
+    if re.search(r"\bPASS\b", last, re.IGNORECASE) or re.search(r"\bFAIL\b", last, re.IGNORECASE):
+        return CheckResult(name="cyclical_peak_earnings_prose", passed=True, message="ok")
+    return CheckResult(
+        name="cyclical_peak_earnings_prose",
+        passed=False,
+        message=f"§11 cyclical peak line missing PASS/FAIL marker: {last[:120]!r}",
+    )
+
+
 def _check_price_date_fresh(verdict: VerdictJSON) -> CheckResult:
     today = datetime.now(UTC).date()
     trading_days_elapsed = int(np.busday_count(verdict.price_date, today))
@@ -1155,6 +1239,7 @@ def validate_report(
         _check_confidence_vs_missing_data(verdict, brief),
         _check_bear_eps_sanity(verdict, brief),
         _check_bear_adequacy_for_high_multiple(verdict, valuation, brief),
+        _check_bear_adequacy_for_low_cyclical_multiple(verdict, valuation, brief),
         _check_price_date_fresh(verdict),
         _check_pledge_not_stated_when_unconfirmed(report_text, brief),
         _check_technical_figures_not_recomputed(report_text, brief),
@@ -1168,6 +1253,7 @@ def validate_report(
         checks.extend(
             [
                 _check_bear_downside_check_prose(report_text, verdict, brief),
+                _check_cyclical_peak_earnings_prose(report_text, verdict, brief),
                 _check_standalone_disclosed(report_text, brief),
                 _check_headline_fair_value_is_base(report_text, valuation),
                 _check_placeholder_tokens_known(report_text),

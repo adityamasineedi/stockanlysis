@@ -270,10 +270,10 @@ pipeline to parse, never a re-derivation:
   }},
   "buy_range_allowed": <true|false>,
   "add_range_allowed": <true|false>,
-  "thesis_status": "THESIS_CONFIRMING|THESIS_UNDER_REVIEW|THESIS_AT_RISK|THESIS_BROKEN"|null,
+  "thesis_status": null,
   "anti_chase_flag": <true|false>,
   "thesis_invalidation_triggers": [],
-  "wc_gap_classification": "TEMPORARY_BILLING_CYCLE|WORKING_CAPITAL_STRESS|DATA_OR_SCOPE_ERROR|INCONCLUSIVE"|null,
+  "wc_gap_classification": null,
   "profit_review": {{
     "status": "NOT_TRIGGERED|REVIEW_FOR_REBALANCING",
     "trigger_reason": [],
