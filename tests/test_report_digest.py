@@ -70,6 +70,26 @@ def test_compact_attachment_fresh_header():
     assert "this run" in digest
 
 
+def test_extract_beginner_summary_preserves_long_scenario_tables():
+    """Rich FULL reports need >2.4k chars so bear/base/bull rows are not clipped."""
+    report = (
+        "**SHOULD I BUY?**\n"
+        "| Factor | Answer |\n"
+        "| Decision | BUY ON CORRECTION |\n"
+        + ("| Detail | Long explanation row. |\n" * 70)
+        + "\n**EXPECTED RETURN (SCENARIOS)**\n"
+        "| Bear | -9% |\n| Base | +12% |\n| Bull | +25-33% |\n"
+        "\n```json\n{}\n```"
+    )
+    summary = extract_beginner_summary(report)
+    assert "+25-33%" in summary
+    assert "EXPECTED RETURN" in summary
+    assert not summary.endswith("…")
+    clipped = extract_beginner_summary(report, max_chars=2_400)
+    assert "+25-33%" not in clipped
+    assert clipped.endswith("…")
+
+
 def test_compact_attachment_shorter_than_full_report():
     full = "# Full report\n" + ("Section body.\n" * 500)
     analysis = Analysis(
