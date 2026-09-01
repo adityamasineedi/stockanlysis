@@ -86,14 +86,34 @@ LITE_MODEL = "claude-haiku-4-5-20251001"
 # — only IRCTC passed, and its annual-report fetch had timed out, giving it
 # less context and a shorter generation. That pattern (full annual-report
 # context -> consistently exceeds 16000) is a strong signal, not noise.
-# Raised to 32000; still not proven sufficient, watch for further
-# truncation rather than assuming this is the last raise needed.
-MAX_TOKENS = 32000
-# LITE (Haiku) raised from 4096 after live truncations: HBLENGINE and GESHIP
-# hit stop_reason=max_tokens three times each (fixtures stage2_lite_*), burning
-# truncation retries with no report. 8192 covers the compact LITE prompt + JSON
-# block with headroom; watch fixtures for further max_tokens hits.
-LITE_MAX_TOKENS = 8192
+# 32000 still truncated long FULL utilities runs (thinking + 16 sections).
+# Base 48000 with one escalate to 64000: Sonnet 5 allows up to 128K output,
+# but ~64K is the practical ceiling under the ₹80 per-analysis cap once
+# Stage 1 is paid. Unused max_tokens are not billed — only actual output.
+MAX_TOKENS = 48_000
+# Model hard caps (Anthropic docs): Haiku 4.5 = 64K, Sonnet 5 = 128K.
+# LITE: 4096 truncated HBLENGINE/GESHIP 3×; 8192 was the interim raise.
+# 16384 is the new base; pipeline escalates toward LITE_MAX_TOKENS_CAP on
+# truncation instead of retrying the same ceiling (which only burns spend).
+LITE_MAX_TOKENS = 16_384
+LITE_MAX_TOKENS_CAP = 65_536
+MAX_TOKENS_CAP = 64_000
+
+
+def stage2_max_tokens(mode: Stage2Mode, truncation_attempt: int = 0) -> int:
+    """Output budget for one Stage 2 call. Escalates on truncation retries.
+
+    Retrying the same max_tokens after stop_reason=max_tokens is pure waste —
+    same prompt, same ceiling, same failure. Each attempt must raise the
+    budget (or already sit at the mode cap).
+    """
+    if truncation_attempt < 0:
+        raise ValueError(f"truncation_attempt must be >= 0, got {truncation_attempt}")
+    if mode == "LITE":
+        ladder = (LITE_MAX_TOKENS, 32_768, LITE_MAX_TOKENS_CAP)
+    else:
+        ladder = (MAX_TOKENS, MAX_TOKENS_CAP)
+    return ladder[min(truncation_attempt, len(ladder) - 1)]
 
 PIPELINE_CONFIDENCE_CAP = 7
 

@@ -238,7 +238,7 @@ def test_run_stage2_logs_cost_and_raises_clearly_on_truncation(monkeypatch, tmp_
 
     assert len(logged_calls) == 1  # cost logged despite the failure
     assert exc_info.value.cost_inr == 45.0
-    assert "max_tokens=32000" in str(exc_info.value)
+    assert "max_tokens=48000" in str(exc_info.value)
 
 
 def test_compute_valuation_multiplies_eps_by_multiple():

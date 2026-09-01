@@ -118,7 +118,14 @@ def test_cache_write_warning_skips_when_prior_outside_1h(tmp_path, monkeypatch):
 def test_lite_max_tokens_raised_above_truncation_floor():
     from stockbot.llm import verdict as verdict_mod
 
-    assert verdict_mod.LITE_MAX_TOKENS >= 8192
+    assert verdict_mod.LITE_MAX_TOKENS >= 16_384
+    assert verdict_mod.MAX_TOKENS >= 48_000
+    assert verdict_mod.MAX_TOKENS_CAP > verdict_mod.MAX_TOKENS
+    assert verdict_mod.stage2_max_tokens("LITE", 0) == verdict_mod.LITE_MAX_TOKENS
+    assert verdict_mod.stage2_max_tokens("LITE", 1) > verdict_mod.stage2_max_tokens("LITE", 0)
+    assert verdict_mod.stage2_max_tokens("LITE", 2) == verdict_mod.LITE_MAX_TOKENS_CAP
+    assert verdict_mod.stage2_max_tokens("FULL", 0) == verdict_mod.MAX_TOKENS
+    assert verdict_mod.stage2_max_tokens("FULL", 1) == verdict_mod.MAX_TOKENS_CAP
 
 
 def test_to_telegram_html_escapes_and_summarizes():

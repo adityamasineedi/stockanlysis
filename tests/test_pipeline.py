@@ -327,14 +327,63 @@ def test_truncation_exhausted_returns_distinct_status(monkeypatch):
 
     def _stage2(brief, extraction, extra_instruction=None, **kwargs):
         calls["count"] += 1
-        raise TruncatedResponseError(6.0, 8000, 32000)
+        raise TruncatedResponseError(6.0, 8000, kwargs.get("max_tokens") or 48000)
 
     monkeypatch.setattr(pipeline_module, "run_stage2", _stage2)
 
     result = run_full_analysis("TEST")
     assert result.status == "analysis_truncated"
-    assert result.spent_inr == pytest.approx(5.0 + 6.0 * 3)
-    assert calls["count"] == 3
+    # FULL ladder is (48000, 64000) — stop after the second attempt when
+    # further escalate would not raise the ceiling.
+    assert result.spent_inr == pytest.approx(5.0 + 6.0 * 2)
+    assert calls["count"] == 2
+
+
+def test_truncation_retries_escalate_max_tokens(monkeypatch):
+    """Same ceiling twice is waste — each truncation attempt must raise the budget."""
+    from stockbot.llm.verdict import stage2_max_tokens
+
+    _patch_common(monkeypatch)
+    seen: list[int] = []
+
+    def _stage2(brief, extraction, extra_instruction=None, **kwargs):
+        budget = kwargs.get("max_tokens")
+        assert budget is not None
+        seen.append(budget)
+        raise TruncatedResponseError(1.0, 100, budget)
+
+    monkeypatch.setattr(pipeline_module, "run_stage2", _stage2)
+
+    result = run_full_analysis("TEST")
+    assert result.status == "analysis_truncated"
+    # _patch_common forces FULL Stage 2: base then one escalate, then stop.
+    assert seen == [stage2_max_tokens("FULL", 0), stage2_max_tokens("FULL", 1)]
+    assert seen[1] > seen[0]
+
+
+def test_lite_truncation_escalates_three_rungs(monkeypatch):
+    from stockbot.llm.verdict import stage2_max_tokens
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(
+        pipeline_module, "resolve_stage2_mode", lambda *a, **k: "LITE"
+    )
+    seen: list[int] = []
+
+    def _stage2(brief, extraction, extra_instruction=None, **kwargs):
+        seen.append(kwargs["max_tokens"])
+        raise TruncatedResponseError(1.0, 50, kwargs["max_tokens"])
+
+    monkeypatch.setattr(pipeline_module, "run_stage2", _stage2)
+
+    result = run_full_analysis("TEST")
+    assert result.status == "analysis_truncated"
+    assert seen == [
+        stage2_max_tokens("LITE", 0),
+        stage2_max_tokens("LITE", 1),
+        stage2_max_tokens("LITE", 2),
+    ]
+    assert seen[0] < seen[1] < seen[2]
 
 
 def test_busy_when_concurrency_slot_already_held(monkeypatch):
