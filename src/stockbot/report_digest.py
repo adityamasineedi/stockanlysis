@@ -70,7 +70,36 @@ def _fallback_summary_from_verdict(verdict_json: dict) -> str:
     return "\n".join(lines)
 
 
-def build_compact_attachment_md(analysis: Analysis) -> str:
+def compact_delivery_note(*, from_cache: bool, full_attachment: bool = False) -> str:
+    """Telegram footer — makes cache hits vs fresh LLM runs obvious."""
+    if full_attachment:
+        if from_cache:
+            return (
+                "Cached report attached as .md; prose from a prior run, "
+                "gates refreshed for live price."
+            )
+        return "Full §1–§16 report attached as .md"
+    if from_cache:
+        return (
+            "Cached analysis — digest attached; prose unchanged, "
+            "gates refreshed for live price."
+        )
+    return "Fresh analysis — digest attached; full §1–§16 report stored internally."
+
+
+def compact_attachment_header(*, from_cache: bool) -> str:
+    if from_cache:
+        return (
+            "_Cached analysis. Reading digest only; prose from a prior LLM run; "
+            "gates refreshed for the live price. Full §1–§16 report stored internally._"
+        )
+    return (
+        "_Fresh analysis. Reading digest only; complete validated report from this run "
+        "is stored internally; this file omits the long §1–§16 sections._"
+    )
+
+
+def build_compact_attachment_md(analysis: Analysis, *, from_cache: bool = False) -> str:
     """Shorter ``.md`` for Telegram — full report remains in DB."""
     beginner = extract_beginner_summary(analysis.report_md)
     if not beginner:
@@ -78,8 +107,7 @@ def build_compact_attachment_md(analysis: Analysis) -> str:
 
     header = (
         f"# {analysis.ticker} — {analysis.run_date.isoformat()}\n\n"
-        "_Reading digest only. The complete validated report from this run is "
-        "stored internally; this file omits the long §1–§16 sections._\n"
+        f"{compact_attachment_header(from_cache=from_cache)}\n"
     )
     body = f"\n{beginner}\n"
     if analysis.missing:

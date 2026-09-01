@@ -40,6 +40,36 @@ def test_extract_beginner_summary_when_heading_is_the_first_line():
     assert summary.splitlines()[0] == "**SHOULD I BUY?**"
 
 
+def test_compact_attachment_cached_header():
+    analysis = Analysis(
+        ticker="TEST",
+        run_date=__import__("datetime").date(2026, 8, 25),
+        verdict_json={"verdict": "WATCH", "reasons_buy": [], "reasons_avoid": []},
+        report_md="**SHOULD I BUY?**\n- **Decision:** WATCH\n",
+        costs=0.0,
+        validation=ValidationResult(True, []),
+        missing=[],
+    )
+    digest = build_compact_attachment_md(analysis, from_cache=True)
+    assert "Cached analysis" in digest
+    assert "prior LLM run" in digest
+
+
+def test_compact_attachment_fresh_header():
+    analysis = Analysis(
+        ticker="TEST",
+        run_date=__import__("datetime").date(2026, 8, 25),
+        verdict_json={"verdict": "WATCH", "reasons_buy": [], "reasons_avoid": []},
+        report_md="**SHOULD I BUY?**\n- **Decision:** WATCH\n",
+        costs=1.0,
+        validation=ValidationResult(True, []),
+        missing=[],
+    )
+    digest = build_compact_attachment_md(analysis, from_cache=False)
+    assert "Fresh analysis" in digest
+    assert "this run" in digest
+
+
 def test_compact_attachment_shorter_than_full_report():
     full = "# Full report\n" + ("Section body.\n" * 500)
     analysis = Analysis(

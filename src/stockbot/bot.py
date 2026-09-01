@@ -106,6 +106,7 @@ from stockbot.report_digest import (
     _clip,
     _compact_context_flags_line,
     build_compact_attachment_md,
+    compact_delivery_note,
 )
 from stockbot.storage import (
     backfill_cached_verdicts,
@@ -482,6 +483,7 @@ def format_verdict_reply(
     staleness_banner: str | None = None,
     compact: bool = True,
     full_attachment: bool = False,
+    from_cache: bool = False,
     position_line: str | None = None,
 ) -> str:
     v = analysis.verdict_json
@@ -596,12 +598,8 @@ def format_verdict_reply(
     lines.append("")
     lines.append(DISCLAIMER)
     if compact:
-        if full_attachment:
-            lines.append("<i>Full §1–§16 report attached as .md</i>")
-        else:
-            lines.append(
-                "<i>Digest attached; full §1–§16 report stored internally (same LLM run).</i>"
-            )
+        note = compact_delivery_note(from_cache=from_cache, full_attachment=full_attachment)
+        lines.append(f"<i>{esc(note)}</i>")
 
     text = "\n".join(lines)
     if len(text) > TELEGRAM_MAX_MESSAGE_LENGTH:
@@ -746,19 +744,25 @@ async def _deliver_result(
             analysis,
             staleness_banner=combined_banner,
             full_attachment=full_report,
+            from_cache=result.from_cache,
             position_line=position_line,
         ),
         parse_mode=ParseMode.HTML,
     )
-    await _send_report_attachment(update, analysis, compact=not full_report)
+    await _send_report_attachment(
+        update,
+        analysis,
+        compact=not full_report,
+        from_cache=result.from_cache,
+    )
 
 
-def _write_report_file(analysis: Analysis, *, compact: bool = True):
+def _write_report_file(analysis: Analysis, *, compact: bool = True, from_cache: bool = False):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     suffix = "digest" if compact else "full"
     report_path = REPORTS_DIR / f"{analysis.ticker}_{analysis.run_date.isoformat()}_{suffix}.md"
     body = (
-        build_compact_attachment_md(analysis)
+        build_compact_attachment_md(analysis, from_cache=from_cache)
         if compact
         else analysis.report_md
     )
@@ -771,8 +775,11 @@ async def _send_report_attachment(
     analysis: Analysis,
     *,
     compact: bool = True,
+    from_cache: bool = False,
 ) -> None:
-    report_path = await asyncio.to_thread(_write_report_file, analysis, compact=compact)
+    report_path = await asyncio.to_thread(
+        _write_report_file, analysis, compact=compact, from_cache=from_cache
+    )
     document_bytes = await asyncio.to_thread(report_path.read_bytes)
     await update.message.reply_document(document=document_bytes, filename=report_path.name)
 

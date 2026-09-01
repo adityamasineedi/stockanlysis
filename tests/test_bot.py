@@ -294,6 +294,19 @@ def test_format_verdict_reply_includes_disclaimer():
     assert "not investment advice" in text.lower()
 
 
+def test_format_verdict_reply_fresh_analysis_footer():
+    text = format_verdict_reply(_analysis(), from_cache=False)
+    assert "Fresh analysis" in text
+    assert "same LLM run" not in text
+
+
+def test_format_verdict_reply_cached_analysis_footer():
+    text = format_verdict_reply(_analysis(), from_cache=True)
+    assert "Cached analysis" in text
+    assert "gates refreshed" in text
+    assert "same LLM run" not in text
+
+
 def test_format_verdict_reply_prepends_staleness_banner():
     text = format_verdict_reply(
         _analysis(),
