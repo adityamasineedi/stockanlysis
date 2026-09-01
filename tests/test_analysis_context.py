@@ -1,6 +1,6 @@
 """Tests for peer / sector scorecard / portfolio execution enrichment."""
 
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
@@ -14,8 +14,6 @@ from stockbot.analysis.analysis_context import (
 from stockbot.models import (
     Brief,
     BriefMetadata,
-    Financials,
-    NewsItems,
     PortfolioExecutionContext,
     PrescanSummary,
     PriceData,
@@ -26,7 +24,7 @@ from stockbot.models import (
 )
 
 NOW = datetime.now(UTC)
-TODAY = date.today()
+TODAY = datetime.now(UTC).date()
 
 
 def _minimal_brief(**kwargs) -> Brief:

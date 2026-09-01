@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from stockbot.stage2_benchmark import (
     Stage2BenchmarkCell,
     Stage2BenchmarkReport,

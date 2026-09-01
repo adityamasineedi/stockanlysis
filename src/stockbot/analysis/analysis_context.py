@@ -27,8 +27,8 @@ from stockbot.models import (
     SectorScorecardContext,
 )
 from stockbot.portfolio_screener.metrics import fetch_market_metadata
-from stockbot.portfolio_screener.scoring_config import DEFAULT_SECTOR_BENCHMARKS
 from stockbot.portfolio_screener.score_utils import percentile_rank
+from stockbot.portfolio_screener.scoring_config import DEFAULT_SECTOR_BENCHMARKS
 from stockbot.portfolio_sip_schema import load_portfolio_sip_config
 from stockbot.portfolio_state import DEFAULT_MAX_POSITION_PCT, TRANCHE_COUNT
 
@@ -242,12 +242,16 @@ def build_sector_scorecard(
     ar_snippets = tuple(_ar_snippets(brief.annual_report, ar_keys))
 
     generic_note: str | None = None
-    if prescan_summary and prescan_summary.quant_score is not None:
-        if issuer and issuer not in {"NON_FINANCIAL", "OTHER", "AUTO_OEM", "LOSS_MAKING_GROWTH"}:
-            generic_note = (
-                f"Generic prescan quant ({prescan_summary.quant_score:.1f}/100) is not decisive "
-                f"for issuer_class={issuer} — lead with the sector scorecard."
-            )
+    if (
+        prescan_summary
+        and prescan_summary.quant_score is not None
+        and issuer
+        and issuer not in {"NON_FINANCIAL", "OTHER", "AUTO_OEM", "LOSS_MAKING_GROWTH"}
+    ):
+        generic_note = (
+            f"Generic prescan quant ({prescan_summary.quant_score:.1f}/100) is not decisive "
+            f"for issuer_class={issuer} — lead with the sector scorecard."
+        )
 
     if not supplied and not ar_snippets and generic_note is None:
         return None

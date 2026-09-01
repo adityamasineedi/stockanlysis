@@ -41,6 +41,7 @@ import math
 from datetime import UTC, datetime, time, timedelta, timezone
 from types import SimpleNamespace
 
+from anthropic import APIConnectionError, APITimeoutError, RateLimitError
 from telegram import BotCommand, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -635,10 +636,10 @@ async def _deliver_result(
 
     if result.status == "busy":
         await status_message.edit_text(
-            "Another analysis is already running. Please wait for it to finish "
-            "(usually 8–{cap_min} min), then try again.".format(
-                cap_min=ANALYSIS_RUNTIME_CAP_MINUTES
-            )
+            
+                "Another analysis is already running. Please wait for it to finish "
+                f"(usually 8–{ANALYSIS_RUNTIME_CAP_MINUTES} min), then try again."
+            
         )
         return
 
@@ -699,8 +700,10 @@ async def _deliver_result(
     if result.status == "analysis_runtime_exceeded":
         cap_min = ANALYSIS_RUNTIME_CAP_MINUTES
         lines = [
-            f"Analysis hit the {cap_min}-minute time cap "
-            f"(₹{result.spent_inr:.2f} billed on this attempt — all stages included).",
+            (
+                f"Analysis hit the {cap_min}-minute time cap "
+                f"(₹{result.spent_inr:.2f} billed on this attempt — all stages included)."
+            ),
         ]
         if result.validation_failures:
             lines.append(
@@ -877,8 +880,6 @@ async def _run_and_reply(
                     run_full_analysis, query, skip_cache=skip_cache
                 )
             except Exception as exc:
-                from anthropic import APIConnectionError, APITimeoutError, RateLimitError
-
                 logger.exception("run_full_analysis failed for %r", query)
                 if isinstance(exc, (APIConnectionError, APITimeoutError)):
                     await status_message.edit_text(

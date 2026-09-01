@@ -1182,9 +1182,7 @@ def _is_sma_wrong_literal(name: str, stated: float, expected: float) -> bool:
         return False
     if _is_sma_period_confusion(name, stated, expected):
         return True
-    if name in _SMA_PERIOD_CONFUSION and stated < max(10.0, expected * 0.1):
-        return True
-    return False
+    return name in _SMA_PERIOD_CONFUSION and stated < max(10.0, expected * 0.1)
 
 
 def _fix_sma_wrong_literals_prose(report_text: str, brief: Brief) -> str:
@@ -1226,7 +1224,7 @@ def _fix_output_order_beginner_before_json(report_text: str) -> str:
     after_json = fixed[fence.end() :].lstrip()
 
     footer_match = re.search(
-        rf"(\*Research and education, not investment advice.*?)\s*\Z",
+        r"(\*Research and education, not investment advice.*?)\s*\Z",
         after_json,
         re.DOTALL | re.IGNORECASE,
     )

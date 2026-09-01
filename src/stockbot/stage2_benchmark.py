@@ -17,7 +17,7 @@ from typing import Literal
 from stockbot.ab_test import DEEPSEEK_MODEL
 from stockbot.data_readiness import assemble_brief_for_analysis
 from stockbot.fetch.tickers import load_symbol_table, resolve_ticker
-from stockbot.llm.extract import ExtractionResult, run_stage1
+from stockbot.llm.extract import run_stage1
 from stockbot.llm.fixtures import FIXTURES_DIR, load_response_fixture
 from stockbot.llm.stage2_deepseek import run_stage2_deepseek
 from stockbot.llm.verdict import (
@@ -97,7 +97,7 @@ def _resolve_ticker(query: str) -> TickerInfo:
     if resolved is None:
         raise ValueError(f"Ticker not found: {query!r}")
     if isinstance(resolved, AmbiguousMatch):
-        raise ValueError(f"Ambiguous ticker {query!r}: {resolved.candidates}")
+        raise ValueError(f"Ambiguous ticker {query!r}: {resolved.candidates}")  # noqa: TRY004
     return resolved
 
 
@@ -202,7 +202,7 @@ def _validate_fixture_cell(
         validation = validate_report(report_text, brief, stage2_mode="FULL")
         cell.validation_passed = validation.passed
         cell.validation_failures = list(validation.failures)
-    except Exception as exc:
+    except (ValueError, TypeError, KeyError, OSError) as exc:
         cell.parse_error = str(exc)
         cell.error = str(exc)
     return cell
@@ -496,9 +496,11 @@ def _build_recommendation(
     sonnet_pass_rate: float,
 ) -> str:
     lines = [
-        f"Sonnet baseline validation pass rate: {sonnet_pass_rate:.0%} "
-        f"({sum(1 for c in report.cells if c.model_label == 'sonnet-full' and c.validation_passed)}"
-        f"/{sum(1 for c in report.cells if c.model_label == 'sonnet-full')}).",
+        (
+            f"Sonnet baseline validation pass rate: {sonnet_pass_rate:.0%} "
+            f"({sum(1 for c in report.cells if c.model_label == 'sonnet-full' and c.validation_passed)}"
+            f"/{sum(1 for c in report.cells if c.model_label == 'sonnet-full')})."
+        ),
         f"Total benchmark spend: ₹{report.total_cost_inr:.2f}.",
         "",
     ]
@@ -520,8 +522,10 @@ def _build_recommendation(
         lines.extend(
             [
                 "",
-                "No challenger passed all gates. **Keep Sonnet FULL** for production; "
-                "consider expanding LITE routing for clean AUTO_DEEP names instead.",
+                (
+                    "No challenger passed all gates. **Keep Sonnet FULL** for production; "
+                    "consider expanding LITE routing for clean AUTO_DEEP names instead."
+                ),
             ]
         )
     return "\n".join(lines)
@@ -532,9 +536,11 @@ def format_markdown(report: Stage2BenchmarkReport) -> str:
         f"# Stage 2 A/B benchmark ({report.generated_at.date().isoformat()})",
         "",
         f"Tickers: {', '.join(report.tickers)}",
-        f"Total spend: **₹{report.total_cost_inr:.2f}** "
-        f"(Stage 1 Sonnet: ₹{sum(report.stage1_costs_inr.values()):.2f}, "
-        f"Stage 2: ₹{sum(c.cost_inr for c in report.cells):.2f})",
+        (
+            f"Total spend: **₹{report.total_cost_inr:.2f}** "
+            f"(Stage 1 Sonnet: ₹{sum(report.stage1_costs_inr.values()):.2f}, "
+            f"Stage 2: ₹{sum(c.cost_inr for c in report.cells):.2f})"
+        ),
         "",
         "## Results",
         "",
