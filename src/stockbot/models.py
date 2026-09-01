@@ -46,6 +46,12 @@ class Technicals:
     as_of_date: date
     source: str
     fetched_at: datetime
+    bollinger_mid: float | None = None
+    bollinger_upper: float | None = None
+    bollinger_lower: float | None = None
+    bollinger_bandwidth_pct: float | None = None
+    price_vs_bollinger: str | None = None
+    trend_label: str | None = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -153,6 +159,50 @@ class StreetConsensus:
 
 
 @dataclass(frozen=True)
+class PeerRow:
+    symbol: str
+    pe: float | None
+    roe_pct: float | None
+    market_cap_cr: float | None
+
+
+@dataclass(frozen=True)
+class PeerSnapshot:
+    target_symbol: str
+    sector: str | None
+    target_pe: float | None
+    target_roe_pct: float | None
+    peer_median_pe: float | None
+    peer_count: int
+    pe_percentile: float | None
+    sector_benchmark_pe_fair: float | None
+    peers: tuple[PeerRow, ...]
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class SectorScorecardContext:
+    issuer_class: str | None
+    scorecard_lens: str
+    supplied_metrics: tuple[tuple[str, str], ...]
+    ar_snippets: tuple[str, ...]
+    generic_quant_note: str | None = None
+
+
+@dataclass(frozen=True)
+class PortfolioExecutionContext:
+    in_sip_portfolio: bool
+    sip_bucket: str | None
+    suggested_monthly_inr: float | None
+    suggested_tranche_inr: float | None
+    max_position_pct: float
+    same_sector_count_in_bucket: int | None
+    review_cadence: str
+    delivery_note: str
+    diversification_note: str | None = None
+
+
+@dataclass(frozen=True)
 class PrescanSummary:
     quant_score: float | None
     quality_score: float | None
@@ -195,6 +245,9 @@ class Brief:
     prescan_summary: PrescanSummary | None = None
     news_summary: tuple[NewsSummaryItem, ...] = ()
     street_consensus: StreetConsensus | None = None
+    peer_snapshot: PeerSnapshot | None = None
+    sector_scorecard: SectorScorecardContext | None = None
+    portfolio_execution: PortfolioExecutionContext | None = None
 
 
 @dataclass(frozen=True)

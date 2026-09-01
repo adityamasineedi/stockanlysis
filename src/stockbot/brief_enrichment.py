@@ -12,6 +12,11 @@ from typing import Literal
 
 import pandas as pd
 
+from stockbot.analysis.analysis_context import (
+    build_peer_snapshot,
+    build_portfolio_execution,
+    build_sector_scorecard,
+)
 from stockbot.liquidity import compute_adv_inr_cr
 from stockbot.models import (
     Brief,
@@ -311,6 +316,9 @@ def enrich_brief(brief: Brief) -> Brief:
     prescan_summary = build_prescan_summary(brief)
     news_summary = build_news_summary(brief.news)
     street_consensus = build_street_consensus(brief.ticker, brief.price)
+    peer_snapshot = build_peer_snapshot(brief.ticker.symbol, metadata)
+    sector_scorecard = build_sector_scorecard(brief, prescan_summary)
+    portfolio_execution = build_portfolio_execution(brief.ticker.symbol, metadata)
     return Brief(
         ticker=brief.ticker,
         price=brief.price,
@@ -327,6 +335,9 @@ def enrich_brief(brief: Brief) -> Brief:
         prescan_summary=prescan_summary,
         news_summary=news_summary,
         street_consensus=street_consensus,
+        peer_snapshot=peer_snapshot,
+        sector_scorecard=sector_scorecard,
+        portfolio_execution=portfolio_execution,
     )
 
 

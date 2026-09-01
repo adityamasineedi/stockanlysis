@@ -420,6 +420,35 @@ def _format_take_profit_targets_line(verdict_json: dict) -> str:
     return "Take-profit targets: unavailable"
 
 
+def _format_execution_pm_line(verdict_json: dict) -> str | None:
+    pm = verdict_json.get("execution_pm")
+    if not isinstance(pm, dict):
+        return None
+    parts: list[str] = []
+    bucket = pm.get("sip_bucket")
+    if bucket:
+        tranche = pm.get("suggested_tranche_inr")
+        if isinstance(tranche, (int, float)) and tranche > 0:
+            parts.append(f"SIP bucket {bucket}: ~₹{tranche:.0f}/tranche (25% of monthly)")
+        else:
+            parts.append(f"SIP bucket: {bucket}")
+    peer_pct = pm.get("peer_pe_percentile")
+    peer_n = pm.get("peer_count")
+    if isinstance(peer_pct, (int, float)) and isinstance(peer_n, int) and peer_n > 0:
+        parts.append(f"P/E vs peers: {peer_pct:.0f}th pctile (n={peer_n})")
+    bb = pm.get("bollinger_position")
+    trend = pm.get("trend_label")
+    if bb or trend:
+        tech_bits = [b for b in (bb, trend) if b]
+        parts.append("Technicals: " + ", ".join(str(b) for b in tech_bits))
+    div = pm.get("diversification_note")
+    if div:
+        parts.append(str(div))
+    if not parts:
+        return None
+    return "PM: " + " · ".join(parts)
+
+
 def _format_profit_review_line(verdict_json: dict) -> str | None:
     profit_review = verdict_json.get("profit_review")
     if not isinstance(profit_review, dict):
@@ -474,6 +503,9 @@ def format_verdict_reply(
     profit_review_line = _format_profit_review_line(v)
     if profit_review_line:
         action_range_lines.append(profit_review_line)
+    execution_pm_line = _format_execution_pm_line(v)
+    if execution_pm_line:
+        action_range_lines.append(execution_pm_line)
     # Sits with the action ranges because it is the same kind of information:
     # what to do with money. Passed in rather than looked up here so this stays
     # a pure formatter — the caller knows the chat, this does not. Absent when

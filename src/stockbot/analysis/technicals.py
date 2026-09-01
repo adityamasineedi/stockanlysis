@@ -59,6 +59,64 @@ def find_support_resistance(
     return sorted(support_levels), sorted(resistance_levels)
 
 
+BOLLINGER_WINDOW = 20
+BOLLINGER_STD_MULT = 2.0
+
+
+def bollinger_bands(
+    closes: pd.Series,
+    window: int = BOLLINGER_WINDOW,
+    std_mult: float = BOLLINGER_STD_MULT,
+) -> tuple[float | None, float | None, float | None, float | None]:
+    """Returns (mid, upper, lower, bandwidth_pct) for the latest bar."""
+    if len(closes) < window:
+        return None, None, None, None
+    rolling = closes.rolling(window=window)
+    mid_series = rolling.mean()
+    std_series = rolling.std(ddof=0)
+    mid = mid_series.iloc[-1]
+    std = std_series.iloc[-1]
+    if pd.isna(mid) or pd.isna(std):
+        return None, None, None, None
+    upper = float(mid + std_mult * std)
+    lower = float(mid - std_mult * std)
+    mid_f = float(mid)
+    bandwidth = None
+    if mid_f > 0:
+        bandwidth = round((upper - lower) / mid_f * 100.0, 2)
+    return round(mid_f, 2), round(upper, 2), round(lower, 2), bandwidth
+
+
+def price_vs_bollinger_label(
+    price: float,
+    upper: float | None,
+    lower: float | None,
+) -> str | None:
+    if upper is None or lower is None:
+        return None
+    if price > upper:
+        return "above_upper_band"
+    if price < lower:
+        return "below_lower_band"
+    return "inside_bands"
+
+
+def trend_label(
+    price: float,
+    sma50: float | None,
+    sma200: float | None,
+) -> str | None:
+    if sma50 is None or sma200 is None:
+        return None
+    above50 = price >= sma50
+    above200 = price >= sma200
+    if above50 and above200:
+        return "uptrend"
+    if not above50 and not above200:
+        return "downtrend"
+    return "mixed"
+
+
 def compute_technicals(price: PriceData) -> Technicals:
     closes = price.ohlcv_adjusted["Close"]
     as_of_date = price.ohlcv_adjusted.index[-1].date()
@@ -72,6 +130,11 @@ def compute_technicals(price: PriceData) -> Technicals:
 
     support_abs, resistance_abs = find_support_resistance(price.ohlcv_adjusted)
 
+    bb_mid, bb_upper, bb_lower, bb_bw = bollinger_bands(closes)
+    current_price = float(closes.iloc[-1])
+    bb_position = price_vs_bollinger_label(current_price, bb_upper, bb_lower)
+    trend = trend_label(current_price, sma50, sma200)
+
     return Technicals(
         sma50=sma50,
         sma200=sma200,
@@ -81,4 +144,10 @@ def compute_technicals(price: PriceData) -> Technicals:
         as_of_date=as_of_date,
         source="computed",
         fetched_at=datetime.now(UTC),
+        bollinger_mid=bb_mid,
+        bollinger_upper=bb_upper,
+        bollinger_lower=bb_lower,
+        bollinger_bandwidth_pct=bb_bw,
+        price_vs_bollinger=bb_position,
+        trend_label=trend,
     )

@@ -186,6 +186,9 @@ VALID_BRACKET_TAGS: frozenset[str] = frozenset(
         "AR_BUSINESS_SUMMARY",
         "STREET_CONSENSUS",
         "PRESCAN_SUMMARY",
+        "PEER_FUNDAMENTALS",
+        "SECTOR_SCORECARD",
+        "PORTFOLIO_EXECUTION",
     }
 )
 _BRACKET_TAG_RE = re.compile(r"\[([A-Z][A-Z0-9_]*)\]")

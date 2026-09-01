@@ -182,6 +182,12 @@ def format_price_section(price: PriceData, technicals: Technicals) -> str:
             f"- SMA50: {_fmt_or_missing(technicals.sma50, 'insufficient price history')}",
             f"- SMA200: {_fmt_or_missing(technicals.sma200, 'insufficient price history')}",
             f"- RSI(14): {_fmt_or_missing(technicals.rsi14, 'insufficient price history')}",
+            f"- Bollinger (20, 2σ) mid: {_fmt_or_missing(technicals.bollinger_mid, 'insufficient price history')}",
+            f"- Bollinger upper: {_fmt_or_missing(technicals.bollinger_upper, 'insufficient price history')}",
+            f"- Bollinger lower: {_fmt_or_missing(technicals.bollinger_lower, 'insufficient price history')}",
+            f"- Bollinger bandwidth %: {_pct_or_missing(technicals.bollinger_bandwidth_pct)}",
+            f"- Price vs Bollinger: {technicals.price_vs_bollinger or 'MISSING: insufficient price history'}",
+            f"- Trend (price vs SMA50/200): {technicals.trend_label or 'MISSING: insufficient SMA history'}",
             f"- Support levels: {support}",
             f"- Resistance levels: {resistance}",
         ]

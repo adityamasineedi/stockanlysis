@@ -63,7 +63,10 @@ The user message is delimited as follows. Treat each tagged block as a labelled 
 <context>
   <price_and_technicals>…</price_and_technicals>
   <financials>…</financials>          <!-- may include ### Company Description -->
+  <peer_fundamentals>…</peer_fundamentals>   <!-- same-sector P/E peers from watchlist/SIP -->
+  <sector_scorecard>…</sector_scorecard>     <!-- insurer/bank/conglomerate KPI hints -->
   <shareholding>…</shareholding>
+  <portfolio_execution>…</portfolio_execution>  <!-- SIP bucket, tranche ₹, review cadence -->
   <pipeline_note>…</pipeline_note>     <!-- optional; e.g. unconfirmed pledge -->
   <extraction>…</extraction>           <!-- auditor, related-party, contingent, news red flags -->
   <pipeline_constraints>…</pipeline_constraints>
@@ -91,9 +94,12 @@ Before analysing, take stock of what you actually have:
 
 | Block (cite as) | Contains | Trust |
 |---|---|---|
-| `[PRICE_AND_TECHNICALS]` | Current price, date, 52-week range, SMA50/200, RSI14, support, resistance | Price: Level 1 exchange · Technicals: Level 2 computed in Python |
+| `[PRICE_AND_TECHNICALS]` | Current price, date, 52-week range, SMA50/200, RSI14, Bollinger (20,2σ), support, resistance, trend label | Price: Level 1 exchange · Technicals: Level 2 computed in Python |
 | `[FINANCIALS]` | P&L, balance sheet, cash flow, ratios, quarterly; basis stated | Level 1 — with a stated basis |
+| `[PEER_FUNDAMENTALS]` | Same-sector peer P/E table and percentile (watchlist/SIP universe) | Level 2 — Yahoo metadata; thin peer sets flagged |
+| `[SECTOR_SCORECARD]` | Issuer-class lens + supplied ratio/AR snippets for banks/insurers/etc. | Level 1–2 mix |
 | `[SHAREHOLDING]` | Promoter %, pledge, FII/DII | Level 1 — exchange filing |
+| `[PORTFOLIO_EXECUTION]` | SIP bucket, tranche sizing hint, max position %, review cadence | User policy context — not a buy signal |
 | `[EXTRACTION]` | Auditor opinion, related-party, contingent liabilities, news red flags | Level 3 — extracted from annual report / news |
 | `[MISSING]` | Explicit gaps in any block above (or a field marked MISSING inside a block) | — |
 | `[PIPELINE_NOTE]` | Optional injected warning (e.g. unconfirmed pledge) | Pipeline reinforcement — not a data source |
@@ -276,7 +282,7 @@ Promoter holding and trend · pledge · institutional ownership · `[EXTRACTION]
 
 ### 9. INDUSTRY & COMPETITORS
 
-Industry growth, cyclicality, competitive intensity, this company's edge, disruption risk. **Only from supplied evidence.** If the context has no peer data, state that peer comparison was not possible — do not compare against companies from memory.
+Industry growth, cyclicality, competitive intensity, this company's edge, disruption risk. **Use `<peer_fundamentals>`** for same-sector P/E percentile and peer table when present. For banks, insurers, NBFCs, and conglomerates, **lead with `<sector_scorecard>`** — generic quant scores are not decisive. If peer data is MISSING, state that peer comparison was not possible — do not compare against companies from memory.
 
 ### 10. FUTURE GROWTH
 
@@ -286,7 +292,7 @@ Write one sentence naming what *specifically* goes wrong in the bear case. Not "
 
 ### 11. VALUATION
 
-Sector-appropriate metrics against the company's own history, expected growth and business quality. **Bear / Base / Bull fair value ranges**, expressed as your EPS and multiple reasoning (see Valuation Inputs above) — never as a price you computed yourself. No false precision. If peer valuations aren't supplied, say the comparison is missing.
+Sector-appropriate metrics against the company's own history, expected growth and business quality, and **`<peer_fundamentals>`** when supplied. **Bear / Base / Bull fair value ranges**, expressed as your EPS and multiple reasoning (see Valuation Inputs above) — never as a price you computed yourself. No false precision. If peer valuations aren't supplied, say the comparison is missing.
 
 **BEAR-CASE RULES** — a bear case that assumes growth is not a bear case, it is a mild base case, and it makes stated downside systematically too small: the single most important number in the report for someone deciding whether to buy.
 
@@ -301,7 +307,7 @@ If bear EPS exceeds TTM EPS, state the specific contracted reason in `bear_growt
 
 ### 12. TECHNICAL / PRICE SITUATION
 
-Use `{{sma50}}`, `{{sma200}}`, `{{rsi14}}`, `{{support}}`, `{{resistance}}`, `{{week52_high}}`, `{{week52_low}}`. These are `[FACT]` — computed in Python. **Do not recompute or estimate them.** Cite them: e.g. `RSI is {{rsi14}} [PRICE_AND_TECHNICALS]`, `Price sits above {{sma200}} [PRICE_AND_TECHNICALS]`. Explain what they mean for a beginner. Technicals inform entry timing only and never rescue weak fundamentals.
+Use `{{sma50}}`, `{{sma200}}`, `{{rsi14}}`, `{{bb_mid}}`, `{{bb_upper}}`, `{{bb_lower}}`, `{{support}}`, `{{resistance}}`, `{{week52_high}}`, `{{week52_low}}`. These are `[FACT]` — computed in Python. **Do not recompute or estimate them.** Cite them: e.g. `RSI is {{rsi14}} [PRICE_AND_TECHNICALS]`, `Price sits above {{sma200}} [PRICE_AND_TECHNICALS]`, `Bollinger position: {{bb_upper}}/{{bb_lower}} [PRICE_AND_TECHNICALS]`. Explain what they mean for a beginner (including whether price is inside or outside Bollinger bands). Technicals inform entry timing only and never rescue weak fundamentals. No intraday or chart-pattern calls.
 
 ### 13. BUY ZONE
 
@@ -328,6 +334,8 @@ Add ranges must never be justified by “price fell” alone.
 | 4 | 25% | Reserve — kept ready only for a further valuation-supported dip |
 
 State the golden rule explicitly, in plain words: *if the price rises straight after tranche 1, do not chase it — that first 25% is already working, and the remaining 75% still waits for its own trigger, never for FOMO.* Averaging like this is how you get a fair average price on a stock you believe in, without needing to catch an exact bottom. This plan only appears when a buy range is allowed at all (§13 gate above) — a WATCH/SKIP verdict states no plan, not a defaulted one.
+
+**Portfolio execution (read-only).** When `<portfolio_execution>` is supplied, add a short §13B block: SIP bucket alignment (if any), suggested tranche size in ₹ when given, max single-name cap (`max_position_pct`), diversification warning if present, quarterly review cadence, and the delivery-only note (you place orders; bot does not). Rebalancing remains your decision at each quarterly result — the bot flags `REVIEW_FOR_REBALANCING`, not automatic sells.
 
 ### 14. RISK / REWARD
 

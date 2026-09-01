@@ -44,6 +44,11 @@ from datetime import date
 from anthropic import Anthropic
 from pydantic import BaseModel, Field
 
+from stockbot.analysis.analysis_context import (
+    format_peer_snapshot_json,
+    format_portfolio_execution_json,
+    format_sector_scorecard_json,
+)
 from stockbot.brief import (
     format_financials_section,
     format_price_section,
@@ -576,6 +581,14 @@ def build_user_message(
         format_financials_section(brief.financials),
         "</financials>",
         "",
+        "<peer_fundamentals>",
+        format_peer_snapshot_json(brief.peer_snapshot),
+        "</peer_fundamentals>",
+        "",
+        "<sector_scorecard>",
+        format_sector_scorecard_json(brief.sector_scorecard),
+        "</sector_scorecard>",
+        "",
         "<shareholding>",
         format_shareholding_section(brief.shareholding),
         "</shareholding>",
@@ -587,6 +600,10 @@ def build_user_message(
         "<ar_business_summary>",
         format_ar_business_summary_json(brief.annual_report.business_summary),
         "</ar_business_summary>",
+        "",
+        "<portfolio_execution>",
+        format_portfolio_execution_json(brief.portfolio_execution),
+        "</portfolio_execution>",
     ]
     pledge_note = _pledge_warning(brief)
     if pledge_note:

@@ -57,6 +57,9 @@ _MONEY_TOKENS = {
     "buy_zone_high",
     "add_zone_low",
     "add_zone_high",
+    "bb_mid",
+    "bb_upper",
+    "bb_lower",
     "avoid_chase_above",
 }
 _PERCENT_TOKENS = {"upside_pct", "downside_pct", "promoter_pct", "pledge_pct"}
@@ -130,6 +133,9 @@ def _build_tokens(
         "sma50": technicals.sma50,
         "sma200": technicals.sma200,
         "rsi14": technicals.rsi14,
+        "bb_mid": technicals.bollinger_mid,
+        "bb_upper": technicals.bollinger_upper,
+        "bb_lower": technicals.bollinger_lower,
         "support": _nearest_below(technicals.support_abs, current_price),
         "resistance": _nearest_above(technicals.resistance_abs, current_price),
         "fair_value_bear": fair_value_bear_mid,

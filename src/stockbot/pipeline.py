@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from stockbot import storage
+from stockbot.analysis.analysis_context import execution_pm_for_verdict
 from stockbot.analysis_routing import (
     Stage2Mode,
     analysis_routing_from_brief,
@@ -345,6 +346,13 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     if settings.force_stage2_full:
         verdict_json["stage2_mode_forced"] = True
     verdict_json = merge_expected_return_into_verdict_json(verdict_json)
+    verdict_json["execution_pm"] = execution_pm_for_verdict(
+        brief.peer_snapshot,
+        brief.sector_scorecard,
+        brief.portfolio_execution,
+        brief.technicals.trend_label,
+        brief.technicals.price_vs_bollinger,
+    )
 
     storage.save_analysis(
         ticker=ticker.symbol,

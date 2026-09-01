@@ -6,7 +6,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from stockbot.analysis.technicals import find_support_resistance, sma, wilder_rsi
+from stockbot.analysis.technicals import (
+    bollinger_bands,
+    find_support_resistance,
+    price_vs_bollinger_label,
+    sma,
+    trend_label,
+    wilder_rsi,
+)
 
 
 def test_sma_insufficient_data_returns_none():
@@ -79,3 +86,24 @@ def test_find_support_resistance_empty_on_short_series():
     support, resistance = find_support_resistance(df, lookback_days=20, window=3)
     assert support == []
     assert resistance == []
+
+
+def test_bollinger_bands_on_flat_series():
+    closes = pd.Series([100.0] * 30)
+    mid, upper, lower, bw = bollinger_bands(closes, window=20)
+    assert mid == pytest.approx(100.0)
+    assert upper == pytest.approx(100.0)
+    assert lower == pytest.approx(100.0)
+    assert bw == pytest.approx(0.0)
+
+
+def test_price_vs_bollinger_labels():
+    assert price_vs_bollinger_label(110.0, 105.0, 95.0) == "above_upper_band"
+    assert price_vs_bollinger_label(90.0, 105.0, 95.0) == "below_lower_band"
+    assert price_vs_bollinger_label(100.0, 105.0, 95.0) == "inside_bands"
+
+
+def test_trend_label_from_smas():
+    assert trend_label(120.0, 110.0, 100.0) == "uptrend"
+    assert trend_label(90.0, 110.0, 100.0) == "downtrend"
+    assert trend_label(105.0, 110.0, 100.0) == "mixed"
