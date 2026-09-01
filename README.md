@@ -145,6 +145,25 @@ WantedBy=multi-user.target
 
 Rotate or truncate `logs/stockbot.log` periodically; the process opens it in append mode.
 
+## Deploy (Railway + GitHub Actions)
+
+Production runs on [Railway](https://railway.com) (`stockanlysis` service, `production` environment). Pushes to `main` run tests then `railway up` via GitHub Actions.
+
+**One-time CI setup** (if the `deploy` job fails with “RAILWAY_TOKEN secret is missing”):
+
+1. Railway → project **stockanlysis** → **Settings** → **Tokens** → create a **Project Token** for **production**
+2. GitHub → repo **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
+3. Name: `RAILWAY_TOKEN` — paste the project token (not an account/workspace token)
+4. Re-run the failed workflow: **Actions** → latest **ci** run → **Re-run failed jobs**, or push any commit to `main`
+
+Optional Telegram deploy ping: set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_DEPLOY_CHAT_ID` repo secrets (notify step skips if unset).
+
+Manual deploy from a machine with `railway login`:
+
+```powershell
+railway up --service stockanlysis --detach
+```
+
 ## Architecture (short)
 
 1. Resolve ticker → optional SQLite cache  
