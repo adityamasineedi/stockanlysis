@@ -563,6 +563,32 @@ def get_latest_verdict_json(ticker: str) -> tuple[dict, datetime] | None:
     return verdict, datetime.fromisoformat(row["created_at"])
 
 
+def list_latest_analyses() -> list[tuple[str, dict, datetime]]:
+    """Latest analysis row per ticker (for /rank). Oldest cache first is fine."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT ticker, verdict_json, created_at
+            FROM analyses
+            WHERE id IN (
+                SELECT MAX(id) FROM analyses GROUP BY ticker
+            )
+            ORDER BY ticker
+            """
+        ).fetchall()
+    out: list[tuple[str, dict, datetime]] = []
+    for row in rows:
+        try:
+            verdict = json.loads(row["verdict_json"])
+        except (TypeError, ValueError):
+            continue
+        ticker = str(row["ticker"] or "").upper()
+        if not ticker:
+            continue
+        out.append((ticker, verdict, datetime.fromisoformat(row["created_at"])))
+    return out
+
+
 @dataclass(frozen=True)
 class RiskPolicy:
     """The holder's limits. The bot proposes; this decides."""

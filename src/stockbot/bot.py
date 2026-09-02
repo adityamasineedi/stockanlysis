@@ -129,6 +129,7 @@ from stockbot.storage import (
     invalidate_cached_analyses,
     list_active_sip_plans,
     list_holdings,
+    list_latest_analyses,
     record_sip_contribution,
     save_holding,
     save_risk_policy,
@@ -1220,6 +1221,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/workflow — defaults to daily tip playbook\n"
         "/workflow daily — 1–2 daily tip playbook\n"
         "/workflow portfolio — 12–18 name portfolio build playbook\n"
+        "/rank — long-term hold order from stored /analyze (base 3y CAGR)\n"
+        "/rank entry — entry-ready (near buy zone) names first\n"
         "/analyze — tap from menu, then send the stock name\n"
         "/analyze <company> — deep analysis (digest .md attached by default)\n"
         "/analyze full <symbol> — attach full §1–§16 report .md\n"
@@ -1404,6 +1407,63 @@ async def handle_workflow(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
+def _build_rank_message(mode: str, limit: int) -> str:
+    from stockbot.analysis_rank import format_rank_telegram, rank_analyses
+
+    rows = list_latest_analyses()
+    ranked = rank_analyses(
+        [(t, v, ts) for t, v, ts in rows],
+        mode="entry" if mode == "entry" else "hold",
+        limit=limit,
+    )
+    return format_rank_telegram(
+        ranked,
+        mode="entry" if mode == "entry" else "hold",
+        total_analyzed=len(rows),
+    )
+
+
+async def handle_rank(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
+        return
+    _clear_awaiting_symbol(context)
+    args = list(context.args or [])
+    mode = "hold"
+    limit = 18
+    for token in args:
+        low = token.lower()
+        if low in {"entry", "buy", "ready"}:
+            mode = "entry"
+        elif low in {"hold", "long", "cagr"}:
+            mode = "hold"
+        elif low in {"help", "?"}:
+            await update.message.reply_text(
+                "Usage:\n"
+                "<code>/rank</code> — long-term hold order by expected base 3y CAGR\n"
+                "<code>/rank entry</code> — names near buy zone first\n"
+                "<code>/rank 12</code> — limit to top N (default 18)\n\n"
+                "Uses stored /analyze reports only (no new LLM spend).",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        else:
+            try:
+                limit = max(1, min(40, int(token)))
+            except ValueError:
+                pass
+
+    status = await update.message.reply_text("⏳ Ranking stored analyses…")
+    try:
+        text = await asyncio.to_thread(_build_rank_message, mode, limit)
+    except Exception as exc:
+        logger.exception("rank failed")
+        await status.edit_text(f"Could not build ranking: {esc(exc)}")
+        return
+    await status.edit_text(f"{text}\n\n{DISCLAIMER}", parse_mode=ParseMode.HTML)
+
+
 async def handle_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Has the bot been right? Reads history it has already been logging."""
     if await _reject_if_unauthorized(update):
@@ -1484,6 +1544,7 @@ BOT_COMMANDS = [
     BotCommand("candidates", "Prescan picks with plain-English labels"),
     BotCommand("pick", "Soft-threshold picks — less filtering"),
     BotCommand("workflow", "Daily tip or portfolio build playbook"),
+    BotCommand("rank", "Rank analyzed names by expected return"),
     BotCommand("analyze", "Tap, then send stock name (or /analyze BEL)"),
     BotCommand("stop", "Cancel running analysis or prescan"),
     BotCommand("preflight", "Free data audit before /analyze"),
@@ -2400,8 +2461,9 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("sip", handle_sip))
     application.add_handler(CommandHandler("capital", handle_capital))
     application.add_handler(CommandHandler("hold", handle_hold))
-    application.add_handler(CommandHandler("track", handle_track))
     application.add_handler(CommandHandler("workflow", handle_workflow))
+    application.add_handler(CommandHandler("rank", handle_rank))
+    application.add_handler(CommandHandler("track", handle_track))
     application.add_handler(InlineQueryHandler(handle_inline_query))
     application.add_handler(CallbackQueryHandler(handle_symbol_pick))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_text))
