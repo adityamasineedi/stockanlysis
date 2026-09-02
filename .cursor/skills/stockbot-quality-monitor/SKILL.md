@@ -21,7 +21,8 @@ uv run stockbot-monitor --json --fail-on warning
 ```
 
 Telegram: `/health` (same audit, compact summary + `.md` attachment when warnings/critical exist).
-`/health clear` resets the log baseline and prunes old `health_audit_*.md` files.
+`/health clear` **verifies first** and clears only when clean; `/health clear force` is emergency-only.
+Deploy CI runs `stockbot-monitor --verify-and-clear` on Railway after deploy — **never clears without a clean verification**.
 A clean `/health` advances `last_green_at` so old WARNING lines stop counting; next run shows **Resolved** for findings that disappeared.
 
 ## What it checks

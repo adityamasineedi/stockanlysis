@@ -275,3 +275,47 @@ def test_telegram_shows_resolved_section():
     text = report.to_telegram_html()
     assert "Resolved since last audit" in text
     assert "prior issues cleared" in text
+
+
+def test_verify_and_clear_refuses_when_warnings(tmp_path, monkeypatch):
+    from stockbot.monitor.health_audit import verify_and_clear_health_audit
+
+    logs, state_path = _patch_audit_paths(tmp_path, monkeypatch)
+    now = datetime.now(UTC)
+    ts = now.strftime("%Y-%m-%d %H:%M:%S")
+    (logs / "stockbot.log").write_text(
+        f"{ts} WARNING stockbot.pipeline: Stage 2 validation failed (attempt 1)\n",
+        encoding="utf-8",
+    )
+    outcome = verify_and_clear_health_audit(days=14, fail_on="warning")
+    assert outcome.cleared is False
+    assert "NOT cleared" in outcome.reason
+    state = load_health_audit_state(state_path)
+    # Persist still recorded the open finding; ignore_log_before not force-cleared via clear()
+    assert any("validation_failed" in f.title for f in (state.findings or []))
+
+
+def test_verify_and_clear_clears_when_clean(tmp_path, monkeypatch):
+    from stockbot.monitor.health_audit import verify_and_clear_health_audit
+
+    logs, state_path = _patch_audit_paths(tmp_path, monkeypatch)
+    stale = logs / "health_audit_2026-08-01.md"
+    stale.write_text("# old\n", encoding="utf-8")
+    outcome = verify_and_clear_health_audit(days=7, fail_on="warning")
+    assert outcome.cleared is True
+    assert not stale.exists()
+    state = load_health_audit_state(state_path)
+    assert state.findings == []
+    assert state.ignore_log_before is not None
+
+
+def test_cli_clear_without_force_exits_2(tmp_path, monkeypatch, capsys):
+    _patch_audit_paths(tmp_path, monkeypatch)
+    from stockbot.monitor.cli import main
+
+    monkeypatch.setattr(sys, "argv", ["stockbot-monitor", "--clear"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "without verification" in err

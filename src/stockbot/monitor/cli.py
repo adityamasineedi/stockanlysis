@@ -7,7 +7,11 @@ import sys
 from pathlib import Path
 
 from stockbot.config import setup_logging
-from stockbot.monitor.health_audit import run_health_audit
+from stockbot.monitor.health_audit import (
+    clear_health_audit_state,
+    run_health_audit,
+    verify_and_clear_health_audit,
+)
 
 
 def main() -> None:
@@ -41,9 +45,22 @@ def main() -> None:
         help="Exit code 1 if findings at/above this severity exist (default: critical)",
     )
     parser.add_argument(
+        "--verify-and-clear",
+        action="store_true",
+        help=(
+            "Run audit first; clear log baseline only if verification is clean. "
+            "Never clears when critical/warning findings remain."
+        ),
+    )
+    parser.add_argument(
         "--clear",
         action="store_true",
-        help="Reset log baseline and prune health_audit_*.md, then exit",
+        help="Unsafe: reset baseline without verifying (requires --force)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Required with --clear to skip verification (not for deploy)",
     )
     parser.add_argument(
         "--no-persist",
@@ -53,15 +70,50 @@ def main() -> None:
     args = parser.parse_args()
     setup_logging()
 
-    if args.clear:
-        from stockbot.monitor.health_audit import clear_health_audit_state
+    if args.verify_and_clear and args.clear:
+        print("Use either --verify-and-clear or --clear --force, not both.", file=sys.stderr)
+        raise SystemExit(2)
 
+    if args.clear:
+        if not args.force:
+            print(
+                "Refusing --clear without verification.\n"
+                "Use: stockbot-monitor --verify-and-clear\n"
+                "Or emergency only: stockbot-monitor --clear --force",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
         result = clear_health_audit_state()
         print(
-            f"Cleared health audit baseline at {result['ignore_log_before']}; "
+            f"FORCED clear (no verification) at {result['ignore_log_before']}; "
             f"pruned {result['pruned_reports']} report(s)."
         )
         raise SystemExit(0)
+
+    if args.verify_and_clear:
+        # Deploy path: verify first; clear only when clean.
+        # Default: warnings block clear. --fail-on critical allows warnings.
+        fail_level: str = "warning"
+        if args.fail_on == "critical":
+            fail_level = "critical"
+        outcome = verify_and_clear_health_audit(
+            days=max(1, args.days),
+            fail_on=fail_level,  # type: ignore[arg-type]
+        )
+        text = outcome.report.to_markdown()
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(text, encoding="utf-8")
+            print(f"Wrote {args.out}")
+        else:
+            print(text)
+        print(outcome.reason)
+        if outcome.cleared and outcome.clear_meta:
+            print(
+                f"Cleared baseline at {outcome.clear_meta['ignore_log_before']}; "
+                f"pruned {outcome.clear_meta['pruned_reports']} report(s)."
+            )
+        raise SystemExit(0 if outcome.cleared else 1)
 
     report = run_health_audit(days=max(1, args.days), persist=not args.no_persist)
 

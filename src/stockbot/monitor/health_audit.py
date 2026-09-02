@@ -728,10 +728,52 @@ def run_health_audit(*, days: int = 14, persist: bool = True) -> HealthAuditRepo
     return report
 
 
+@dataclass(frozen=True)
+class VerifyAndClearResult:
+    report: HealthAuditReport
+    cleared: bool
+    reason: str
+    clear_meta: dict[str, object] | None = None
+
+
+def verify_and_clear_health_audit(
+    *,
+    days: int = 14,
+    fail_on: Literal["critical", "warning"] = "warning",
+) -> VerifyAndClearResult:
+    """Run a full audit; clear baseline only when verification passes.
+
+    Never clears when open critical (or warning, depending on ``fail_on``)
+    findings remain.
+    """
+    report = run_health_audit(days=days, persist=True)
+    blocked = report.critical_count > 0
+    if fail_on == "warning":
+        blocked = blocked or report.warning_count > 0
+    if blocked:
+        return VerifyAndClearResult(
+            report=report,
+            cleared=False,
+            reason=(
+                f"verification failed: {report.critical_count} critical, "
+                f"{report.warning_count} warning — baseline NOT cleared"
+            ),
+        )
+    meta = clear_health_audit_state(prune_reports=True)
+    return VerifyAndClearResult(
+        report=report,
+        cleared=True,
+        reason="verification passed — baseline cleared",
+        clear_meta=meta,
+    )
+
+
 # Re-export clear for bot/CLI callers.
 __all__ = [
     "Finding",
     "HealthAuditReport",
+    "VerifyAndClearResult",
     "clear_health_audit_state",
     "run_health_audit",
+    "verify_and_clear_health_audit",
 ]

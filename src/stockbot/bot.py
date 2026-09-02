@@ -91,7 +91,11 @@ from stockbot.data_readiness import assemble_brief_for_analysis
 from stockbot.expected_return import format_expected_return_telegram
 from stockbot.fetch.tickers import load_symbol_table, resolve_ticker
 from stockbot.models import AmbiguousMatch, Analysis, TickerInfo
-from stockbot.monitor.health_audit import clear_health_audit_state, run_health_audit
+from stockbot.monitor.health_audit import (
+    clear_health_audit_state,
+    run_health_audit,
+    verify_and_clear_health_audit,
+)
 from stockbot.pipeline import (
     ANALYSIS_RUNTIME_CAP_SECONDS,
     MAX_TRUNCATION_RETRIES,
@@ -1248,7 +1252,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/sip status|paid|pause|resume — single-stock plan\n"
         "/spend — month-to-date cost\n"
         "/health — cost/token/quality audit (no LLM spend)\n"
-        "/health clear — mark log baseline clean; drop resolved ledger noise\n"
+        "/health clear — verify first, clear baseline only if clean\n"
         "Tip: after /prescan, just reply with BEL (no need to type prescan again).\n"
         f"{inline_tip}\n"
         "(One-time in BotFather: /setinline — enables @-mention suggestions.)\n\n"
@@ -1526,19 +1530,56 @@ async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(
             "Usage:\n"
             "<code>/health</code> — scan last 14 days; shows new/open/resolved\n"
-            "<code>/health clear</code> — reset log baseline + prune old audit .md files\n\n"
-            "After a clean run, old log WARNING lines stop counting. "
-            "Resolved findings appear once, then leave the ledger.",
+            "<code>/health clear</code> — verify, then clear only if clean\n"
+            "<code>/health clear force</code> — emergency clear without verify\n\n"
+            "Deploy path never clears without verification. "
+            "A clean scan advances the log baseline automatically.",
             parse_mode=ParseMode.HTML,
         )
         return
     if args and args[0].lower() == "clear":
-        result = await asyncio.to_thread(clear_health_audit_state)
-        await update.message.reply_text(
-            "✅ Health audit baseline cleared.\n"
-            f"Log patterns ignored before {esc(result['ignore_log_before'])}.\n"
-            f"Pruned {result['pruned_reports']} old report file(s).\n"
-            "Run <code>/health</code> again for a fresh scan.",
+        force = len(args) > 1 and args[1].lower() == "force"
+        if force:
+            result = await asyncio.to_thread(clear_health_audit_state)
+            await update.message.reply_text(
+                "⚠️ Forced clear (no verification).\n"
+                f"Log patterns ignored before {esc(result['ignore_log_before'])}.\n"
+                f"Pruned {result['pruned_reports']} old report file(s).\n"
+                "Prefer <code>/health clear</code> (verify first) normally.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        status = await update.message.reply_text(
+            "⏳ Verifying health before clear (will not clear if issues remain)…"
+        )
+        try:
+            outcome = await asyncio.to_thread(
+                verify_and_clear_health_audit, days=HEALTH_AUDIT_DAYS, fail_on="warning"
+            )
+        except Exception as exc:
+            logger.exception("health verify-and-clear failed")
+            await status.edit_text(f"Health verify failed: {esc(exc)}")
+            return
+        if not outcome.cleared:
+            await status.edit_text(
+                f"❌ {esc(outcome.reason)}\n\n{outcome.report.to_telegram_html()}",
+                parse_mode=ParseMode.HTML,
+            )
+            if outcome.report.critical_count or outcome.report.warning_count:
+                audit_path = await asyncio.to_thread(
+                    _write_health_audit_file, outcome.report.to_markdown()
+                )
+                document_bytes = await asyncio.to_thread(audit_path.read_bytes)
+                await update.message.reply_document(
+                    document=document_bytes,
+                    filename=audit_path.name,
+                )
+            return
+        meta = outcome.clear_meta or {}
+        await status.edit_text(
+            f"✅ {esc(outcome.reason)}\n"
+            f"Log baseline: {esc(meta.get('ignore_log_before', ''))}\n"
+            f"Pruned {meta.get('pruned_reports', 0)} old report file(s).",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -1575,7 +1616,7 @@ BOT_COMMANDS = [
     BotCommand("refresh", "Clear cache or backfill stored verdicts"),
     BotCommand("help", "Usage instructions"),
     BotCommand("spend", "Month-to-date cost"),
-    BotCommand("health", "Cost/token audit; /health clear resets baseline"),
+    BotCommand("health", "Audit; /health clear verifies then clears"),
     BotCommand("sip", "Portfolio plan, track, or single-stock SIP"),
     BotCommand("capital", "Set total capital and per-stock cap"),
     BotCommand("hold", "Record and review what you own"),
