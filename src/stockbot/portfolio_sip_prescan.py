@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from stockbot.analysis_control import cancel_requested
 from stockbot.portfolio_screener.eligibility import check_deep_analysis_eligibility
 from stockbot.portfolio_screener.outcome_log import load_prescan_outcomes
 from stockbot.portfolio_screener.scoring_config import ScreenerRunConfig
@@ -163,8 +164,23 @@ def batch_prescan_symbols(
     results: list[PrescanBatchItem] = []
 
     for index, symbol in enumerate(unique):
+        if cancel_requested():
+            logger.info(
+                "portfolio prescan stopped by user after %d/%d symbols",
+                index,
+                len(unique),
+            )
+            break
         if index > 0 and delay_seconds > 0:
-            time.sleep(delay_seconds)
+            slept = 0.0
+            while slept < delay_seconds:
+                if cancel_requested():
+                    break
+                chunk = min(0.5, delay_seconds - slept)
+                time.sleep(chunk)
+                slept += chunk
+            if cancel_requested():
+                break
         try:
             outcome = check_deep_analysis_eligibility(symbol, config=config)
             results.append(

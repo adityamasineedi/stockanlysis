@@ -25,6 +25,7 @@ from typing import Literal
 
 from stockbot import storage
 from stockbot.analysis.analysis_context import execution_pm_for_verdict
+from stockbot.analysis_control import OperationCancelled, raise_if_cancelled
 from stockbot.analysis_routing import (
     Stage2Mode,
     analysis_routing_from_brief,
@@ -91,6 +92,7 @@ class PipelineResult:
         "analysis_cost_exceeded",
         "analysis_truncated",
         "analysis_runtime_exceeded",
+        "cancelled",
         "render_failed",
         "busy",
     ]
@@ -166,8 +168,10 @@ def _call_stage2_absorbing_truncation(
             time.monotonic() - started_at,
             running_cost_inr,
         )
+    raise_if_cancelled()
     for truncation_attempt in range(MAX_TRUNCATION_RETRIES + 1):
         call_max_tokens = stage2_max_tokens(stage2_mode, truncation_attempt)
+        raise_if_cancelled()
         try:
             report_text, _verdict, usage = run_stage2(
                 brief,
@@ -229,6 +233,7 @@ def _run_stage2_with_validation(
 
     attempt = 1
     while not validation.passed and attempt <= MAX_STAGE2_RETRIES:
+        raise_if_cancelled()
         if _runtime_exceeded(started_at):
             raise AnalysisRuntimeExceeded(
                 time.monotonic() - started_at,
@@ -262,11 +267,13 @@ def _run_stage2_with_validation(
 
 def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     started_at = time.monotonic()
+    raise_if_cancelled()
     budget_ok, spent = check_budget()
     if not budget_ok:
         return PipelineResult(status="budget_exceeded", spent_inr=spent)
 
     brief, readiness = assemble_brief_for_analysis(ticker)
+    raise_if_cancelled()
     if not readiness.ready_for_llm:
         logger.warning(
             "%s data preflight blocked LLM spend: %s",
@@ -282,7 +289,9 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
         )
 
     prescan_routing = analysis_routing_from_brief(brief)
+    raise_if_cancelled()
     extraction, stage1_usage = run_stage1(brief)
+    raise_if_cancelled()
     stage2_mode = resolve_stage2_mode(ticker, extraction, prescan=prescan_routing)
     logger.info(
         "%s Stage 2 mode=%s (prescan: %s)",
@@ -311,6 +320,7 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
         )
 
     try:
+        raise_if_cancelled()
         report_text, stage2_usage, validation = _run_stage2_with_validation(
             brief,
             extraction,
@@ -341,6 +351,7 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
             spent_inr=total_cost_inr,
         )
 
+    raise_if_cancelled()
     # extract_verdict_json already succeeded inside validate_report — re-parse
     # here rather than threading a fourth return value through the retry loop
     verdict = extract_verdict_json(report_text)
@@ -461,10 +472,14 @@ def run_full_analysis(
     if not acquired:
         return PipelineResult(status="busy")
     try:
+        raise_if_cancelled()
         result = _run_paid_analysis(ticker)
         if cache_miss_reason:
             return dataclasses.replace(result, cache_miss_reason=cache_miss_reason)
         return result
+    except OperationCancelled:
+        logger.info("Analysis cancelled by user for %s", ticker.symbol)
+        return PipelineResult(status="cancelled")
     finally:
         _ANALYSIS_SLOTS.release()
 
