@@ -1215,7 +1215,9 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/candidates pick — soft pick list (quant ≥50 or strong Q/G/S pillar)\n"
         "/candidates strong|candidate|watchlist — filter by score tier\n"
         "/candidates quality 65 — Quality ≥65 and analyze-ready\n"
+        "/candidates all — every logged prescan (latest per symbol)\n"
         "/pick — same soft pick policy as /candidates pick\n"
+        "/workflow — defaults to daily tip playbook\n"
         "/workflow daily — 1–2 daily tip playbook\n"
         "/workflow portfolio — 12–18 name portfolio build playbook\n"
         "/analyze — tap from menu, then send the stock name\n"
@@ -1230,13 +1232,15 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/refresh backfill — recompute gates + expected_return on cached rows\n"
         "/capital 500000 max 10 — total capital and per-stock cap\n"
         "/hold BEL 25 412.50 — record a position (/hold to list)\n"
-        "/track — score the bot's past calls (/track analyze for verdicts)\n"
+        "/track — score past /prescan calls (default)\n"
+        "/track analyze — score past /analyze verdicts\n"
         "/track pick — did soft /pick calls beat rejects?\n"
         "/track pick tune — threshold tune hints from history\n"
         "/sip BEL 5000 — monthly plan with dip alerts and projections\n"
         "/sip plan — ₹60k portfolio tables (3 buckets, live prices)\n"
         "/sip track — planned vs logged this month\n"
         "/sip prescan — batch prescan all portfolio names (quant-only)\n"
+        "/sip prescan full — batch prescan with AI eligibility\n"
         "/sip paid BEL 3213 — log a portfolio buy\n"
         "/sip status|paid|pause|resume — single-stock plan\n"
         "/spend — month-to-date cost\n"
@@ -1482,6 +1486,7 @@ BOT_COMMANDS = [
     BotCommand("workflow", "Daily tip or portfolio build playbook"),
     BotCommand("analyze", "Tap, then send stock name (or /analyze BEL)"),
     BotCommand("stop", "Cancel running analysis or prescan"),
+    BotCommand("preflight", "Free data audit before /analyze"),
     BotCommand("refresh", "Clear cache or backfill stored verdicts"),
     BotCommand("help", "Usage instructions"),
     BotCommand("spend", "Month-to-date cost"),
