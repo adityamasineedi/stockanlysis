@@ -96,7 +96,7 @@ from stockbot.portfolio_screener.eligibility import (
     check_deep_analysis_eligibility,
     format_analyze_gate_block,
 )
-from stockbot.portfolio_screener.outcome_log import build_candidates_messages
+from stockbot.portfolio_screener.outcome_log import build_candidates_messages, build_pick_messages
 from stockbot.portfolio_screener.scoring_config import ScreenerRunConfig
 from stockbot.portfolio_state import DEFAULT_MAX_POSITION_PCT
 from stockbot.report_digest import (
@@ -1078,6 +1078,21 @@ async def handle_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
 
 
+async def handle_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
+        return
+    _clear_awaiting_symbol(context)
+    args = list(context.args or [])
+    chunks, err = await asyncio.to_thread(build_pick_messages, args)
+    if err:
+        await update.message.reply_text(err, parse_mode=ParseMode.HTML)
+        return
+    for chunk in chunks:
+        await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
+
+
 async def handle_preflight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Free data-layer audit — no LLM spend."""
     if await _reject_if_unauthorized(update):
@@ -1127,8 +1142,10 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/prescan — tap from menu, then send the stock name\n"
         "/prescan <symbol> — one-step example: /prescan BEL\n"
         "/candidates — list analyze-ready names from prescan history\n"
+        "/candidates pick — soft pick list (quant ≥50 or strong Q/G/S pillar)\n"
         "/candidates strong|candidate|watchlist — filter by score tier\n"
         "/candidates quality 65 — Quality ≥65 and analyze-ready\n"
+        "/pick — same soft pick policy as /candidates pick\n"
         "/analyze — tap from menu, then send the stock name\n"
         "/analyze <company> — deep analysis (digest .md attached by default)\n"
         "/analyze full <symbol> — attach full §1–§16 report .md\n"
@@ -1329,6 +1346,7 @@ async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 BOT_COMMANDS = [
     BotCommand("prescan", "Tap, then send stock name (or /prescan BEL)"),
     BotCommand("candidates", "Prescan picks with plain-English labels"),
+    BotCommand("pick", "Soft-threshold picks — less filtering"),
     BotCommand("analyze", "Tap, then send stock name (or /analyze BEL)"),
     BotCommand("refresh", "Clear cache or backfill stored verdicts"),
     BotCommand("help", "Usage instructions"),
@@ -2224,6 +2242,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("preflight", handle_preflight))
     application.add_handler(CommandHandler("prescan", handle_prescan))
     application.add_handler(CommandHandler("candidates", handle_candidates))
+    application.add_handler(CommandHandler("pick", handle_pick))
     application.add_handler(CommandHandler("analyze", handle_analyze))
     application.add_handler(CommandHandler("refresh", handle_refresh))
     application.add_handler(CommandHandler("help", handle_help))

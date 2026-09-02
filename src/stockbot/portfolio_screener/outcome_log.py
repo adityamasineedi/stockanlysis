@@ -15,6 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from stockbot.config import PORTFOLIO_DIR
+from stockbot.portfolio_screener.pick_policy import (
+    pick_min_pillar_score,
+    pick_min_quant_score,
+    pick_tier,
+    query_pick_outcomes,
+    summarize_pick_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +429,7 @@ from stockbot.portfolio_screener.prescan_display import (
 CANDIDATES_USAGE = (
     "Usage:\n"
     "/candidates — all analyze-ready names from your /prescan history\n"
+    "/candidates pick — soft pick list (quant ≥50 or strong Q/G/S pillar)\n"
     "/candidates strong — top tier (overall score 80+)\n"
     "/candidates candidate — good picks (score 70–79)\n"
     "/candidates watchlist — watchlist (score 60–69)\n"
@@ -430,6 +438,18 @@ CANDIDATES_USAGE = (
     "Names are grouped by tier, best first. Each row shows: symbol · overall "
     "score · Q/G/S pillars · status icons (explained under the list).\n"
     "Run <code>/prescan SYMBOL</code> first to build the list."
+)
+
+PICK_USAGE = (
+    "Usage:\n"
+    "/pick — soft-threshold picks from /prescan history (no over-filtering)\n"
+    "/pick help — this message\n\n"
+    "Includes names that pass hard filters with:\n"
+    "• overall quant score ≥50, or\n"
+    "• any Q/G/S pillar ≥70, or\n"
+    "• quality override from prescan routing\n\n"
+    "Excludes: HARD_EXCLUDE, CRITICAL cash, data gaps, NOT_SUITABLE.\n"
+    "MONITOR is not a sell — run <code>/analyze SYMBOL</code> for buy ranges."
 )
 
 TELEGRAM_PSCAN_CHUNK = 3800
@@ -441,6 +461,7 @@ class CandidatesFilter:
     min_quality: float | None = None
     analyze_ready_only: bool = True
     label: str = "Analyze-ready"
+    pick_mode: bool = False
 
 
 def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
@@ -454,6 +475,13 @@ def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
     lowered = [a.lower() for a in args]
     if lowered[0] in {"help", "?"}:
         return CANDIDATES_USAGE
+
+    if lowered[0] == "pick":
+        return CandidatesFilter(
+            analyze_ready_only=False,
+            pick_mode=True,
+            label="Soft pick (quant≥50 or pillar≥70)",
+        )
 
     if lowered[0] == "all":
         return CandidatesFilter(
@@ -636,6 +664,135 @@ def format_prescan_telegram_chunks(
     return chunks
 
 
+_PICK_TIER_HEADINGS = {
+    "analyze_now": "✅ RUN /ANALYZE",
+    "analyze_if_interested": "🔎 WORTH /ANALYZE IF INTERESTED",
+}
+
+
+def format_pick_telegram_chunks(
+    rows: list[dict[str, Any]],
+    *,
+    max_len: int = TELEGRAM_PSCAN_CHUNK,
+) -> list[str]:
+    """HTML chunks for /pick — grouped by analyze urgency, not score band."""
+    min_quant = pick_min_quant_score()
+    min_pillar = pick_min_pillar_score()
+    title = f"Soft pick (quant≥{min_quant:.0f} or Q/G/S≥{min_pillar:.0f})"
+
+    if not rows:
+        return [
+            (
+                "<b>🎯 Pick list</b>\n\n"
+                f"No names match <i>{html_escape(title)}</i>.\n"
+                "Run <code>/prescan SYMBOL</code> on your watchlist first.\n\n"
+                "Policy: hard reject only — then quant ≥50 or strong pillar. "
+                "Final pick needs <code>/analyze</code> buy range."
+            )
+        ]
+
+    header = (
+        f"<b>🎯 Pick — {html_escape(title)}</b>\n"
+        f"{len(rows)} name(s). Prescan is a ranker — decide on "
+        "<code>/analyze</code> verdict + buy range.\n"
+        f"Floor: overall ≥{min_quant:.0f} <i>or</i> any Q/G/S pillar ≥{min_pillar:.0f}. "
+        "Excludes HARD_EXCLUDE, CRITICAL cash, NOT_SUITABLE.\n\n"
+    )
+
+    ticker_width = min(max((len(str(r.get("ticker") or "?")) for r in rows), default=8), 12)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(pick_tier(row), []).append(row)
+
+    used_icons: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    for tier_key in ("analyze_now", "analyze_if_interested"):
+        tier_rows = grouped.get(tier_key)
+        if not tier_rows:
+            continue
+        head = _PICK_TIER_HEADINGS[tier_key]
+        lines = []
+        for row in tier_rows:
+            lines.append(_format_prescan_row_html(row, ticker_width))
+            for ch in _row_status_icons(row):
+                if ch in _ICON_LEGEND and ch not in used_icons:
+                    used_icons.append(ch)
+        sections.append((head, lines))
+
+    chunks: list[str] = []
+    current = header.rstrip()
+
+    def _append(block: str) -> None:
+        nonlocal current
+        current = f"{current}\n\n{block}" if current else block
+
+    for head, lines in sections:
+        index = 0
+        while index < len(lines):
+            taken: list[str] = []
+            for line in lines[index:]:
+                candidate = f"{head}\n<pre>" + "\n".join([*taken, line]) + "</pre>"
+                if taken and len(current) + 2 + len(candidate) > max_len:
+                    break
+                taken.append(line)
+            if len(current) + 2 + len(f"{head}\n<pre>{taken[0]}</pre>") > max_len and current:
+                chunks.append(current)
+                current = ""
+                continue
+            _append(f"{head}\n<pre>" + "\n".join(taken) + "</pre>")
+            index += len(taken)
+
+    footer = (
+        "Next: <code>/analyze SYMBOL</code> — pick only when buy range is issued."
+    )
+    legend = " · ".join(f"{ch} {_ICON_LEGEND[ch]}" for ch in used_icons)
+    tail = footer if not legend else f"{footer}\n{legend}"
+    if len(current) + 2 + len(tail) > max_len:
+        chunks.append(current)
+        current = tail
+    else:
+        _append(tail)
+    if current.strip():
+        chunks.append(current)
+    return chunks
+
+
+def build_pick_messages(
+    args: list[str] | None = None,
+    *,
+    path: Path | None = None,
+) -> tuple[list[str], str | None]:
+    """Return Telegram HTML chunks for /pick and optional error/usage text."""
+    if args:
+        lowered = [a.lower() for a in args]
+        if lowered[0] in {"help", "?"}:
+            return [], PICK_USAGE
+
+    target = path or OUTCOMES_PATH
+    if not target.exists():
+        return [], (
+            "No prescan log yet on this bot.\n"
+            "Run <code>/prescan SYMBOL</code> on names you care about — "
+            "then retry <code>/pick</code>."
+        )
+
+    rows = load_prescan_outcomes(target)
+    stale = sum(1 for row in rows if not _row_has_qgs(row))
+    if stale:
+        logger.info("Backfilling Q/G/S for %d prescan row(s) missing pillar scores", stale)
+    rows = backfill_rows_qgs(rows, persist=True)
+    matched = query_pick_outcomes(rows)
+    summary = summarize_pick_policy(rows)
+    logger.info(
+        "pick_policy eligible=%d skipped=%d min_quant=%.0f min_pillar=%.0f",
+        summary.eligible_count,
+        summary.skipped_count,
+        summary.min_quant,
+        summary.min_pillar,
+    )
+    return format_pick_telegram_chunks(matched), None
+
+
 def build_candidates_messages(
     args: list[str],
     *,
@@ -655,6 +812,14 @@ def build_candidates_messages(
         )
 
     rows = load_prescan_outcomes(target)
+    if parsed.pick_mode:
+        stale = sum(1 for row in rows if not _row_has_qgs(row))
+        if stale:
+            logger.info("Backfilling Q/G/S for %d prescan row(s) missing pillar scores", stale)
+        rows = backfill_rows_qgs(rows, persist=True)
+        matched = query_pick_outcomes(rows)
+        return format_pick_telegram_chunks(matched), None
+
     matched = query_prescan_outcomes(
         rows,
         bands=parsed.bands,

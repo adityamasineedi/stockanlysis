@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     anti_chase_pe_threshold: float = 40.0
     trade_friendly_base_fv_buffer_pct: float = 0.03
     prescan_auto_deep_min_score: float = 65.0
+    # Soft /pick policy — avoid over-filtering prescan history for daily tips.
+    pick_min_quant_score: float = 50.0
+    pick_min_pillar_score: float = 70.0
     # Comma-separated Telegram chat IDs allowed to use the bot. Empty = allow all
     # (private single-user bots). Set to your numeric chat id to block strangers.
     telegram_allowed_chat_ids: str = ""
