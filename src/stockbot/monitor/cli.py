@@ -40,10 +40,30 @@ def main() -> None:
         default="critical",
         help="Exit code 1 if findings at/above this severity exist (default: critical)",
     )
+    parser.add_argument(
+        "--clear",
+        action="store_true",
+        help="Reset log baseline and prune health_audit_*.md, then exit",
+    )
+    parser.add_argument(
+        "--no-persist",
+        action="store_true",
+        help="Do not update the finding ledger (read-only scan)",
+    )
     args = parser.parse_args()
     setup_logging()
 
-    report = run_health_audit(days=max(1, args.days))
+    if args.clear:
+        from stockbot.monitor.health_audit import clear_health_audit_state
+
+        result = clear_health_audit_state()
+        print(
+            f"Cleared health audit baseline at {result['ignore_log_before']}; "
+            f"pruned {result['pruned_reports']} report(s)."
+        )
+        raise SystemExit(0)
+
+    report = run_health_audit(days=max(1, args.days), persist=not args.no_persist)
 
     if args.json:
         import json
