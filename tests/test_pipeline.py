@@ -116,7 +116,11 @@ def _patch_common(monkeypatch, *, resolve_result=TICKER, cached=None, budget_ok=
             reasons=("test",),
         ),
     )
-    monkeypatch.setattr(pipeline_module, "resolve_stage2_mode", lambda ticker, extraction, prescan=None: "FULL")
+    monkeypatch.setattr(
+        pipeline_module,
+        "resolve_stage2_mode",
+        lambda ticker, extraction, prescan=None, force_lite=False: "FULL",
+    )
 
 
 def test_not_found_short_circuits(monkeypatch):

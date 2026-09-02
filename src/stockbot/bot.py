@@ -155,7 +155,13 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 ANALYSIS_RUNTIME_CAP_MINUTES = ANALYSIS_RUNTIME_CAP_SECONDS // 60
 ANALYZING_TEMPLATE = (
-    "⏳ Analyzing {company}… (usually 8–{cap_min} min)\n"
+    "⏳ Analyzing {company}… (usually 8–{cap_min} min for FULL; LITE is faster)\n"
+    "☕ Please wait — send /stop to cancel. Don’t restart the bot.\n"
+    "💡 Cost tip: prefer cache · use <code>/analyze lite {company_plain}</code> for cheaper Stage 2 · "
+    "<code>/pick daily</code> first."
+)
+ANALYZING_LITE_TEMPLATE = (
+    "⏳ Analyzing {company}… (LITE path — cheaper/faster Stage 2)\n"
     "☕ Please wait — send /stop to cancel. Don’t restart the bot."
 )
 DISCLAIMER = (
@@ -540,6 +546,8 @@ def _format_stage2_mode_line(verdict_json: dict) -> str | None:
     detail = "Haiku compact report" if raw_mode == "LITE" else "Sonnet deep report"
     if verdict_json.get("stage2_mode_forced"):
         detail += " (config override)"
+    elif verdict_json.get("stage2_lite_requested"):
+        detail += " (/analyze lite)"
     return f"🧾 Stage 2: <b>{esc(str(raw_mode))}</b> · {esc(detail)}"
 
 
@@ -925,6 +933,7 @@ async def _run_and_reply(
     force: bool = False,
     full_report: bool = False,
     skip_cache: bool = False,
+    force_lite: bool = False,
 ) -> None:
     if not await _try_begin_analysis(query):
         active = await _active_analysis_query()
@@ -942,16 +951,28 @@ async def _run_and_reply(
             if not allowed:
                 return
 
-        status_message = await update.message.reply_text(
-            ANALYZING_TEMPLATE.format(
-                company=esc(query), cap_min=ANALYSIS_RUNTIME_CAP_MINUTES
+        if force_lite:
+            status_message = await update.message.reply_text(
+                ANALYZING_LITE_TEMPLATE.format(company=esc(query)),
+                parse_mode=ParseMode.HTML,
             )
-        )
+        else:
+            status_message = await update.message.reply_text(
+                ANALYZING_TEMPLATE.format(
+                    company=esc(query),
+                    company_plain=esc(query),
+                    cap_min=ANALYSIS_RUNTIME_CAP_MINUTES,
+                ),
+                parse_mode=ParseMode.HTML,
+            )
         progress_task = asyncio.create_task(_send_progress_updates(status_message, query))
         try:
             try:
                 result = await asyncio.to_thread(
-                    run_full_analysis, query, skip_cache=skip_cache
+                    run_full_analysis,
+                    query,
+                    skip_cache=skip_cache,
+                    force_stage2_lite=force_lite,
                 )
             except Exception as exc:
                 logger.exception("run_full_analysis failed for %r", query)
@@ -995,7 +1016,7 @@ async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     if await _reject_if_operation_busy(update):
         return
-    query, force, full_report, fresh = _parse_analyze_command_args(context.args)
+    query, force, full_report, fresh, lite = _parse_analyze_command_args(context.args)
     if not query:
         await _prompt_for_symbol(
             update,
@@ -1008,15 +1029,21 @@ async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     _clear_awaiting_symbol(context)
     await _run_and_reply(
-        update, query, force=force, full_report=full_report, skip_cache=fresh
+        update,
+        query,
+        force=force,
+        full_report=full_report,
+        skip_cache=fresh,
+        force_lite=lite,
     )
 
 
-def _parse_analyze_modifiers(args: list[str] | None) -> tuple[bool, bool, bool]:
+def _parse_analyze_modifiers(args: list[str] | None) -> tuple[bool, bool, bool, bool]:
     parts = list(args or [])
     force = False
     full_report = False
     fresh = False
+    lite = False
     for token in parts:
         low = token.lower()
         if low == "force":
@@ -1025,18 +1052,25 @@ def _parse_analyze_modifiers(args: list[str] | None) -> tuple[bool, bool, bool]:
             full_report = True
         elif low == "fresh":
             fresh = True
-    return force, full_report, fresh
+        elif low == "lite":
+            lite = True
+    return force, full_report, fresh, lite
 
 
-def _parse_analyze_command_args(args: list[str] | None) -> tuple[str, bool, bool, bool]:
+_ANALYZE_MODIFIERS = frozenset({"force", "full", "fresh", "lite"})
+
+
+def _parse_analyze_command_args(
+    args: list[str] | None,
+) -> tuple[str, bool, bool, bool, bool]:
     parts = list(args or [])
-    force, full_report, fresh = _parse_analyze_modifiers(parts)
+    force, full_report, fresh, lite = _parse_analyze_modifiers(parts)
     cleaned: list[str] = []
     for token in parts:
-        if token.lower() in {"force", "full", "fresh"}:
+        if token.lower() in _ANALYZE_MODIFIERS:
             continue
         cleaned.append(token)
-    return " ".join(cleaned).strip(), force, full_report, fresh
+    return " ".join(cleaned).strip(), force, full_report, fresh, lite
 
 
 async def handle_prescan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1098,19 +1132,19 @@ def _parse_prescan_plain_text(text: str) -> str | None:
     return None
 
 
-def _parse_analyze_plain_text(text: str) -> tuple[str, bool, bool, bool] | None:
-    """Accept 'force BEL', 'full CAMS', 'fresh BEL', or 'force full BEL' shortcuts."""
+def _parse_analyze_plain_text(text: str) -> tuple[str, bool, bool, bool, bool] | None:
+    """Accept 'force BEL', 'full CAMS', 'fresh BEL', 'lite BEL', or combined shortcuts."""
     stripped = text.strip()
     if not stripped:
         return None
     parts = stripped.split()
-    force, full_report, fresh = _parse_analyze_modifiers(parts)
-    cleaned = [p for p in parts if p.lower() not in {"force", "full", "fresh"}]
+    force, full_report, fresh, lite = _parse_analyze_modifiers(parts)
+    cleaned = [p for p in parts if p.lower() not in _ANALYZE_MODIFIERS]
     if not cleaned:
         return None
-    if not force and not full_report and not fresh:
+    if not force and not full_report and not fresh and not lite:
         return None
-    return " ".join(cleaned), force, full_report, fresh
+    return " ".join(cleaned), force, full_report, fresh, lite
 
 
 async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1131,9 +1165,14 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     analyze_query = _parse_analyze_plain_text(text)
     if analyze_query is not None:
         _clear_awaiting_symbol(context)
-        query, force, full_report, fresh = analyze_query
+        query, force, full_report, fresh, lite = analyze_query
         await _run_and_reply(
-            update, query, force=force, full_report=full_report, skip_cache=fresh
+            update,
+            query,
+            force=force,
+            full_report=full_report,
+            skip_cache=fresh,
+            force_lite=lite,
         )
         return
     if _consume_awaiting(context, AWAITING_PRESCAN_SYMBOL):
@@ -1301,6 +1340,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "🧠 Deep analysis\n"
         "/analyze — tap from menu, then send the stock name\n"
         "/analyze <company> — deep analysis (digest .md attached by default)\n"
+        "/analyze lite <symbol> — cheaper/faster Stage 2 (Haiku) when safe\n"
         "/analyze full <symbol> — attach full §1–§16 report .md\n"
         "/analyze fresh <symbol> — skip cache, run new paid analysis\n"
         "/analyze force <symbol> — bypass gate (not recommended)\n"
@@ -1686,7 +1726,7 @@ BOT_COMMANDS = [
     BotCommand("progress", "12–18 portfolio build progress"),
     BotCommand("workflow", "Daily tip or portfolio build playbook"),
     BotCommand("rank", "Rank analyzed names by expected return"),
-    BotCommand("analyze", "Tap, then send stock name (or /analyze BEL)"),
+    BotCommand("analyze", "Deep analysis; /analyze lite = cheaper/faster"),
     BotCommand("stop", "Cancel running analysis or prescan"),
     BotCommand("preflight", "Free data audit before /analyze"),
     BotCommand("refresh", "Clear cache or backfill stored verdicts"),

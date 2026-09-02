@@ -14,6 +14,7 @@ from stockbot.product_workflow import format_daily_workflow, format_portfolio_wo
 def test_daily_workflow_mentions_pick_and_analyze() -> None:
     text = format_daily_workflow()
     assert "/pick daily" in text
+    assert "/analyze lite" in text
     assert "/analyze" in text
     assert "/progress" in text
     assert "Daily tip" in text

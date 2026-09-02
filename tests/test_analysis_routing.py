@@ -85,6 +85,58 @@ def test_extraction_red_flags_upgrade_to_full():
 
 
 @patch("stockbot.analysis_routing.settings")
+def test_force_lite_prefers_lite_when_safe(mock_settings):
+    mock_settings.force_stage2_full = False
+    from stockbot.analysis_routing import AnalysisRouting
+
+    full_prescan = AnalysisRouting(
+        stage2_mode="FULL",
+        eligibility_verdict="SECTOR_SPECIFIC_REVIEW",
+        issuer_class="BANK",
+        data_confidence="MEDIUM",
+        quant_red_flags_count=1,
+        reasons=("eligibility=SECTOR_SPECIFIC_REVIEW",),
+    )
+    assert (
+        resolve_stage2_mode(
+            TICKER, ExtractionResult(), prescan=full_prescan, force_lite=True
+        )
+        == "LITE"
+    )
+
+
+@patch("stockbot.analysis_routing.settings")
+def test_force_lite_still_upgrades_on_extraction_red_flags(mock_settings):
+    mock_settings.force_stage2_full = False
+    from stockbot.analysis_routing import AnalysisRouting
+
+    full_prescan = AnalysisRouting(
+        stage2_mode="FULL",
+        eligibility_verdict="AUTO_DEEP_ANALYSIS",
+        issuer_class="NON_FINANCIAL",
+        data_confidence="HIGH",
+        quant_red_flags_count=0,
+        reasons=("clean",),
+    )
+    extraction = ExtractionResult(
+        red_flags_found=[
+            RedFlag(
+                headline="fraud probe",
+                url="https://example.com",
+                published_date=__import__("datetime").date(2026, 1, 1),
+                found_by_query="fraud",
+            )
+        ]
+    )
+    assert (
+        resolve_stage2_mode(
+            TICKER, extraction, prescan=full_prescan, force_lite=True
+        )
+        == "FULL"
+    )
+
+
+@patch("stockbot.analysis_routing.settings")
 def test_force_stage2_full_config_overrides_lite(mock_settings):
     mock_settings.force_stage2_full = True
     from stockbot.analysis_routing import AnalysisRouting
