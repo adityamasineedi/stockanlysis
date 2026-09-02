@@ -67,7 +67,7 @@ MAX_STAGE2_RETRIES = 1
 # needs its own bound so a persistently-truncating call can't loop forever
 # independent of the cost cap below (which would eventually stop it anyway,
 # but a call could burn several truncations before crossing the per-run cap).
-MAX_TRUNCATION_RETRIES = 2
+MAX_TRUNCATION_RETRIES = 1
 
 # Hard per-analysis kill switch — values from settings (env-tunable).
 PER_ANALYSIS_COST_CAP_INR = settings.per_analysis_cost_cap_inr
@@ -95,6 +95,7 @@ class PipelineResult:
         "cancelled",
         "render_failed",
         "busy",
+        "unsaved_spend_guard",
     ]
     analysis: Analysis | None = None
     candidates: AmbiguousMatch | None = None
@@ -438,7 +439,10 @@ def run_full_analysis(
     max_cache_age_days: int | None = None,
     skip_cache: bool = False,
     force_stage2_lite: bool = False,
+    bypass_unsaved_spend_guard: bool = False,
 ) -> PipelineResult:
+    from stockbot.costs import should_block_unsaved_spend
+
     symbol_table = load_symbol_table()
     resolved = resolve_ticker(query, symbol_table)
 
@@ -480,6 +484,22 @@ def run_full_analysis(
             from_cache=True,
             staleness_banner=banner or None,
         )
+
+    if not bypass_unsaved_spend_guard:
+        blocked, orphan_spend = should_block_unsaved_spend(ticker.symbol)
+        if blocked:
+            return PipelineResult(
+                status="unsaved_spend_guard",
+                spent_inr=orphan_spend,
+                validation_failures=[
+                    (
+                        f"Already spent ₹{orphan_spend:.0f} on {ticker.symbol} without a "
+                        "saved report (restart, truncation, or failed validation). "
+                        "Retry with /analyze lite (cheaper) or /analyze force "
+                        "(acknowledge another paid FULL run)."
+                    )
+                ],
+            )
 
     acquired = _ANALYSIS_SLOTS.acquire(blocking=False)
     if not acquired:
