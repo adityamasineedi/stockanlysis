@@ -24,9 +24,21 @@ from stockbot.config import (  # noqa: F401 - DB_PATH re-exported for tests to m
 )
 from stockbot.costs import _connect as connect_costs_db
 from stockbot.costs import month_to_date_spend
+from stockbot.monitor.health_audit_state import (
+    FindingDiff,
+    HealthAuditState,
+    StoredFinding,
+    clear_health_audit_state,
+    diff_findings,
+    finding_key,
+    load_health_audit_state,
+    log_cutoff,
+    save_health_audit_state,
+)
 from stockbot.storage import _connect as connect_analyses_db
 
 Severity = Literal["critical", "warning", "info"]
+TRACKED_SEVERITIES = frozenset({"critical", "warning"})
 
 STAGE1_INPUT_WARN = 50_000
 STAGE1_INPUT_CRITICAL = 80_000
@@ -56,6 +68,8 @@ class HealthAuditReport:
     days: int
     findings: list[Finding] = field(default_factory=list)
     summary: dict[str, object] = field(default_factory=dict)
+    diff: FindingDiff | None = None
+    log_since: datetime | None = None
 
     @property
     def critical_count(self) -> int:
@@ -64,6 +78,16 @@ class HealthAuditReport:
     @property
     def warning_count(self) -> int:
         return sum(1 for f in self.findings if f.severity == "warning")
+
+    def _status_for(self, finding: Finding) -> str:
+        if self.diff is None:
+            return ""
+        key = finding_key(finding.category, finding.title)
+        if key in self.diff.new_keys:
+            return "new"
+        if key in self.diff.open_keys:
+            return "open"
+        return ""
 
     def to_markdown(self) -> str:
         lines = [
@@ -76,10 +100,24 @@ class HealthAuditReport:
             ),
             "",
         ]
+        if self.log_since is not None:
+            lines.append(
+                f"Log patterns counted since **{self.log_since.isoformat()}** "
+                "(max of window start, last green, and `/health clear`)."
+            )
+            lines.append("")
         if self.summary:
             lines.append("## Summary")
             for key, value in self.summary.items():
                 lines.append(f"- **{key}**: {value}")
+            lines.append("")
+
+        if self.diff is not None and self.diff.resolved:
+            lines.append("## RESOLVED since last audit")
+            for item in self.diff.resolved:
+                lines.append(f"- [{item.category}] {item.title}")
+                if item.detail:
+                    lines.append(f"  - {item.detail}")
             lines.append("")
 
         by_sev: dict[Severity, list[Finding]] = {"critical": [], "warning": [], "info": []}
@@ -92,7 +130,9 @@ class HealthAuditReport:
                 continue
             lines.append(f"## {sev.upper()}")
             for item in items:
-                lines.append(f"### [{item.category}] {item.title}")
+                status = self._status_for(item)
+                prefix = f"[{status}] " if status else ""
+                lines.append(f"### {prefix}[{item.category}] {item.title}")
                 lines.append(item.detail)
                 if item.evidence:
                     lines.append("")
@@ -127,6 +167,10 @@ class HealthAuditReport:
             if analyses is not None:
                 parts.append(f"{analyses} saved analyses")
             lines.append(" · ".join(parts))
+        if self.log_since is not None:
+            lines.append(
+                f"Log window from {html_escape(self.log_since.date().isoformat())}"
+            )
         lines.append("")
 
         for sev, emoji in (("critical", "🔴"), ("warning", "🟡")):
@@ -136,8 +180,10 @@ class HealthAuditReport:
             lines.append(f"<b>{emoji} {sev.upper()}</b>")
             shown = items[:max_findings_per_severity]
             for item in shown:
+                status = self._status_for(item)
+                tag = f"[{status}] " if status else ""
                 lines.append(
-                    f"• [{html_escape(item.category)}] {html_escape(item.title)}"
+                    f"• {tag}[{html_escape(item.category)}] {html_escape(item.title)}"
                 )
                 if item.detail:
                     detail = html_escape(item.detail)
@@ -149,8 +195,24 @@ class HealthAuditReport:
                 lines.append(f"  … +{remaining} more (see attached report)")
             lines.append("")
 
+        if self.diff is not None and self.diff.resolved:
+            lines.append("<b>✅ Resolved since last audit</b>")
+            for item in self.diff.resolved[:max_findings_per_severity]:
+                lines.append(
+                    f"• [{html_escape(item.category)}] {html_escape(item.title)}"
+                )
+            remaining = len(self.diff.resolved) - min(
+                len(self.diff.resolved), max_findings_per_severity
+            )
+            if remaining > 0:
+                lines.append(f"  … +{remaining} more")
+            lines.append("")
+
         if not self.critical_count and not self.warning_count:
-            lines.append("✅ No critical or warning findings.")
+            if self.diff is not None and self.diff.resolved:
+                lines.append("✅ No open critical/warning findings (prior issues cleared).")
+            else:
+                lines.append("✅ No critical or warning findings.")
 
         text = "\n".join(lines).rstrip()
         if len(text) > 4096:
@@ -508,11 +570,10 @@ def _audit_analyses(findings: list[Finding], days: int) -> dict[str, object]:
     }
 
 
-def _audit_logs(findings: list[Finding], days: int) -> None:
+def _audit_logs(findings: list[Finding], *, since: datetime) -> None:
     log_path = LOGS_DIR / "stockbot.log"
     if not log_path.exists():
         return
-    since = datetime.now(UTC) - timedelta(days=days)
     patterns = {
         "analysis_cost_exceeded": re.compile(r"analysis_cost_exceeded|AnalysisCostExceeded", re.IGNORECASE),
         "analysis_truncated": re.compile(
@@ -553,8 +614,11 @@ def _audit_logs(findings: list[Finding], days: int) -> None:
                 sev,
                 "cost_leak" if "cost" in key or "runtime" in key else "quality",
                 f"Log pattern: {key}",
-                f"{count} matching line(s) in logs/stockbot.log in the last {days} days.",
-                {"count": count, "pattern": key},
+                (
+                    f"{count} matching line(s) in logs/stockbot.log since "
+                    f"{since.isoformat()}."
+                ),
+                {"count": count, "pattern": key, "since": since.isoformat()},
             )
         )
 
@@ -594,19 +658,41 @@ def _audit_fixtures(findings: list[Finding], days: int) -> None:
         )
 
 
-def run_health_audit(*, days: int = 14) -> HealthAuditReport:
-    """Run all deterministic checks and return a structured report."""
+def run_health_audit(*, days: int = 14, persist: bool = True) -> HealthAuditReport:
+    """Run all deterministic checks and return a structured report.
+
+    When ``persist`` is True (default), compares against the previous snapshot,
+    records resolved findings, and updates the ledger. A clean run advances
+    ``last_green_at`` so old log lines stop counting.
+    """
+    previous = load_health_audit_state()
+    now = datetime.now(UTC)
+    log_since = log_cutoff(days, previous, now=now)
+
     findings: list[Finding] = []
     _audit_budget(findings)
     llm_stats = _audit_llm_calls(findings, days)
     analysis_stats = _audit_analyses(findings, days)
-    _audit_logs(findings, days)
+    _audit_logs(findings, since=log_since)
     _audit_fixtures(findings, days)
 
     findings.sort(key=lambda f: ({"critical": 0, "warning": 1, "info": 2}[f.severity], f.category, f.title))
 
-    return HealthAuditReport(
-        generated_at=datetime.now(UTC),
+    tracked = [f for f in findings if f.severity in TRACKED_SEVERITIES]
+    current_stored = [
+        StoredFinding(
+            severity=f.severity,
+            category=f.category,
+            title=f.title,
+            detail=f.detail,
+        )
+        for f in tracked
+    ]
+    current_keys = {finding_key(f.category, f.title) for f in current_stored}
+    finding_diff = diff_findings(previous, current_keys)
+
+    report = HealthAuditReport(
+        generated_at=now,
         days=days,
         findings=findings,
         summary={
@@ -614,5 +700,38 @@ def run_health_audit(*, days: int = 14) -> HealthAuditReport:
             **analysis_stats,
             "mtd_spend_inr": round(month_to_date_spend(), 2),
             "monthly_budget_inr": settings.monthly_budget_inr,
+            "resolved_since_last": len(finding_diff.resolved),
+            "new_findings": len(finding_diff.new_keys),
+            "open_findings": len(finding_diff.open_keys),
         },
+        diff=finding_diff,
+        log_since=log_since,
     )
+
+    if persist:
+        last_green = previous.last_green_at
+        ignore_before = previous.ignore_log_before
+        if report.critical_count == 0 and report.warning_count == 0:
+            last_green = now
+            # Once clean, stop replaying older log noise on the next run.
+            ignore_before = now
+        save_health_audit_state(
+            HealthAuditState(
+                updated_at=now,
+                days=days,
+                findings=current_stored,
+                last_green_at=last_green,
+                ignore_log_before=ignore_before,
+            )
+        )
+
+    return report
+
+
+# Re-export clear for bot/CLI callers.
+__all__ = [
+    "Finding",
+    "HealthAuditReport",
+    "clear_health_audit_state",
+    "run_health_audit",
+]

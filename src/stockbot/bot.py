@@ -91,7 +91,7 @@ from stockbot.data_readiness import assemble_brief_for_analysis
 from stockbot.expected_return import format_expected_return_telegram
 from stockbot.fetch.tickers import load_symbol_table, resolve_ticker
 from stockbot.models import AmbiguousMatch, Analysis, TickerInfo
-from stockbot.monitor.health_audit import run_health_audit
+from stockbot.monitor.health_audit import clear_health_audit_state, run_health_audit
 from stockbot.pipeline import (
     ANALYSIS_RUNTIME_CAP_SECONDS,
     MAX_TRUNCATION_RETRIES,
@@ -1247,7 +1247,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/sip paid BEL 3213 — log a portfolio buy\n"
         "/sip status|paid|pause|resume — single-stock plan\n"
         "/spend — month-to-date cost\n"
-        "/health — cost/token/quality audit (no LLM spend)\n\n"
+        "/health — cost/token/quality audit (no LLM spend)\n"
+        "/health clear — mark log baseline clean; drop resolved ledger noise\n"
         "Tip: after /prescan, just reply with BEL (no need to type prescan again).\n"
         f"{inline_tip}\n"
         "(One-time in BotFather: /setinline — enables @-mention suggestions.)\n\n"
@@ -1520,6 +1521,28 @@ async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if await _reject_if_analysis_busy(update):
         return
     _clear_awaiting_symbol(context)
+    args = list(context.args or [])
+    if args and args[0].lower() in {"help", "?"}:
+        await update.message.reply_text(
+            "Usage:\n"
+            "<code>/health</code> — scan last 14 days; shows new/open/resolved\n"
+            "<code>/health clear</code> — reset log baseline + prune old audit .md files\n\n"
+            "After a clean run, old log WARNING lines stop counting. "
+            "Resolved findings appear once, then leave the ledger.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    if args and args[0].lower() == "clear":
+        result = await asyncio.to_thread(clear_health_audit_state)
+        await update.message.reply_text(
+            "✅ Health audit baseline cleared.\n"
+            f"Log patterns ignored before {esc(result['ignore_log_before'])}.\n"
+            f"Pruned {result['pruned_reports']} old report file(s).\n"
+            "Run <code>/health</code> again for a fresh scan.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     status = await update.message.reply_text("⏳ Running health audit…")
     try:
         report = await asyncio.to_thread(run_health_audit, days=HEALTH_AUDIT_DAYS)
@@ -1530,7 +1553,8 @@ async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     await status.edit_text(report.to_telegram_html(), parse_mode=ParseMode.HTML)
 
-    if report.critical_count or report.warning_count:
+    has_resolved = bool(report.diff and report.diff.resolved)
+    if report.critical_count or report.warning_count or has_resolved:
         audit_path = await asyncio.to_thread(_write_health_audit_file, report.to_markdown())
         document_bytes = await asyncio.to_thread(audit_path.read_bytes)
         await update.message.reply_document(
@@ -1551,7 +1575,7 @@ BOT_COMMANDS = [
     BotCommand("refresh", "Clear cache or backfill stored verdicts"),
     BotCommand("help", "Usage instructions"),
     BotCommand("spend", "Month-to-date cost"),
-    BotCommand("health", "Cost/token/quality audit"),
+    BotCommand("health", "Cost/token audit; /health clear resets baseline"),
     BotCommand("sip", "Portfolio plan, track, or single-stock SIP"),
     BotCommand("capital", "Set total capital and per-stock cap"),
     BotCommand("hold", "Record and review what you own"),
