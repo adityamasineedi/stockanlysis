@@ -61,6 +61,13 @@ from stockbot.action_ranges import (
     format_bear_entry_reference_line,
     resolve_add_more_zone_abs,
 )
+from stockbot.analysis_control import (
+    active_operation,
+    begin_operation,
+    cancel_requested,
+    end_operation,
+    request_cancel,
+)
 from stockbot.bot_suggestions import (
     build_inline_query_results,
     build_symbol_pick_keyboard,
@@ -237,7 +244,11 @@ _analysis_in_progress: str | None = None
 
 BUSY_ANALYSIS_REPLY = (
     "Deep analysis in progress for {company} (usually 8–{cap_min} min). "
-    "Please wait for the result — other bot commands are paused until it finishes."
+    "Send /stop to cancel — other bot commands are paused until it finishes."
+)
+
+OPERATION_BUSY_REPLY = (
+    "Busy with {operation}. Send /stop to cancel, or wait for it to finish."
 )
 
 
@@ -260,6 +271,19 @@ async def _end_analysis() -> None:
     global _analysis_in_progress
     async with _analysis_lock:
         _analysis_in_progress = None
+
+
+async def _reject_if_operation_busy(update: Update) -> bool:
+    """Return True when a cancellable operation (prescan, batch, etc.) is running."""
+    op = active_operation()
+    if op is None:
+        return False
+    reply = OPERATION_BUSY_REPLY.format(operation=esc(op))
+    if update.message is not None:
+        await update.message.reply_text(reply)
+    elif update.callback_query is not None:
+        await update.callback_query.answer(reply[:200], show_alert=True)
+    return True
 
 
 async def _reject_if_analysis_busy(update: Update) -> bool:
@@ -805,7 +829,7 @@ async def _send_progress_updates(status_message, query: str) -> None:
                     )
                 await status_message.edit_text(
                     f"⏳ Still analyzing {esc(query)}... ({minutes} min elapsed{elapsed_note} — "
-                    f"please don't restart the bot)"
+                    f"send /stop to cancel)"
                 )
             except Exception:
                 # Cosmetic progress ping — a transient Telegram/network hiccup here (we've seen
@@ -865,6 +889,7 @@ async def _run_and_reply(
         )
         return
 
+    begin_operation(f"analyze {query}")
     try:
         if prescan_required_for_analyze() and not force:
             allowed = await _check_analyze_eligibility_gate(update, query)
@@ -902,8 +927,18 @@ async def _run_and_reply(
         finally:
             progress_task.cancel()
 
+        if result.status == "cancelled":
+            await status_message.edit_text(
+                f"⏹ Analysis stopped for <b>{esc(query)}</b>.\n"
+                "No further LLM calls will be made on this run. "
+                "An API call already in flight may still bill.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
         await _deliver_result(update, result, status_message, full_report=full_report)
     finally:
+        end_operation()
         await _end_analysis()
 
 
@@ -911,6 +946,8 @@ async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if await _reject_if_unauthorized(update):
         return
     if await _reject_if_analysis_busy(update):
+        return
+    if await _reject_if_operation_busy(update):
         return
     query, force, full_report, fresh = _parse_analyze_command_args(context.args)
     if not query:
@@ -961,6 +998,8 @@ async def handle_prescan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     if await _reject_if_analysis_busy(update):
         return
+    if await _reject_if_operation_busy(update):
+        return
     query = " ".join(context.args) if context.args else ""
     if not query:
         await _prompt_for_symbol(
@@ -977,20 +1016,30 @@ async def handle_prescan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def _run_prescan_and_reply(update: Update, query: str) -> None:
-    status = await update.message.reply_text(
-        f"🔎 Pre-scanning {esc(query)} (cheap eligibility — not full analysis)…"
-    )
+    begin_operation(f"prescan {query}")
     try:
-        result = await asyncio.to_thread(
-            check_deep_analysis_eligibility,
-            query,
-            config=ScreenerRunConfig(ai_provider="auto"),
+        status = await update.message.reply_text(
+            f"🔎 Pre-scanning {esc(query)} (cheap eligibility — not full analysis)…"
         )
-    except Exception as exc:  # resilience boundary — always reply
-        logger.exception("prescan failed for %r", query)
-        await status.edit_text(f"Pre-scan failed: {esc(exc)}")
-        return
-    await status.edit_text(result.telegram_html(), parse_mode=ParseMode.HTML)
+        try:
+            result = await asyncio.to_thread(
+                check_deep_analysis_eligibility,
+                query,
+                config=ScreenerRunConfig(ai_provider="auto"),
+            )
+        except Exception as exc:  # resilience boundary — always reply
+            logger.exception("prescan failed for %r", query)
+            await status.edit_text(f"Pre-scan failed: {esc(exc)}")
+            return
+        if cancel_requested():
+            await status.edit_text(
+                f"⏹ Pre-scan stopped for <b>{esc(query)}</b>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await status.edit_text(result.telegram_html(), parse_mode=ParseMode.HTML)
+    finally:
+        end_operation()
 
 
 def _parse_prescan_plain_text(text: str) -> str | None:
@@ -1022,6 +1071,8 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if await _reject_if_unauthorized(update):
         return
     if await _reject_if_analysis_busy(update):
+        return
+    if await _reject_if_operation_busy(update):
         return
     text = (update.message.text or "").strip()
     if not text:
@@ -1064,6 +1115,22 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await _run_and_reply(update, text, force=False)
         return
     await _run_and_reply(update, text)
+
+
+async def handle_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
+    _clear_awaiting_symbol(context)
+    label = request_cancel()
+    if label is None:
+        await update.message.reply_text("Nothing running to stop.")
+        return
+    await update.message.reply_text(
+        f"⏹ Stopping <b>{esc(label)}</b>…\n"
+        "No new LLM calls will be started. "
+        "An API call already in flight may still bill.",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def handle_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1154,6 +1221,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/analyze full <symbol> — attach full §1–§16 report .md\n"
         "/analyze fresh <symbol> — skip cache, run new paid analysis\n"
         "/analyze force <symbol> — bypass gate (not recommended)\n"
+        "/stop — cancel running analysis or prescan\n"
         "/preflight <symbol> — free data audit before /analyze (no LLM spend)\n"
         "Trade-friendly mode ON: easier buy ranges on UNCERTAIN+evidence; prescan skipped for /analyze\n"
         "/refresh SYMBOL — clear cached analysis for symbol\n"
@@ -1351,6 +1419,7 @@ BOT_COMMANDS = [
     BotCommand("candidates", "Prescan picks with plain-English labels"),
     BotCommand("pick", "Soft-threshold picks — less filtering"),
     BotCommand("analyze", "Tap, then send stock name (or /analyze BEL)"),
+    BotCommand("stop", "Cancel running analysis or prescan"),
     BotCommand("refresh", "Clear cache or backfill stored verdicts"),
     BotCommand("help", "Usage instructions"),
     BotCommand("spend", "Month-to-date cost"),
@@ -1813,9 +1882,12 @@ async def _reply_portfolio_prescan(update: Update, *, skip_ai: bool = True) -> N
     )
 
     mode = "quant-only" if skip_ai else "with AI"
+    begin_operation(f"portfolio prescan ({mode})")
     status = await update.message.reply_text(
-        f"⏳ Portfolio prescan ({mode}) — this may take several minutes…"
+        f"⏳ Portfolio prescan ({mode}) — this may take several minutes…\n"
+        "Send /stop to cancel."
     )
+    stopped = False
     try:
         cfg = await asyncio.to_thread(load_portfolio_sip_config)
         symbols = all_portfolio_symbols(cfg)
@@ -1825,6 +1897,7 @@ async def _reply_portfolio_prescan(update: Update, *, skip_ai: bool = True) -> N
             skip_ai=skip_ai,
             delay_seconds=2.0,
         )
+        stopped = cancel_requested()
         html = format_prescan_batch_summary_html(items)
     except FileNotFoundError as exc:
         await status.edit_text(esc(str(exc)))
@@ -1833,10 +1906,13 @@ async def _reply_portfolio_prescan(update: Update, *, skip_ai: bool = True) -> N
         logger.exception("portfolio prescan failed")
         await status.edit_text(f"Portfolio prescan failed: {esc(exc)}")
         return
+    finally:
+        end_operation()
 
+    suffix = "\n\n⏹ Stopped early by /stop." if stopped else ""
     await status.delete()
     await update.message.reply_text(
-        f"{html}\n\n{DISCLAIMER}",
+        f"{html}{suffix}\n\n{DISCLAIMER}",
         parse_mode=ParseMode.HTML,
     )
 
@@ -2000,6 +2076,8 @@ async def handle_sip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if sub == "prescan":
+        if await _reject_if_operation_busy(update):
+            return
         skip_ai = not (len(args) > 1 and args[1].lower() == "full")
         await _reply_portfolio_prescan(update, skip_ai=skip_ai)
         return
@@ -2247,6 +2325,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("candidates", handle_candidates))
     application.add_handler(CommandHandler("pick", handle_pick))
     application.add_handler(CommandHandler("analyze", handle_analyze))
+    application.add_handler(CommandHandler("stop", handle_stop))
     application.add_handler(CommandHandler("refresh", handle_refresh))
     application.add_handler(CommandHandler("help", handle_help))
     application.add_handler(CommandHandler("spend", handle_spend))
