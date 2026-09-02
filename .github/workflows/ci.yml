@@ -43,12 +43,36 @@ jobs:
       - name: Deploy to Railway (production)
         run: railway up --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT" --service stockanlysis --detach
 
-  notify-deploy:
+  health-verify:
     needs: deploy
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_PROJECT_ID: 7f563882-8241-4b94-98d5-c9f2b68cfefa
+      RAILWAY_ENVIRONMENT: production
     steps:
-      - name: Telegram — deploy succeeded
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@5.2.0
+      - name: Wait for new revision to boot
+        run: sleep 45
+      - name: Verify health on production (clear only if clean)
+        run: |
+          set -euo pipefail
+          # Never clear without verification — --verify-and-clear refuses clear on open warnings.
+          railway ssh \
+            --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT" \
+            --service stockanlysis \
+            -- \
+            uv run stockbot-monitor --verify-and-clear --days 14 --fail-on warning
+
+  notify-deploy:
+    needs: [deploy, health-verify]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Telegram — deploy + health outcome
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_DEPLOY_CHAT_ID: ${{ secrets.TELEGRAM_DEPLOY_CHAT_ID }}
@@ -56,6 +80,7 @@ jobs:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
           ACTOR: ${{ github.actor }}
           REPO: ${{ github.repository }}
+          HEALTH_RESULT: ${{ needs.health-verify.result }}
         run: |
           set -euo pipefail
           if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_DEPLOY_CHAT_ID:-}" ]; then
@@ -64,12 +89,23 @@ jobs:
           fi
           short_sha="${COMMIT_SHA:0:7}"
           commit_line="$(printf '%s' "$COMMIT_MSG" | head -n 1 | tr -d '\r')"
+          if [ "$HEALTH_RESULT" = "success" ]; then
+            health_line="Health: verified clean — baseline cleared"
+            prefix="✅"
+          elif [ "$HEALTH_RESULT" = "failure" ]; then
+            health_line="Health: VERIFY FAILED — baseline NOT cleared (fix issues, then /health clear)"
+            prefix="⚠️"
+          else
+            health_line="Health: skipped or cancelled (${HEALTH_RESULT})"
+            prefix="ℹ️"
+          fi
           text=$(printf '%s\n' \
-            "✅ Railway deploy succeeded" \
+            "${prefix} Railway deploy succeeded" \
             "" \
             "Service: stockanlysis (production)" \
             "Commit: ${short_sha} — ${commit_line}" \
             "Pushed by: ${ACTOR}" \
+            "${health_line}" \
             "https://github.com/${REPO}/commit/${COMMIT_SHA}")
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${TELEGRAM_DEPLOY_CHAT_ID}" \

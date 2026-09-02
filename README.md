@@ -58,6 +58,7 @@ Commands:
 - `/analyze force SYMBOL` — bypass eligibility gate (not recommended)
 - `/spend` — month-to-date LLM spend vs monthly budget
 - `/health` — cost/token/quality audit (no LLM spend; attaches report if issues found)
+- `/health clear` — verify first, clear baseline only if clean
 - `/help` — short usage
 
 **Do not restart the bot mid-analysis.** In-flight Anthropic calls are still billed; results are not recovered after a process kill.
@@ -104,6 +105,7 @@ uv run stockbot-verify SYMBOL      # fetch-layer check
 uv run stockbot-dry-run SYMBOL     # brief + Stage 1/2 payloads, no full spend path as designed in that script
 uv run stockbot-smoke-test SYMBOL  # live full pipeline (spends money)
 uv run stockbot-monitor             # cost/token/quality audit (no LLM spend)
+uv run stockbot-monitor --verify-and-clear   # verify, clear only if clean (deploy path)
 uv run pytest                      # unit tests (no network / no keys)
 uv run ruff check src tests
 ```
