@@ -427,9 +427,9 @@ from stockbot.portfolio_screener.prescan_display import (
 )
 
 CANDIDATES_USAGE = (
-    "Usage:\n"
+    "📋 <b>Candidates — how to use</b>\n"
     "/candidates — all analyze-ready names from your /prescan history\n"
-    "/candidates pick — soft pick list (quant ≥50 or strong Q/G/S pillar)\n"
+    "/candidates pick — soft tip list (quant ≥50 or strong Q/G/S pillar)\n"
     "/candidates strong — top tier (overall score 80+)\n"
     "/candidates candidate — good picks (score 70–79)\n"
     "/candidates watchlist — watchlist (score 60–69)\n"
@@ -437,19 +437,19 @@ CANDIDATES_USAGE = (
     "/candidates all — every logged prescan (latest per symbol)\n\n"
     "Names are grouped by tier, best first. Each row shows: symbol · overall "
     "score · Q/G/S pillars · status icons (explained under the list).\n"
-    "Run <code>/prescan SYMBOL</code> first to build the list."
+    "💡 Run <code>/prescan SYMBOL</code> first to build the list."
 )
 
 PICK_USAGE = (
-    "Usage:\n"
-    "/pick — soft-threshold picks from /prescan history (no over-filtering)\n"
+    "🎯 <b>Pick — how to use</b>\n"
+    "/pick — soft-threshold tips from /prescan history (no over-filtering)\n"
     "/pick help — this message\n\n"
     "Includes names that pass hard filters with:\n"
     "• overall quant score ≥50, or\n"
     "• any Q/G/S pillar ≥70, or\n"
     "• quality override from prescan routing\n\n"
     "Excludes: HARD_EXCLUDE, CRITICAL cash, data gaps, NOT_SUITABLE.\n"
-    "MONITOR is not a sell — run <code>/analyze SYMBOL</code> for buy ranges."
+    "👀 MONITOR is not a sell — run <code>/analyze SYMBOL</code> for buy ranges."
 )
 
 TELEGRAM_PSCAN_CHUNK = 3800
@@ -771,8 +771,8 @@ def build_pick_messages(
     target = path or OUTCOMES_PATH
     if not target.exists():
         return [], (
-            "No prescan log yet on this bot.\n"
-            "Run <code>/prescan SYMBOL</code> on names you care about — "
+            "📭 No prescan log yet on this bot.\n"
+            "💡 Run <code>/prescan SYMBOL</code> on names you care about — "
             "then retry <code>/pick</code>."
         )
 
@@ -806,8 +806,8 @@ def build_candidates_messages(
     target = path or OUTCOMES_PATH
     if not target.exists():
         return [], (
-            "No prescan log yet on this bot.\n"
-            "Run <code>/prescan SYMBOL</code> on names you care about — "
+            "📭 No prescan log yet on this bot.\n"
+            "💡 Run <code>/prescan SYMBOL</code> on names you care about — "
             "then retry <code>/candidates</code>."
         )
 
