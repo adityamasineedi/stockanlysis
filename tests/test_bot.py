@@ -72,13 +72,30 @@ def test_esc_handles_non_string_input():
 
 def test_format_verdict_reply_contains_key_fields():
     text = format_verdict_reply(_analysis())
+    assert "👀" in text
     assert "WATCH" in text
+    assert "Plain English: keep on your list" in text
     assert "412.5" in text
     assert "330.00" in text and "355.00" in text
-    assert "Buy range: ₹330.00–₹355.00" in text
-    assert "Sell range: ₹420.00–₹470.00" in text
-    assert "Take-profit targets: ₹540.00–₹600.00" in text
+    assert "🛒 Buy range: ₹330.00–₹355.00" in text
+    assert "📤 Sell range: ₹420.00–₹470.00" in text
+    assert "🎯 Take-profit targets: ₹540.00–₹600.00" in text
+    assert "✅ Why this looks good" in text
+    assert "⛔ Why to be careful" in text
+    assert "👀 Biggest thing to watch" in text
     assert "MEDIUM" in text
+
+
+def test_verdict_emoji_and_plain_hint():
+    from stockbot.bot import _verdict_emoji, _verdict_plain_hint
+
+    assert _verdict_emoji("BUY") == "🟢"
+    assert _verdict_emoji("BUY ON CORRECTION") == "🟡"
+    assert _verdict_emoji("WATCH") == "👀"
+    assert _verdict_emoji("SKIP") == "🔴"
+    assert "buy range" in (_verdict_plain_hint("BUY") or "").lower()
+    assert "wait" in (_verdict_plain_hint("BUY ON CORRECTION") or "").lower()
+    assert "skip" in (_verdict_plain_hint("SKIP") or "").lower()
 
 
 def test_format_verdict_reply_action_ranges_before_price():
@@ -96,7 +113,7 @@ def test_format_verdict_reply_shows_add_more_range_when_allowed():
     analysis = _analysis()
     analysis.verdict_json["add_range_allowed"] = True
     text = format_verdict_reply(analysis)
-    assert "Add-more range: ₹300.00–₹330.00 (on-dip · bear FV)" in text
+    assert "➕ Add-more range: ₹300.00–₹330.00 (on-dip · bear FV)" in text
 
 
 def test_format_verdict_reply_compact_limits_reason_bullets():
@@ -162,7 +179,7 @@ def test_format_verdict_reply_hides_buy_zone_when_wc_not_temporary():
     analysis.verdict_json["buy_range_allowed"] = True
     analysis.verdict_json["wc_gap_classification"] = "INCONCLUSIVE"
     text = format_verdict_reply(analysis)
-    assert "Buy range: not issued" in text
+    assert "🛒 Buy range: not issued" in text
     assert "WC: INCONCLUSIVE" in text
     assert "330.00" not in text
 
@@ -228,7 +245,7 @@ def test_card_and_report_agree_on_suppressed_buy_zone():
 
     # What the Telegram card shows for the same verdict.
     text = format_verdict_reply(dataclasses.replace(analysis, verdict_json=gated))
-    assert "Buy range: not issued" in text
+    assert "🛒 Buy range: not issued" in text
     assert "WC: WORKING_CAPITAL_STRESS" in text
     assert "330.00" not in text
 
@@ -406,21 +423,21 @@ def test_buy_range_names_the_five_year_gate_like_add_more_does():
         "five_year_business_test": {"answer": "UNCERTAIN"},
         "thesis_status": "THESIS_UNDER_REVIEW",
     }
-    assert _format_buy_range_line(verdict) == "Buy range: not issued (five-year: UNCERTAIN)"
-    assert _format_add_more_range_line(verdict) == "Add-more range: not issued (five-year: UNCERTAIN)"
+    assert _format_buy_range_line(verdict) == "🛒 Buy range: not issued (five-year: UNCERTAIN)"
+    assert _format_add_more_range_line(verdict) == "➕ Add-more range: not issued (five-year: UNCERTAIN)"
 
 
 def test_buy_range_keeps_existing_gate_wording():
     from stockbot.bot import _format_buy_range_line
 
     assert _format_buy_range_line({"anti_chase_flag": True}) == (
-        "Buy range: not issued (anti-chase: pause new capital)"
+        "🛒 Buy range: not issued (anti-chase: pause new capital)"
     )
     assert _format_buy_range_line({"wc_gap_classification": "WORKING_CAPITAL_STRESS"}) == (
-        "Buy range: not issued (WC: WORKING_CAPITAL_STRESS)"
+        "🛒 Buy range: not issued (WC: WORKING_CAPITAL_STRESS)"
     )
     # No identifiable gate still yields the bare line.
-    assert _format_buy_range_line({"buy_range_allowed": False}) == "Buy range: not issued"
+    assert _format_buy_range_line({"buy_range_allowed": False}) == "🛒 Buy range: not issued"
 
 
 def test_buy_range_display_does_not_start_suppressing_on_five_year():
@@ -433,7 +450,7 @@ def test_buy_range_display_does_not_start_suppressing_on_five_year():
         "buy_range_allowed": True,
         "five_year_business_test": {"answer": "UNCERTAIN"},
     }
-    assert _format_buy_range_line(verdict) == "Buy range: ₹100.00–₹110.00"
+    assert _format_buy_range_line(verdict) == "🛒 Buy range: ₹100.00–₹110.00"
 
 
 def test_buy_range_shows_the_price_bar_it_has_to_clear():
@@ -453,7 +470,7 @@ def test_buy_range_shows_the_price_bar_it_has_to_clear():
             "five_year_business_test": {"answer": "UNCERTAIN"},
         }
     )
-    assert line == "Buy range: not issued (five-year: UNCERTAIN · needs ≤₹176.40 at MEDIUM risk)"
+    assert line == "🛒 Buy range: not issued (five-year: UNCERTAIN · needs ≤₹176.40 at MEDIUM risk)"
 
 
 def test_buy_range_price_bar_alone_when_no_gate_fired():
@@ -467,7 +484,7 @@ def test_buy_range_price_bar_alone_when_no_gate_fired():
             "fair_value_abs": [210.0, 231.0],
         }
     )
-    assert line == "Buy range: not issued (needs ≤₹176.40 at MEDIUM risk)"
+    assert line == "🛒 Buy range: not issued (needs ≤₹176.40 at MEDIUM risk)"
 
 
 def test_buy_range_omits_price_bar_when_price_already_clears_it():
@@ -482,11 +499,11 @@ def test_buy_range_omits_price_bar_when_price_already_clears_it():
         "fair_value_abs": [210.0, 231.0],
         "five_year_business_test": {"answer": "UNCERTAIN"},
     }
-    assert _format_buy_range_line(verdict) == "Buy range: not issued (five-year: UNCERTAIN)"
+    assert _format_buy_range_line(verdict) == "🛒 Buy range: not issued (five-year: UNCERTAIN)"
 
     # Unknown price: stay quiet rather than guess which side of the bar it sits.
     no_price = {k: v for k, v in verdict.items() if k != "current_price_abs"}
-    assert _format_buy_range_line(no_price) == "Buy range: not issued (five-year: UNCERTAIN)"
+    assert _format_buy_range_line(no_price) == "🛒 Buy range: not issued (five-year: UNCERTAIN)"
 
 
 def test_buy_range_omits_price_bar_when_not_computable():
@@ -494,11 +511,11 @@ def test_buy_range_omits_price_bar_when_not_computable():
     from stockbot.bot import _format_buy_range_line
 
     assert _format_buy_range_line({"buy_range_allowed": False, "risk": "MEDIUM"}) == (
-        "Buy range: not issued"
+        "🛒 Buy range: not issued"
     )
     assert _format_buy_range_line(
         {"buy_range_allowed": False, "risk": "??", "fair_value_abs": [210.0, 231.0]}
-    ) == "Buy range: not issued"
+    ) == "🛒 Buy range: not issued"
 
 
 def test_bot_commands_menu_includes_preflight_and_workflow():

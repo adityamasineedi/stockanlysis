@@ -180,7 +180,7 @@ def format_expected_return_telegram(
         return []
 
     cagr_line = (
-        f"Expected {horizon}y CAGR: Bear {format_cagr_range(bear)} · "
+        f"📈 Expected {horizon}y CAGR: Bear {format_cagr_range(bear)} · "
         f"Base {format_cagr_range(base)} · Bull {format_cagr_range(bull)}"
     )
     if compact:
@@ -190,7 +190,7 @@ def format_expected_return_telegram(
         return [cagr_line]
 
     lines = [
-        f"Expected {horizon}y CAGR (scenarios, not guaranteed):",
+        f"📈 Expected {horizon}y CAGR (scenarios, not guaranteed):",
         (
             f"Bear {format_cagr_range(bear)} · "
             f"Base {format_cagr_range(base)} · "

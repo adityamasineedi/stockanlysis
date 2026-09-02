@@ -155,10 +155,11 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 ANALYSIS_RUNTIME_CAP_MINUTES = ANALYSIS_RUNTIME_CAP_SECONDS // 60
 ANALYZING_TEMPLATE = (
-    "⏳ Analyzing {company}... (usually 8–{cap_min} min — please don't restart the bot)"
+    "⏳ Analyzing {company}… (usually 8–{cap_min} min)\n"
+    "☕ Please wait — send /stop to cancel. Don’t restart the bot."
 )
 DISCLAIMER = (
-    "<i>Educational research only — not investment advice. "
+    "<i>📚 Educational research only — not investment advice. "
     "Do your own due diligence before any trade.</i>"
 )
 
@@ -248,12 +249,12 @@ _analysis_lock = asyncio.Lock()
 _analysis_in_progress: str | None = None
 
 BUSY_ANALYSIS_REPLY = (
-    "Deep analysis in progress for {company} (usually 8–{cap_min} min). "
+    "⏸️ Deep analysis in progress for {company} (usually 8–{cap_min} min). "
     "Send /stop to cancel — other bot commands are paused until it finishes."
 )
 
 OPERATION_BUSY_REPLY = (
-    "Busy with {operation}. Send /stop to cancel, or wait for it to finish."
+    "⏸️ Busy with {operation}. Send /stop to cancel, or wait for it to finish."
 )
 
 
@@ -404,6 +405,34 @@ def _range_block_label(reason: str | None) -> str:
     return ""
 
 
+def _verdict_emoji(verdict: object) -> str:
+    """Beginner-friendly signal for the headline verdict."""
+    text = str(verdict or "").strip().upper()
+    if text == "BUY":
+        return "🟢"
+    if text == "BUY ON CORRECTION":
+        return "🟡"
+    if text == "WATCH":
+        return "👀"
+    if text in {"SKIP", "AVOID"}:
+        return "🔴"
+    return "📋"
+
+
+def _verdict_plain_hint(verdict: object) -> str | None:
+    """One plain-English line under the verdict for beginners."""
+    text = str(verdict or "").strip().upper()
+    if text == "BUY":
+        return "Plain English: OK to consider buying if price is inside the buy range below."
+    if text == "BUY ON CORRECTION":
+        return "Plain English: business looks OK — wait for a lower price (buy range), don’t chase."
+    if text == "WATCH":
+        return "Plain English: keep on your list — not a clear buy yet."
+    if text in {"SKIP", "AVOID"}:
+        return "Plain English: skip new money for now."
+    return None
+
+
 def _format_buy_range_line(verdict_json: dict) -> str:
     buy_zone = _money_pair(verdict_json.get("buy_zone_abs"))
     buy_range_allowed = verdict_json.get("buy_range_allowed")
@@ -415,7 +444,7 @@ def _format_buy_range_line(verdict_json: dict) -> str:
         and not anti_chase
     )
     if buy_zone_ok:
-        return f"Buy range: ₹{buy_zone[0]}–₹{buy_zone[1]}"
+        return f"🛒 Buy range: ₹{buy_zone[0]}–₹{buy_zone[1]}"
     # Suppression itself is unchanged above; this only explains it — the gate
     # that fired (including the five-year test the old branch chain missed)
     # and the price bar a buy zone has to clear, which was never shown at all.
@@ -429,35 +458,39 @@ def _format_buy_range_line(verdict_json: dict) -> str:
     if ceiling is not None and isinstance(price, (int, float)) and float(price) > ceiling[0]:
         parts.append(f"needs ≤₹{ceiling[0]:.2f} at {esc(ceiling[1])} risk")
     if parts:
-        return f"Buy range: not issued ({' · '.join(parts)})"
-    return "Buy range: not issued"
+        return f"🛒 Buy range: not issued ({' · '.join(parts)})"
+    return "🛒 Buy range: not issued"
 
 
 def _format_sell_range_line(verdict_json: dict) -> str:
     base_fv = _resolve_scenario_fair_value(verdict_json, "base")
     if base_fv is not None:
-        return f"Sell range: ₹{base_fv[0]}–₹{base_fv[1]}"
-    return "Sell range: unavailable"
+        return f"📤 Sell range: ₹{base_fv[0]}–₹{base_fv[1]}"
+    return "📤 Sell range: unavailable"
 
 
 def _format_add_more_range_line(verdict_json: dict) -> str:
     block_reason = add_more_range_blocked_reason(verdict_json)
     if block_reason:
         label = _range_block_label(block_reason)
-        return f"Add-more range: not issued ({label})" if label else "Add-more range: not issued"
+        return (
+            f"➕ Add-more range: not issued ({label})"
+            if label
+            else "➕ Add-more range: not issued"
+        )
 
     add_zone = resolve_add_more_zone_abs(verdict_json)
     if add_zone is None:
-        return "Add-more range: unavailable"
+        return "➕ Add-more range: unavailable"
     low, high = f"{add_zone[0]:.2f}", f"{add_zone[1]:.2f}"
-    return f"Add-more range: ₹{low}–₹{high} (on-dip · bear FV)"
+    return f"➕ Add-more range: ₹{low}–₹{high} (on-dip · bear FV)"
 
 
 def _format_take_profit_targets_line(verdict_json: dict) -> str:
     bull_fv = _resolve_scenario_fair_value(verdict_json, "bull")
     if bull_fv is not None:
-        return f"Take-profit targets: ₹{bull_fv[0]}–₹{bull_fv[1]}"
-    return "Take-profit targets: unavailable"
+        return f"🎯 Take-profit targets: ₹{bull_fv[0]}–₹{bull_fv[1]}"
+    return "🎯 Take-profit targets: unavailable"
 
 
 def _format_execution_pm_line(verdict_json: dict) -> str | None:
@@ -486,7 +519,7 @@ def _format_execution_pm_line(verdict_json: dict) -> str | None:
         parts.append(str(div))
     if not parts:
         return None
-    return "PM: " + " · ".join(parts)
+    return "🧭 PM tips: " + " · ".join(parts)
 
 
 def _format_profit_review_line(verdict_json: dict) -> str | None:
@@ -496,7 +529,7 @@ def _format_profit_review_line(verdict_json: dict) -> str | None:
     status = str(profit_review.get("status") or "").strip().upper()
     if status != "REVIEW_FOR_REBALANCING":
         return None
-    return "Profit review: rebalance review triggered (not an automatic sell)"
+    return "🔁 Profit review: consider rebalancing (not an automatic sell)"
 
 
 def _format_stage2_mode_line(verdict_json: dict) -> str | None:
@@ -507,7 +540,7 @@ def _format_stage2_mode_line(verdict_json: dict) -> str | None:
     detail = "Haiku compact report" if raw_mode == "LITE" else "Sonnet deep report"
     if verdict_json.get("stage2_mode_forced"):
         detail += " (config override)"
-    return f"Stage 2: <b>{esc(str(raw_mode))}</b> · {esc(detail)}"
+    return f"🧾 Stage 2: <b>{esc(str(raw_mode))}</b> · {esc(detail)}"
 
 
 def format_verdict_reply(
@@ -556,11 +589,21 @@ def format_verdict_reply(
 
     lines.extend(
         [
-            f"<b>{esc(v.get('verdict', '?'))}</b> — {esc(analysis.ticker)}",
+            (
+                f"{_verdict_emoji(v.get('verdict'))} <b>{esc(v.get('verdict', '?'))}</b> — "
+                f"{esc(analysis.ticker)}"
+            ),
+        ]
+    )
+    hint = _verdict_plain_hint(v.get("verdict"))
+    if hint:
+        lines.append(f"<i>{esc(hint)}</i>")
+    lines.extend(
+        [
             *action_range_lines,
-            f"Price: ₹{_format_price_abs(v.get('current_price_abs'))} (as of {esc(v.get('price_date', '?'))})",
-            f"Risk: {esc(v.get('risk', '?'))} · Confidence: {v.get('confidence', '?')}/10",
-            f"Holding Period: {esc(v.get('holding_period', '?'))}",
+            f"💰 Price: ₹{_format_price_abs(v.get('current_price_abs'))} (as of {esc(v.get('price_date', '?'))})",
+            f"⚖️ Risk: {esc(v.get('risk', '?'))} · Confidence: {v.get('confidence', '?')}/10",
+            f"📅 Holding period: {esc(v.get('holding_period', '?'))}",
         ]
     )
     tension = v.get("external_valuation_tension")
@@ -596,7 +639,7 @@ def format_verdict_reply(
     lines.extend(
         [
             "",
-            "<b>Why buy</b>",
+            "<b>✅ Why this looks good</b>",
         ]
     )
     reasons_buy = v.get("reasons_buy") or []
@@ -606,7 +649,7 @@ def format_verdict_reply(
         text = _clip(reason, TELEGRAM_MAX_REASON_CHARS) if compact else str(reason)
         lines.append(f"• {esc(text)}")
     lines.append("")
-    lines.append("<b>Why avoid</b>")
+    lines.append("<b>⛔ Why to be careful</b>")
     reasons_avoid = v.get("reasons_avoid") or []
     if compact:
         reasons_avoid = reasons_avoid[:TELEGRAM_MAX_REASONS]
@@ -617,7 +660,7 @@ def format_verdict_reply(
     watch = v.get("biggest_watch", "?")
     if compact:
         watch = _clip(watch, TELEGRAM_MAX_WATCH_CHARS)
-    lines.append(f"<b>Biggest watch:</b> {esc(watch)}")
+    lines.append(f"<b>👀 Biggest thing to watch:</b> {esc(watch)}")
 
     missing = analysis.missing
     if compact and len(missing) > TELEGRAM_MAX_MISSING:
@@ -641,7 +684,7 @@ def format_verdict_reply(
 
 
 def format_ambiguous_reply(candidates: AmbiguousMatch) -> str:
-    lines = ["Multiple companies match — reply with the exact symbol:"]
+    lines = ["🔎 Multiple companies match — reply with the exact symbol:"]
     for i, candidate in enumerate(candidates.candidates, start=1):
         lines.append(f"{i}. <code>{esc(candidate.symbol)}</code> — {esc(candidate.company_name)}")
     return "\n".join(lines)
@@ -656,7 +699,7 @@ async def _deliver_result(
 ) -> None:
     if result.status == "not_found":
         await status_message.edit_text(
-            "Couldn't find that company. Check the spelling, or try the exact NSE symbol."
+            "❓ Couldn't find that company. Check the spelling, or try the exact NSE symbol."
         )
         return
 
@@ -668,10 +711,8 @@ async def _deliver_result(
 
     if result.status == "busy":
         await status_message.edit_text(
-            
-                "Another analysis is already running. Please wait for it to finish "
-                f"(usually 8–{ANALYSIS_RUNTIME_CAP_MINUTES} min), then try again."
-            
+            "⏸️ Another analysis is already running. Please wait for it to finish "
+            f"(usually 8–{ANALYSIS_RUNTIME_CAP_MINUTES} min), then try again."
         )
         return
 
@@ -680,7 +721,7 @@ async def _deliver_result(
         if result.validation_failures:
             extra = "\n\n" + "\n".join(esc(f) for f in result.validation_failures)
         await status_message.edit_text(
-            f"Monthly budget reached (₹{result.spent_inr:.0f} spent this month). "
+            f"🚫 Monthly budget reached (₹{result.spent_inr:.0f} spent this month). "
             f"No new analyses until next month — the cap is real, not advisory."
             f"{extra}"
         )
@@ -689,7 +730,7 @@ async def _deliver_result(
     if result.status == "data_unready":
         failures = "\n".join(f"- {esc(f)}" for f in (result.validation_failures or []))
         await status_message.edit_text(
-            "Data preflight failed — no LLM tokens spent.\n"
+            "📭 Data preflight failed — no LLM tokens spent.\n"
             "Free sources and fallbacks did not gather enough for a full report.\n\n"
             f"{failures}\n\n"
             "Run /preflight SYMBOL for the full source checklist, then retry /analyze.",
@@ -705,14 +746,14 @@ async def _deliver_result(
             else ""
         )
         await status_message.edit_text(
-            "Insufficient data for a confident view after validation. "
+            "❓ Insufficient data for a confident view after validation. "
             f"This is an honest answer, not a bug.{spent_note}\n\n{failures}"
         )
         return
 
     if result.status == "analysis_cost_exceeded":
         await status_message.edit_text(
-            f"This analysis hit its per-run cost cap (₹{PER_ANALYSIS_COST_CAP_INR:.0f}) before "
+            f"💸 This analysis hit its per-run cost cap (₹{PER_ANALYSIS_COST_CAP_INR:.0f}) before "
             f"producing a validated verdict (₹{result.spent_inr:.2f} spent on this attempt). "
             f"Try again later, or send /spend to check the monthly total."
         )
@@ -721,7 +762,7 @@ async def _deliver_result(
     if result.status == "analysis_truncated":
         attempts = result.truncation_attempts or (MAX_TRUNCATION_RETRIES + 1)
         await status_message.edit_text(
-            f"Stage 2 output was cut off {attempts} time(s) (each try used a higher token "
+            f"✂️ Stage 2 output was cut off {attempts} time(s) (each try used a higher token "
             f"budget) before the report could finish (₹{result.spent_inr:.2f} spent — "
             f"not the ₹{PER_ANALYSIS_COST_CAP_INR:.0f} cap). Long FULL analyses with fat "
             f"annual reports hit this rarest now. Send /spend to check the monthly total, "
@@ -733,7 +774,7 @@ async def _deliver_result(
         cap_min = ANALYSIS_RUNTIME_CAP_MINUTES
         lines = [
             (
-                f"Analysis hit the {cap_min}-minute time cap "
+                f"⏱️ Analysis hit the {cap_min}-minute time cap "
                 f"(₹{result.spent_inr:.2f} billed on this attempt — all stages included)."
             ),
         ]
@@ -755,7 +796,7 @@ async def _deliver_result(
 
     if result.status == "render_failed":
         await status_message.edit_text(
-            f"The analysis passed validation but couldn't be rendered "
+            f"⚠️ The analysis passed validation but couldn't be rendered "
             f"(₹{result.spent_inr:.2f} spent, not wasted — logged either way): "
             f"{esc(result.render_error)}"
         )
@@ -1128,10 +1169,10 @@ async def handle_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     _clear_awaiting_symbol(context)
     label = request_cancel()
     if label is None:
-        await update.message.reply_text("Nothing running to stop.")
+        await update.message.reply_text("🟢 Nothing running to stop.")
         return
     await update.message.reply_text(
-        f"⏹ Stopping <b>{esc(label)}</b>…\n"
+        f"🛑 Stopping <b>{esc(label)}</b>…\n"
         "No new LLM calls will be started. "
         "An API call already in flight may still bill.",
         parse_mode=ParseMode.HTML,
@@ -1176,12 +1217,14 @@ async def handle_preflight(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = " ".join(context.args or []).strip()
     if not query:
         await update.message.reply_text(
-            "Send a symbol to check data readiness before /analyze, e.g.\n"
+            "📡 Send a symbol to check data readiness before /analyze, e.g.\n"
             "<code>/preflight ADVENZYMES</code>",
             parse_mode=ParseMode.HTML,
         )
         return
-    status = await update.message.reply_text(f"Preflight {esc(query)} — fetching free sources…")
+    status = await update.message.reply_text(
+        f"📡 Preflight {esc(query)} — fetching free sources…"
+    )
     try:
         table = await asyncio.to_thread(load_symbol_table)
         resolved = await asyncio.to_thread(resolve_ticker, query, table)
@@ -1189,7 +1232,9 @@ async def handle_preflight(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await status.edit_text(f"Preflight failed: {esc(exc)}")
         return
     if resolved is None:
-        await status.edit_text("Couldn't find that company. Try the exact NSE symbol.")
+        await status.edit_text(
+            "❓ Couldn't find that company. Try the exact NSE symbol."
+        )
         return
     if isinstance(resolved, AmbiguousMatch):
         await status.edit_text(format_ambiguous_reply(resolved), parse_mode=ParseMode.HTML)
@@ -1213,20 +1258,23 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     bot_user = context.bot.username if context.bot else None
     inline_tip = suggestion_hint_markdown(bot_user)
     await update.message.reply_text(
-        "Commands:\n"
+        "📖 Commands — beginner guide\n\n"
+        "🔍 Scan & pick\n"
         "/prescan — tap from menu, then send the stock name\n"
         "/prescan <symbol> — one-step example: /prescan BEL\n"
         "/candidates — list analyze-ready names from prescan history\n"
-        "/candidates pick — soft pick list (quant ≥50 or strong Q/G/S pillar)\n"
+        "/candidates pick — soft tip list (quant ≥50 or strong Q/G/S)\n"
         "/candidates strong|candidate|watchlist — filter by score tier\n"
         "/candidates quality 65 — Quality ≥65 and analyze-ready\n"
         "/candidates all — every logged prescan (latest per symbol)\n"
-        "/pick — same soft pick policy as /candidates pick\n"
+        "/pick — same soft tip list as /candidates pick\n\n"
+        "🧭 What to do next\n"
         "/workflow — defaults to daily tip playbook\n"
         "/workflow daily — 1–2 daily tip playbook\n"
         "/workflow portfolio — 12–18 name portfolio build playbook\n"
-        "/rank — long-term hold order from stored /analyze (base 3y CAGR)\n"
-        "/rank entry — entry-ready (near buy zone) names first\n"
+        "/rank — best expected 3y return first (from stored /analyze)\n"
+        "/rank entry — entry-ready (near buy zone) names first\n\n"
+        "🧠 Deep analysis\n"
         "/analyze — tap from menu, then send the stock name\n"
         "/analyze <company> — deep analysis (digest .md attached by default)\n"
         "/analyze full <symbol> — attach full §1–§16 report .md\n"
@@ -1234,7 +1282,9 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/analyze force <symbol> — bypass gate (not recommended)\n"
         "/stop — cancel running analysis or prescan\n"
         "/preflight <symbol> — free data audit before /analyze (no LLM spend)\n"
-        "Trade-friendly mode ON: easier buy ranges on UNCERTAIN+evidence; prescan skipped for /analyze\n"
+        "Trade-friendly mode ON: easier buy ranges on UNCERTAIN+evidence; "
+        "prescan skipped for /analyze\n\n"
+        "📁 Portfolio & money tracking\n"
         "/refresh SYMBOL — clear cached analysis for symbol\n"
         "/refresh backfill — recompute gates + expected_return on cached rows\n"
         "/capital 500000 max 10 — total capital and per-stock cap\n"
@@ -1252,11 +1302,12 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/sip status|paid|pause|resume — single-stock plan\n"
         "/spend — month-to-date cost\n"
         "/health — cost/token/quality audit (no LLM spend)\n"
-        "/health clear — verify first, clear baseline only if clean\n"
-        "Tip: after /prescan, just reply with BEL (no need to type prescan again).\n"
+        "/health clear — verify first, clear baseline only if clean\n\n"
+        "💡 Tip: after /prescan, just reply with BEL (no need to type "
+        "prescan again).\n"
         f"{inline_tip}\n"
         "(One-time in BotFather: /setinline — enables @-mention suggestions.)\n\n"
-        "Educational research only — not investment advice."
+        "📚 Educational research only — not investment advice."
     )
 
 
