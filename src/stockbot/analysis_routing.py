@@ -84,15 +84,20 @@ def resolve_stage2_mode(
     extraction: ExtractionResult,
     *,
     prescan: AnalysisRouting | None = None,
+    force_lite: bool = False,
 ) -> Stage2Mode:
-    """Final mode after Stage 1 — extraction news flags always force FULL."""
+    """Final mode after Stage 1 — extraction news flags always force FULL.
+
+    ``force_lite`` (from ``/analyze lite``) prefers the cheaper Haiku path for
+    daily tips. It still yields to ``FORCE_STAGE2_FULL`` and to Stage 1 news
+    red flags so risk signals are not silently dropped.
+    """
     if settings.force_stage2_full:
         logger.info(
             "%s: FORCE_STAGE2_FULL enabled — using FULL Stage 2 regardless of routing",
             ticker.symbol,
         )
         return "FULL"
-    prescan = prescan or _quant_prescan_routing(ticker)
     if extraction.red_flags_found:
         logger.info(
             "%s: upgrading Stage 2 to FULL (%d extraction red flag(s))",
@@ -100,6 +105,13 @@ def resolve_stage2_mode(
             len(extraction.red_flags_found),
         )
         return "FULL"
+    if force_lite:
+        logger.info(
+            "%s: /analyze lite requested — using LITE Stage 2 (cheaper/faster)",
+            ticker.symbol,
+        )
+        return "LITE"
+    prescan = prescan or _quant_prescan_routing(ticker)
     if prescan.stage2_mode == "LITE":
         return "LITE"
     return "FULL"

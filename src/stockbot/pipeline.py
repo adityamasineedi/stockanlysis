@@ -265,7 +265,11 @@ def _run_stage2_with_validation(
     return report_text, usage, validation
 
 
-def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
+def _run_paid_analysis(
+    ticker: TickerInfo,
+    *,
+    force_stage2_lite: bool = False,
+) -> PipelineResult:
     started_at = time.monotonic()
     raise_if_cancelled()
     budget_ok, spent = check_budget()
@@ -292,12 +296,18 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     raise_if_cancelled()
     extraction, stage1_usage = run_stage1(brief)
     raise_if_cancelled()
-    stage2_mode = resolve_stage2_mode(ticker, extraction, prescan=prescan_routing)
+    stage2_mode = resolve_stage2_mode(
+        ticker,
+        extraction,
+        prescan=prescan_routing,
+        force_lite=force_stage2_lite,
+    )
     logger.info(
-        "%s Stage 2 mode=%s (prescan: %s)",
+        "%s Stage 2 mode=%s (prescan: %s; force_lite=%s)",
         ticker.symbol,
         stage2_mode,
         "; ".join(prescan_routing.reasons),
+        force_stage2_lite,
     )
 
     if stage1_usage["cost_inr"] > PER_ANALYSIS_COST_CAP_INR:
@@ -387,6 +397,8 @@ def _run_paid_analysis(ticker: TickerInfo) -> PipelineResult:
     )
     if settings.force_stage2_full:
         verdict_json["stage2_mode_forced"] = True
+    if force_stage2_lite and stage2_mode == "LITE":
+        verdict_json["stage2_lite_requested"] = True
     verdict_json = merge_expected_return_into_verdict_json(verdict_json)
     verdict_json["execution_pm"] = execution_pm_for_verdict(
         brief.peer_snapshot,
@@ -425,6 +437,7 @@ def run_full_analysis(
     *,
     max_cache_age_days: int | None = None,
     skip_cache: bool = False,
+    force_stage2_lite: bool = False,
 ) -> PipelineResult:
     symbol_table = load_symbol_table()
     resolved = resolve_ticker(query, symbol_table)
@@ -473,7 +486,7 @@ def run_full_analysis(
         return PipelineResult(status="busy")
     try:
         raise_if_cancelled()
-        result = _run_paid_analysis(ticker)
+        result = _run_paid_analysis(ticker, force_stage2_lite=force_stage2_lite)
         if cache_miss_reason:
             return dataclasses.replace(result, cache_miss_reason=cache_miss_reason)
         return result

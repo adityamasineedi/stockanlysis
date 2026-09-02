@@ -216,7 +216,7 @@ def format_daily_tips_html(rows: list[dict[str, Any]], *, limit: int = 2) -> str
         else:
             cue = "🔎 Worth /analyze if interested"
         lines.append(f"{i}. <b>{ticker}</b> — quant {score} · {cue}")
-        lines.append(f"   Next: <code>/analyze {ticker}</code>")
+        lines.append(f"   Next: <code>/analyze lite {ticker}</code> (cheaper) or <code>/analyze {ticker}</code>")
 
     lines.extend(
         [

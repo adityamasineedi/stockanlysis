@@ -68,6 +68,7 @@ Commands:
 - `/progress` — shortlist → analyze → hold progress
 - `/candidates` — prescan history filters (`pick`, `strong`, `all`, …)
 - `/analyze <name or symbol>` or plain text — full analysis (often **5–15 minutes**)
+- `/analyze lite SYMBOL` — cheaper/faster Stage 2 (Haiku) when safe; still upgrades on news red flags
 - `/analyze force SYMBOL` — bypass eligibility gate (not recommended)
 - `/stop` — cancel a running analysis/prescan
 - `/rank` / `/rank entry` — rank stored analyses by expected return
