@@ -499,3 +499,10 @@ def test_buy_range_omits_price_bar_when_not_computable():
     assert _format_buy_range_line(
         {"buy_range_allowed": False, "risk": "??", "fair_value_abs": [210.0, 231.0]}
     ) == "Buy range: not issued"
+
+
+def test_bot_commands_menu_includes_preflight_and_workflow():
+    from stockbot.bot import BOT_COMMANDS
+
+    names = {cmd.command for cmd in BOT_COMMANDS}
+    assert {"prescan", "pick", "workflow", "analyze", "stop", "preflight", "track", "help"} <= names
