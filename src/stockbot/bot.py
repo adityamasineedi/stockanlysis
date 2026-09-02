@@ -1216,6 +1216,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/candidates strong|candidate|watchlist — filter by score tier\n"
         "/candidates quality 65 — Quality ≥65 and analyze-ready\n"
         "/pick — same soft pick policy as /candidates pick\n"
+        "/workflow daily — 1–2 daily tip playbook\n"
+        "/workflow portfolio — 12–18 name portfolio build playbook\n"
         "/analyze — tap from menu, then send the stock name\n"
         "/analyze <company> — deep analysis (digest .md attached by default)\n"
         "/analyze full <symbol> — attach full §1–§16 report .md\n"
@@ -1229,6 +1231,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/capital 500000 max 10 — total capital and per-stock cap\n"
         "/hold BEL 25 412.50 — record a position (/hold to list)\n"
         "/track — score the bot's past calls (/track analyze for verdicts)\n"
+        "/track pick — did soft /pick calls beat rejects?\n"
+        "/track pick tune — threshold tune hints from history\n"
         "/sip BEL 5000 — monthly plan with dip alerts and projections\n"
         "/sip plan — ₹60k portfolio tables (3 buckets, live prices)\n"
         "/sip track — planned vs logged this month\n"
@@ -1342,9 +1346,58 @@ def _build_track_report(source: str) -> str:
         build_prescan_calibration,
         format_calibration_report,
     )
+    from stockbot.pick_calibration import (
+        build_pick_calibration,
+        build_pick_tune_advice,
+        format_pick_calibration_report,
+        format_pick_tune_report,
+    )
+
+    if source == "pick":
+        return format_pick_calibration_report(build_pick_calibration())
+    if source == "pick_tune":
+        report = build_pick_calibration()
+        return format_pick_tune_report(build_pick_tune_advice(report))
 
     builder = build_analyze_calibration if source == "analyze" else build_prescan_calibration
     return format_calibration_report(builder())
+
+
+def _build_workflow_message(mode: str) -> str:
+    from stockbot.product_workflow import (
+        format_daily_workflow,
+        format_portfolio_workflow,
+    )
+
+    if mode == "portfolio":
+        return format_portfolio_workflow()
+    return format_daily_workflow()
+
+
+async def handle_workflow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
+        return
+    _clear_awaiting_symbol(context)
+    args = list(context.args or [])
+    sub = args[0].lower() if args else "daily"
+    if sub in {"help", "?"}:
+        await update.message.reply_text(
+            "Usage:\n"
+            "<code>/workflow daily</code> — 1–2 daily tip playbook\n"
+            "<code>/workflow portfolio</code> — 12–18 name 3y build playbook",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    if sub not in {"daily", "portfolio"}:
+        await update.message.reply_text(
+            "Usage: <code>/workflow daily</code> or <code>/workflow portfolio</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    text = await asyncio.to_thread(_build_workflow_message, sub)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 async def handle_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1355,7 +1408,15 @@ async def handle_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     _clear_awaiting_symbol(context)
     args = list(context.args or [])
-    source = "analyze" if args and args[0].lower() in {"analyze", "analyse"} else "prescan"
+    lowered = [a.lower() for a in args]
+    if lowered[:2] == ["pick", "tune"]:
+        source = "pick_tune"
+    elif lowered[:1] == ["pick"]:
+        source = "pick"
+    elif lowered[:1] in {"analyze", "analyse"}:
+        source = "analyze"
+    else:
+        source = "prescan"
 
     # One price fetch per distinct ticker, so this is slow enough to warrant a
     # status message but costs nothing in LLM spend.
@@ -1418,6 +1479,7 @@ BOT_COMMANDS = [
     BotCommand("prescan", "Tap, then send stock name (or /prescan BEL)"),
     BotCommand("candidates", "Prescan picks with plain-English labels"),
     BotCommand("pick", "Soft-threshold picks — less filtering"),
+    BotCommand("workflow", "Daily tip or portfolio build playbook"),
     BotCommand("analyze", "Tap, then send stock name (or /analyze BEL)"),
     BotCommand("stop", "Cancel running analysis or prescan"),
     BotCommand("refresh", "Clear cache or backfill stored verdicts"),
@@ -2334,6 +2396,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("capital", handle_capital))
     application.add_handler(CommandHandler("hold", handle_hold))
     application.add_handler(CommandHandler("track", handle_track))
+    application.add_handler(CommandHandler("workflow", handle_workflow))
     application.add_handler(InlineQueryHandler(handle_inline_query))
     application.add_handler(CallbackQueryHandler(handle_symbol_pick))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_text))
