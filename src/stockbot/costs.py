@@ -259,3 +259,63 @@ def check_budget() -> tuple[bool, float]:
     caller must refuse new paid analyses — not advisory, an actual block."""
     spent = month_to_date_spend()
     return spent < settings.monthly_budget_inr, spent
+
+
+# Block re-analyze when a ticker already burned this much without a saved
+# report — stops HBLENGINE-style orphan sessions (10 calls, ₹57, no analysis).
+UNSAVED_SPEND_BLOCK_INR = 35.0
+UNSAVED_SPEND_LOOKBACK_HOURS = 48
+
+
+def unsaved_ticker_spend_inr(
+    ticker: str,
+    *,
+    lookback_hours: int = UNSAVED_SPEND_LOOKBACK_HOURS,
+) -> float:
+    """Stage1/Stage2 spend for ``ticker`` since the last saved analysis.
+
+    If no analysis exists, sums calls in the lookback window. Used to refuse
+    repeat paid runs after restarts / truncation loops burned money with no
+    deliverable.
+    """
+    from datetime import timedelta
+
+    key = str(ticker or "").strip().upper()
+    if not key:
+        return 0.0
+    now = datetime.now(UTC)
+    with _connect() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        last_saved = None
+        if "analyses" in tables:
+            last_saved = conn.execute(
+                "SELECT MAX(created_at) FROM analyses WHERE upper(ticker) = ?",
+                (key,),
+            ).fetchone()[0]
+        if last_saved:
+            since = str(last_saved)
+        else:
+            since = (now - timedelta(hours=lookback_hours)).isoformat()
+        if "llm_calls" not in tables:
+            return 0.0
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(cost_inr), 0) FROM llm_calls
+            WHERE upper(COALESCE(ticker, '')) = ?
+              AND called_at > ?
+              AND (stage IS NULL OR stage LIKE 'stage%')
+            """,
+            (key, since),
+        ).fetchone()
+    return float(row[0] or 0.0)
+
+
+def should_block_unsaved_spend(ticker: str) -> tuple[bool, float]:
+    """Whether to refuse a new paid analysis for this ticker."""
+    spend = unsaved_ticker_spend_inr(ticker)
+    return spend >= UNSAVED_SPEND_BLOCK_INR, spend

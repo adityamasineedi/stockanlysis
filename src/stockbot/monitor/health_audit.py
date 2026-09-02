@@ -652,7 +652,9 @@ def _audit_fixtures(findings: list[Finding], days: int) -> None:
                 "warning",
                 "token_waste",
                 "Truncated LLM responses saved as fixtures",
-                f"{len(truncated)} fixture(s) with stop_reason=max_tokens — raise max_tokens or use LITE.",
+                f"{len(truncated)} fixture(s) with stop_reason=max_tokens — "
+                "raise Stage 2 max_tokens (LITE base is now 32k; prefer /analyze lite "
+                "over repeated FULL retries).",
                 {"files": truncated[:10], "total": len(truncated)},
             )
         )

@@ -724,6 +724,22 @@ async def _deliver_result(
         )
         return
 
+    if result.status == "unsaved_spend_guard":
+        detail = ""
+        if result.validation_failures:
+            detail = "\n\n" + "\n".join(esc(f) for f in result.validation_failures)
+        spent = result.spent_inr or 0.0
+        await status_message.edit_text(
+            f"🛑 Cost guard — ₹{spent:.0f} already spent on this name without a saved report.\n"
+            f"This blocks another default FULL run so restarts/truncation loops don’t keep billing."
+            f"{detail}\n\n"
+            f"• <code>/analyze lite …</code> — cheaper retry\n"
+            f"• <code>/analyze force …</code> — run FULL anyway\n"
+            f"• <code>/spend</code> — month-to-date total",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     if result.status == "budget_exceeded":
         extra = ""
         if result.validation_failures:
@@ -973,6 +989,7 @@ async def _run_and_reply(
                     query,
                     skip_cache=skip_cache,
                     force_stage2_lite=force_lite,
+                    bypass_unsaved_spend_guard=force or force_lite,
                 )
             except Exception as exc:
                 logger.exception("run_full_analysis failed for %r", query)

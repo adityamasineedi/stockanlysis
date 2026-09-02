@@ -365,7 +365,7 @@ def test_truncation_retries_escalate_max_tokens(monkeypatch):
     assert seen[1] > seen[0]
 
 
-def test_lite_truncation_escalates_three_rungs(monkeypatch):
+def test_lite_truncation_escalates_two_rungs(monkeypatch):
     from stockbot.llm.verdict import stage2_max_tokens
 
     _patch_common(monkeypatch)
@@ -385,9 +385,9 @@ def test_lite_truncation_escalates_three_rungs(monkeypatch):
     assert seen == [
         stage2_max_tokens("LITE", 0),
         stage2_max_tokens("LITE", 1),
-        stage2_max_tokens("LITE", 2),
     ]
-    assert seen[0] < seen[1] < seen[2]
+    assert seen[0] >= 32_768
+    assert seen[1] > seen[0]
 
 
 def test_busy_when_concurrency_slot_already_held(monkeypatch):
