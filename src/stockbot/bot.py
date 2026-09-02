@@ -96,7 +96,10 @@ from stockbot.portfolio_screener.eligibility import (
     check_deep_analysis_eligibility,
     format_analyze_gate_block,
 )
-from stockbot.portfolio_screener.outcome_log import build_candidates_messages, build_pick_messages
+from stockbot.portfolio_screener.outcome_log import (
+    build_candidates_messages,
+    build_pick_messages,
+)
 from stockbot.portfolio_screener.scoring_config import ScreenerRunConfig
 from stockbot.portfolio_state import DEFAULT_MAX_POSITION_PCT
 from stockbot.report_digest import (

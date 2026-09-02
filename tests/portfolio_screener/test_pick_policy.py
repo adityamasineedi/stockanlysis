@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from stockbot.portfolio_screener.outcome_log import build_pick_messages, parse_candidates_filter
+from stockbot.portfolio_screener.outcome_log import (
+    build_pick_messages,
+    parse_candidates_filter,
+)
 from stockbot.portfolio_screener.pick_policy import (
     is_pick_eligible,
     pick_skip_reason,
