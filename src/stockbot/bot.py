@@ -1209,6 +1209,28 @@ async def handle_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
 
 
+async def handle_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show shortlist → analyze → hold progress toward the 12–18 book."""
+    if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
+        return
+    _clear_awaiting_symbol(context)
+    chat_id = update.effective_chat.id
+
+    def _build() -> str:
+        from stockbot.portfolio_progress import (
+            build_portfolio_progress,
+            format_portfolio_progress_html,
+        )
+
+        report = build_portfolio_progress(chat_id)
+        return format_portfolio_progress_html(report)
+
+    text = await asyncio.to_thread(_build)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
 async def handle_preflight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Free data-layer audit — no LLM spend."""
     if await _reject_if_unauthorized(update):
@@ -1267,7 +1289,9 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/candidates strong|candidate|watchlist — filter by score tier\n"
         "/candidates quality 65 — Quality ≥65 and analyze-ready\n"
         "/candidates all — every logged prescan (latest per symbol)\n"
-        "/pick — same soft tip list as /candidates pick\n\n"
+        "/pick — soft tip list (quant ≥50 or strong Q/G/S)\n"
+        "/pick daily — today’s curated 1–2 tips\n"
+        "/progress — 12–18 portfolio build progress\n\n"
         "🧭 What to do next\n"
         "/workflow — defaults to daily tip playbook\n"
         "/workflow daily — 1–2 daily tip playbook\n"
@@ -1658,7 +1682,8 @@ async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 BOT_COMMANDS = [
     BotCommand("prescan", "Tap, then send stock name (or /prescan BEL)"),
     BotCommand("candidates", "Prescan picks with plain-English labels"),
-    BotCommand("pick", "Soft-threshold picks — less filtering"),
+    BotCommand("pick", "Soft picks; /pick daily = today’s 1–2 tips"),
+    BotCommand("progress", "12–18 portfolio build progress"),
     BotCommand("workflow", "Daily tip or portfolio build playbook"),
     BotCommand("rank", "Rank analyzed names by expected return"),
     BotCommand("analyze", "Tap, then send stock name (or /analyze BEL)"),
@@ -1669,7 +1694,7 @@ BOT_COMMANDS = [
     BotCommand("spend", "Month-to-date cost"),
     BotCommand("health", "Audit; /health clear verifies then clears"),
     BotCommand("sip", "Portfolio plan, track, or single-stock SIP"),
-    BotCommand("capital", "Set total capital and per-stock cap"),
+    BotCommand("capital", "Capital + per-stock/sector caps"),
     BotCommand("hold", "Record and review what you own"),
     BotCommand("track", "Has the bot been right? Past calls scored"),
 ]
@@ -1679,15 +1704,16 @@ CAPITAL_USAGE = (
     "<b>/capital — your risk policy</b>\n"
     "<code>/capital 500000</code> — total investable capital\n"
     "<code>/capital 500000 max 8</code> — and cap any one stock at 8%\n"
+    "<code>/capital 500000 max 10 sector 25</code> — also cap any sector at 25%\n"
     "<code>/capital</code> — show the current policy\n\n"
     "<i>Without this the bot cannot say what fraction of your money a position "
-    "is, so it won't guess one.</i>"
+    "is, so it won't guess one. Sector caps show on <code>/hold</code>.</i>"
 )
 
 HOLD_USAGE = (
     "<b>/hold — what you own</b>\n"
     "<code>/hold BEL 25 412.50</code> — 25 shares at ₹412.50 average\n"
-    "<code>/hold</code> — list positions with live value and headroom\n"
+    "<code>/hold</code> — list positions with live value, headroom, sector caps\n"
     "<code>/hold seed BEL</code> — build it from your logged SIP contributions\n"
     "<code>/hold remove BEL</code>\n\n"
     "<i>Set <code>/capital</code> first so percentages mean something.</i>"
@@ -1734,8 +1760,10 @@ def _build_position_line(chat_id: int, ticker: str) -> str | None:
     )
 
 
-def _parse_capital_args(args: list[str]) -> tuple[float, float | None] | str:
-    """(total_capital, max_position_pct or None) or an error string."""
+def _parse_capital_args(
+    args: list[str],
+) -> tuple[float, float | None, float | None] | str:
+    """(total_capital, max_position_pct, max_sector_pct) — None means keep existing."""
     if not args:
         return "Send an amount, e.g. <code>/capital 500000</code>."
     try:
@@ -1746,20 +1774,40 @@ def _parse_capital_args(args: list[str]) -> tuple[float, float | None] | str:
         return "Capital must be a real number greater than zero."
 
     cap_pct: float | None = None
-    extra = args[1:]
-    if extra:
-        if extra[0].lower() not in {"max", "cap"} or len(extra) < 2:
-            return (
-                f"Did not understand <code>{esc(' '.join(extra))}</code>. "
-                "To set a per-stock cap use <code>/capital 500000 max 8</code>."
-            )
-        try:
-            cap_pct = float(extra[1].replace("%", ""))
-        except ValueError:
-            return f"<code>{esc(extra[1])}</code> is not a valid percent."
-        if not math.isfinite(cap_pct) or not (0 < cap_pct <= 100):
-            return "The per-stock cap must be between 0 and 100 percent."
-    return (capital, cap_pct)
+    sector_pct: float | None = None
+    i = 1
+    while i < len(args):
+        key = args[i].lower()
+        if key in {"max", "cap"}:
+            if i + 1 >= len(args):
+                return "To set a per-stock cap use <code>/capital 500000 max 8</code>."
+            try:
+                cap_pct = float(args[i + 1].replace("%", ""))
+            except ValueError:
+                return f"<code>{esc(args[i + 1])}</code> is not a valid percent."
+            if not math.isfinite(cap_pct) or not (0 < cap_pct <= 100):
+                return "The per-stock cap must be between 0 and 100 percent."
+            i += 2
+            continue
+        if key == "sector":
+            if i + 1 >= len(args):
+                return (
+                    "To set a sector cap use "
+                    "<code>/capital 500000 sector 25</code>."
+                )
+            try:
+                sector_pct = float(args[i + 1].replace("%", ""))
+            except ValueError:
+                return f"<code>{esc(args[i + 1])}</code> is not a valid percent."
+            if not math.isfinite(sector_pct) or not (0 < sector_pct <= 100):
+                return "The sector cap must be between 0 and 100 percent."
+            i += 2
+            continue
+        return (
+            f"Did not understand <code>{esc(args[i])}</code>. "
+            "Use <code>/capital 500000 max 10 sector 25</code>."
+        )
+    return (capital, cap_pct, sector_pct)
 
 
 async def handle_capital(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1780,7 +1828,9 @@ async def handle_capital(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"<b>Risk policy</b>\n"
             f"Capital: {_money_inr(policy.total_capital_inr)}\n"
             f"Max per stock: {policy.max_position_pct:.0f}% "
-            f"({_money_inr(policy.total_capital_inr * policy.max_position_pct / 100)})",
+            f"({_money_inr(policy.total_capital_inr * policy.max_position_pct / 100)})\n"
+            f"Max per sector: {policy.max_sector_pct:.0f}% "
+            f"({_money_inr(policy.total_capital_inr * policy.max_sector_pct / 100)})",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -1792,18 +1842,29 @@ async def handle_capital(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    capital, cap_pct = parsed
+    from stockbot.portfolio_state import DEFAULT_MAX_SECTOR_PCT
+
+    capital, cap_pct, sector_pct = parsed
     existing = await asyncio.to_thread(get_risk_policy, chat_id)
     resolved_cap = cap_pct if cap_pct is not None else (
         existing.max_position_pct if existing else DEFAULT_MAX_POSITION_PCT
     )
+    resolved_sector = sector_pct if sector_pct is not None else (
+        existing.max_sector_pct if existing else DEFAULT_MAX_SECTOR_PCT
+    )
     policy = await asyncio.to_thread(
-        save_risk_policy, chat_id, capital, max_position_pct=resolved_cap
+        save_risk_policy,
+        chat_id,
+        capital,
+        max_position_pct=resolved_cap,
+        max_sector_pct=resolved_sector,
     )
     await update.message.reply_text(
         f"✅ Capital {_money_inr(policy.total_capital_inr)}, "
         f"max {policy.max_position_pct:.0f}% per stock "
-        f"({_money_inr(policy.total_capital_inr * policy.max_position_pct / 100)}).\n\n"
+        f"({_money_inr(policy.total_capital_inr * policy.max_position_pct / 100)}), "
+        f"max {policy.max_sector_pct:.0f}% per sector "
+        f"({_money_inr(policy.total_capital_inr * policy.max_sector_pct / 100)}).\n\n"
         f"{DISCLAIMER}",
         parse_mode=ParseMode.HTML,
     )
@@ -1811,7 +1872,13 @@ async def handle_capital(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 def _format_holdings_list(chat_id: int) -> str:
     """Every position with live value, share of capital, and headroom."""
-    from stockbot.portfolio_state import concentration_breaches, size_position
+    from stockbot.portfolio_state import (
+        concentration_breaches,
+        sector_concentration_breaches,
+        sector_totals,
+        size_position,
+    )
+    from stockbot.sector_map import sector_for_symbol
 
     holdings = list_holdings(chat_id)
     if not holdings:
@@ -1820,12 +1887,15 @@ def _format_holdings_list(chat_id: int) -> str:
     policy = get_risk_policy(chat_id)
     lines = ["<b>Your positions</b>"]
     values: dict[str, float] = {}
+    sectors: dict[str, str] = {}
     for holding in holdings:
+        sectors[holding.ticker] = sector_for_symbol(holding.ticker)
         price, _ = _sip_price_and_high(holding.ticker)
         if price is None:
             lines.append(
                 f"{esc(holding.ticker)} — {holding.quantity:g} @ "
-                f"{_money_inr(holding.avg_cost)} · <i>price unavailable</i>"
+                f"{_money_inr(holding.avg_cost)} · <i>price unavailable</i> · "
+                f"{esc(sectors[holding.ticker])}"
             )
             continue
         sizing = size_position(
@@ -1840,7 +1910,8 @@ def _format_holdings_list(chat_id: int) -> str:
             values[holding.ticker] = value
             lines.append(
                 f"{esc(holding.ticker)} — {holding.quantity:g} @ "
-                f"{_money_inr(holding.avg_cost)} · now {_money_inr(value)}"
+                f"{_money_inr(holding.avg_cost)} · now {_money_inr(value)} · "
+                f"{esc(sectors[holding.ticker])}"
             )
             continue
         values[holding.ticker] = sizing.value_inr
@@ -1848,7 +1919,7 @@ def _format_holdings_list(chat_id: int) -> str:
         lines.append(
             f"{esc(holding.ticker)} — {holding.quantity:g} @ "
             f"{_money_inr(holding.avg_cost)} · now {_money_inr(sizing.value_inr)} · "
-            f"{sizing.pct_of_capital:.1f}%{flag}"
+            f"{sizing.pct_of_capital:.1f}%{flag} · {esc(sectors[holding.ticker])}"
         )
 
     if policy is None:
@@ -1860,7 +1931,32 @@ def _format_holdings_list(chat_id: int) -> str:
     if breaches:
         named = ", ".join(f"{t} {p:.1f}%" for t, p in breaches)
         lines.append("")
-        lines.append(f"⚠️ Over your {policy.max_position_pct:.0f}% cap: {esc(named)}")
+        lines.append(f"⚠️ Over your {policy.max_position_pct:.0f}% stock cap: {esc(named)}")
+
+    sector_breaches = sector_concentration_breaches(
+        values, sectors, policy.total_capital_inr, policy.max_sector_pct
+    )
+    if sector_breaches:
+        named = ", ".join(f"{s} {p:.1f}%" for s, p in sector_breaches)
+        lines.append("")
+        lines.append(
+            f"⚠️ Over your {policy.max_sector_pct:.0f}% sector cap: {esc(named)}"
+        )
+    else:
+        totals = sector_totals(values, sectors)
+        if totals and policy.total_capital_inr > 0:
+            ranked = sorted(
+                (
+                    (sector, round(value / policy.total_capital_inr * 100.0, 1))
+                    for sector, value in totals.items()
+                ),
+                key=lambda item: (-item[1], item[0]),
+            )
+            top = ", ".join(f"{s} {p:.1f}%" for s, p in ranked[:4])
+            lines.append("")
+            lines.append(
+                f"Sector mix (cap {policy.max_sector_pct:.0f}%): {esc(top)}"
+            )
     return "\n".join(lines)
 
 
@@ -2568,6 +2664,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("prescan", handle_prescan))
     application.add_handler(CommandHandler("candidates", handle_candidates))
     application.add_handler(CommandHandler("pick", handle_pick))
+    application.add_handler(CommandHandler("progress", handle_progress))
     application.add_handler(CommandHandler("analyze", handle_analyze))
     application.add_handler(CommandHandler("stop", handle_stop))
     application.add_handler(CommandHandler("refresh", handle_refresh))

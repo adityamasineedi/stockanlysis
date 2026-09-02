@@ -104,9 +104,15 @@ def test_uncomputable_positions_are_not_reported_as_compliant():
 def test_capital_and_hold_arg_parsing():
     from stockbot.bot import _parse_capital_args, _parse_hold_args
 
-    assert _parse_capital_args(["500000"]) == (500_000.0, None)
-    assert _parse_capital_args(["5,00,000"]) == (500_000.0, None)
-    assert _parse_capital_args(["500000", "max", "8"]) == (500_000.0, 8.0)
+    assert _parse_capital_args(["500000"]) == (500_000.0, None, None)
+    assert _parse_capital_args(["5,00,000"]) == (500_000.0, None, None)
+    assert _parse_capital_args(["500000", "max", "8"]) == (500_000.0, 8.0, None)
+    assert _parse_capital_args(["500000", "max", "10", "sector", "25"]) == (
+        500_000.0,
+        10.0,
+        25.0,
+    )
+    assert _parse_capital_args(["500000", "sector", "20"]) == (500_000.0, None, 20.0)
     assert _parse_hold_args(["BEL", "25", "412.50"]) == ("BEL", 25.0, 412.50)
     assert _parse_hold_args(["BEL", "25", "₹412.50"]) == ("BEL", 25.0, 412.50)
 
@@ -117,8 +123,26 @@ def test_capital_and_hold_arg_parsing():
     assert isinstance(_parse_capital_args(["500000", "max", "150"]), str)
     assert isinstance(_parse_capital_args(["500000", "max"]), str)   # value dropped
     assert isinstance(_parse_capital_args(["500000", "8"]), str)     # missing keyword
+    assert isinstance(_parse_capital_args(["500000", "sector"]), str)
     for bad in (["BEL", "25"], ["BEL", "nan", "412.50"], ["BEL", "25", "0"]):
         assert isinstance(_parse_hold_args(bad), str), bad
+
+
+def test_sector_concentration_breaches():
+    from stockbot.portfolio_state import (
+        DEFAULT_MAX_SECTOR_PCT,
+        sector_concentration_breaches,
+        sector_totals,
+    )
+
+    assert DEFAULT_MAX_SECTOR_PCT == 25.0
+    positions = {"TCS": 80_000.0, "INFY": 70_000.0, "RELIANCE": 50_000.0}
+    sectors = {"TCS": "Technology", "INFY": "Technology", "RELIANCE": "Energy"}
+    totals = sector_totals(positions, sectors)
+    assert totals["Technology"] == 150_000.0
+    breaches = sector_concentration_breaches(positions, sectors, 500_000.0, 25.0)
+    assert breaches == [("Technology", 30.0)]
+    assert sector_concentration_breaches(positions, sectors, 500_000.0, 40.0) == []
 
 
 def test_position_line_is_absent_without_capital_or_holding(monkeypatch, tmp_path):

@@ -137,3 +137,54 @@ def test_build_pick_messages_from_log(tmp_path: Path) -> None:
     assert "GOOD" in body
     assert "WEAK" not in body
     assert "RUN /ANALYZE" in body
+
+
+def test_build_pick_messages_daily_limits_to_two(tmp_path: Path) -> None:
+    path = tmp_path / "prescan_outcomes.jsonl"
+    rows = [
+        {
+            "ticker": "AUTO1",
+            "quality_score": 71,
+            "growth_score": 40,
+            "strength_score": 85,
+            "quant_score": 80,
+            "candidate_band": "CANDIDATE",
+            "cash_conversion_status": "PASS",
+            "hard_filter_status": "PASS",
+            "verdict": "AUTO_DEEP_ANALYSIS",
+            "logged_at": "2026-01-01T00:00:00+00:00",
+        },
+        {
+            "ticker": "AUTO2",
+            "quality_score": 70,
+            "growth_score": 40,
+            "strength_score": 80,
+            "quant_score": 75,
+            "candidate_band": "CANDIDATE",
+            "cash_conversion_status": "PASS",
+            "hard_filter_status": "PASS",
+            "verdict": "AUTO_DEEP_ANALYSIS",
+            "logged_at": "2026-01-01T00:00:00+00:00",
+        },
+        {
+            "ticker": "AUTO3",
+            "quality_score": 69,
+            "growth_score": 40,
+            "strength_score": 78,
+            "quant_score": 70,
+            "candidate_band": "WATCHLIST",
+            "cash_conversion_status": "PASS",
+            "hard_filter_status": "PASS",
+            "verdict": "AUTO_DEEP_ANALYSIS",
+            "logged_at": "2026-01-01T00:00:00+00:00",
+        },
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    chunks, err = build_pick_messages(["daily"], path=path)
+    assert err is None
+    body = chunks[0]
+    assert "Today" in body or "tips" in body.lower()
+    assert "AUTO1" in body
+    assert "AUTO2" in body
+    assert "AUTO3" not in body
+    assert "/analyze AUTO1" in body

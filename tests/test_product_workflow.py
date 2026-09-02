@@ -13,16 +13,21 @@ from stockbot.product_workflow import format_daily_workflow, format_portfolio_wo
 
 def test_daily_workflow_mentions_pick_and_analyze() -> None:
     text = format_daily_workflow()
-    assert "/pick" in text
+    assert "/pick daily" in text
     assert "/analyze" in text
+    assert "/progress" in text
     assert "Daily tip" in text
+    assert "Universe:" in text
 
 
 def test_portfolio_workflow_mentions_sip_prescan_and_track_pick() -> None:
     text = format_portfolio_workflow()
     assert "/sip prescan" in text
     assert "/track pick" in text
+    assert "/progress" in text
+    assert "sector 25" in text
     assert "12–18" in text
+    assert "Universe:" in text
 
 
 def test_pick_calibration_empty_history() -> None:
