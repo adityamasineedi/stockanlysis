@@ -443,13 +443,15 @@ CANDIDATES_USAGE = (
 PICK_USAGE = (
     "🎯 <b>Pick — how to use</b>\n"
     "/pick — soft-threshold tips from /prescan history (no over-filtering)\n"
+    "/pick daily — curated 1–2 tips for today (analyze_now first)\n"
     "/pick help — this message\n\n"
     "Includes names that pass hard filters with:\n"
     "• overall quant score ≥50, or\n"
     "• any Q/G/S pillar ≥70, or\n"
     "• quality override from prescan routing\n\n"
     "Excludes: HARD_EXCLUDE, CRITICAL cash, data gaps, NOT_SUITABLE.\n"
-    "👀 MONITOR is not a sell — run <code>/analyze SYMBOL</code> for buy ranges."
+    "👀 MONITOR is not a sell — run <code>/analyze SYMBOL</code> for buy ranges.\n"
+    "🏗 Progress toward 12–18: <code>/progress</code>"
 )
 
 TELEGRAM_PSCAN_CHUNK = 3800
@@ -763,10 +765,13 @@ def build_pick_messages(
     path: Path | None = None,
 ) -> tuple[list[str], str | None]:
     """Return Telegram HTML chunks for /pick and optional error/usage text."""
+    daily = False
     if args:
         lowered = [a.lower() for a in args]
         if lowered[0] in {"help", "?"}:
             return [], PICK_USAGE
+        if lowered[0] == "daily":
+            daily = True
 
     target = path or OUTCOMES_PATH
     if not target.exists():
@@ -784,12 +789,21 @@ def build_pick_messages(
     matched = query_pick_outcomes(rows)
     summary = summarize_pick_policy(rows)
     logger.info(
-        "pick_policy eligible=%d skipped=%d min_quant=%.0f min_pillar=%.0f",
+        "pick_policy eligible=%d skipped=%d min_quant=%.0f min_pillar=%.0f daily=%s",
         summary.eligible_count,
         summary.skipped_count,
         summary.min_quant,
         summary.min_pillar,
+        daily,
     )
+    if daily:
+        from stockbot.portfolio_progress import (
+            format_daily_tips_html,
+            select_daily_tips,
+        )
+
+        tips = select_daily_tips(limit=2, pick_rows=matched)
+        return [format_daily_tips_html(tips, limit=2)], None
     return format_pick_telegram_chunks(matched), None
 
 

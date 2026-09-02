@@ -522,4 +522,15 @@ def test_bot_commands_menu_includes_preflight_and_workflow():
     from stockbot.bot import BOT_COMMANDS
 
     names = {cmd.command for cmd in BOT_COMMANDS}
-    assert {"prescan", "pick", "workflow", "rank", "analyze", "stop", "preflight", "track", "help"} <= names
+    assert {
+        "prescan",
+        "pick",
+        "progress",
+        "workflow",
+        "rank",
+        "analyze",
+        "stop",
+        "preflight",
+        "track",
+        "help",
+    } <= names

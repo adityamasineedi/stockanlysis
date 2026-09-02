@@ -52,10 +52,29 @@ First ticker resolve downloads the NSE symbol table into `data/symbols/`. Needs 
 uv run stockbot-bot
 ```
 
+**Intended path (beginner):**
+
+1. `/prescan SYMBOL` or `/sip prescan` — build the shortlist from the **unified universe** (`watchlist.txt` ∪ SIP names)
+2. `/pick daily` — today’s **1–2 tips** (or `/pick` for the full soft list)
+3. `/analyze SYMBOL` — deep dive; buy only when a **buy range** is issued
+4. `/rank` — order analyzed names by expected 3y return
+5. `/progress` — track the path toward a **12–18** name book
+6. `/capital …` + `/hold` / `/sip plan` — size, sector caps, DCA
+
 Commands:
 
-- `/analyze <name or symbol>` or plain text — full analysis (often **5–15 minutes**); blocked unless prescan eligibility passes
+- `/workflow daily|portfolio` — playbooks for tips vs 3y portfolio build
+- `/pick` / `/pick daily` — soft tips (quant≥50 or strong Q/G/S); daily = max 2
+- `/progress` — shortlist → analyze → hold progress
+- `/candidates` — prescan history filters (`pick`, `strong`, `all`, …)
+- `/analyze <name or symbol>` or plain text — full analysis (often **5–15 minutes**)
 - `/analyze force SYMBOL` — bypass eligibility gate (not recommended)
+- `/stop` — cancel a running analysis/prescan
+- `/rank` / `/rank entry` — rank stored analyses by expected return
+- `/capital 500000 max 10 sector 25` — capital + per-stock + sector caps
+- `/hold` — positions with concentration checks
+- `/sip plan|track|paid|prescan` — portfolio DCA surface
+- `/track` / `/track pick` — score past calls
 - `/spend` — month-to-date LLM spend vs monthly budget
 - `/health` — cost/token/quality audit (no LLM spend; attaches report if issues found)
 - `/health clear` — verify first, clear baseline only if clean
@@ -76,7 +95,7 @@ uv run stockbot-prescreen --ai-provider deepseek
 uv run stockbot-prescreen --run-deep         # then run_full_analysis on survivors
 ```
 
-Watchlist: `data/portfolio/watchlist.txt` (one NSE symbol per line). Audit JSON lands in `logs/portfolio_screen_*.json`.
+Watchlist: `data/portfolio/watchlist.txt` (one NSE symbol per line; includes SIP portfolio names so daily tips and the 3y book share one universe). SIP DCA amounts still come from `data/portfolio/sip_portfolios.json`. Sector labels for `/hold` caps: `data/portfolio/sector_map.json`. Audit JSON lands in `logs/portfolio_screen_*.json`.
 
 **Single-ticker (Telegram / CLI):** ask whether one stock is worth deep analysis — does **not** scan the whole list.
 
@@ -87,6 +106,8 @@ uv run stockbot-prescreen BEL
 Telegram (restart bot to load new command):
 
 - `/prescan BEL` or plain text `prescan BEL`
+- `/pick daily` — curated 1–2 tips from soft policy
+- `/progress` — 12–18 portfolio build status
 - `/health` — audit spend, token waste, and quality issues
 - If suitable → then `/analyze BEL` for the expensive master-prompt run (gate enforced; use `/analyze force BEL` to override)
 

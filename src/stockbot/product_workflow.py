@@ -9,11 +9,13 @@ from __future__ import annotations
 from html import escape as html_escape
 from typing import Any
 
+from stockbot.portfolio_progress import format_daily_tips_html, select_daily_tips
 from stockbot.portfolio_screener.outcome_log import load_prescan_outcomes
 from stockbot.portfolio_screener.pick_policy import (
     pick_tier,
     query_pick_outcomes,
 )
+from stockbot.product_universe import format_universe_summary, load_product_universe
 
 
 def _pick_snapshot() -> dict[str, Any]:
@@ -50,67 +52,79 @@ def _format_pick_lines(snapshot: dict[str, Any]) -> list[str]:
         )
         lines.append(f"• Worth /analyze if interested: {tickers}")
     if not snapshot["analyze_now"] and not snapshot["if_interested"]:
-        lines.append("• No names pass <code>/pick</code> right now — widen watchlist or prescan more.")
+        lines.append(
+            "• No names pass <code>/pick</code> right now — widen watchlist or "
+            "prescan more."
+        )
     return lines
 
 
 def format_daily_workflow() -> str:
     """1–2 daily tip workflow — fast funnel, minimal over-filtering."""
+    uni = load_product_universe()
     snap = _pick_snapshot()
+    tips = select_daily_tips(limit=2, universe=uni)
     lines = [
         "<b>📅 Daily tip workflow (1–2 names)</b>",
         "Goal: one actionable buy/add idea per day without over-filtering.",
+        format_universe_summary(uni),
         "",
         "<b>Step 1 — Refresh the list (weekly or when stale)</b>",
-        "<code>/prescan SYMBOL</code> on new watchlist names, or",
-        "<code>/sip prescan</code> for the full portfolio batch (quant-only).",
+        "<code>/prescan SYMBOL</code> on new universe names, or",
+        "<code>/sip prescan</code> for the full SIP + watchlist batch (quant-only).",
         "",
-        "<b>Step 2 — Soft pick (do not use /candidates alone)</b>",
-        "<code>/pick</code> — quant≥50 or any Q/G/S pillar≥70; MONITOR is not a sell.",
+        "<b>Step 2 — Today’s curated tips</b>",
+        "<code>/pick daily</code> — max 2 names (analyze_now first).",
+        "Full soft list anytime: <code>/pick</code>. MONITOR is not a sell.",
         "",
+        format_daily_tips_html(tips, limit=2),
+        "",
+        "<b>Step 3 — Deep dive on those 1–2 names only</b>",
+        "<code>/analyze SYMBOL</code> — pick only when buy range issued + base 3y CAGR OK.",
+        "After a few analyses: <code>/rank</code> — order by expected long-term return.",
+        "Send <code>/stop</code> to cancel a long analysis.",
+        "",
+        "<b>Step 4 — Execute & record</b>",
+        "<code>/hold SYMBOL qty avg_price</code> after you buy.",
+        "Track the 12–18 book: <code>/progress</code>.",
+        "",
+        "<b>Do not</b>",
+        "• Treat MONITOR as sell for holdings",
+        "• Require score≥65 for every tip (/pick is enough to shortlist)",
+        "• Skip /analyze because /candidates filtered a name out",
+        "",
+        "<i>Review: <code>/track analyze</code> monthly — did BUY calls work?</i>",
     ]
+    # Drop duplicate blank from embedding daily tips; keep pick snapshot for context.
+    lines.extend(["", "<i>Soft-pick snapshot</i>"])
     lines.extend(_format_pick_lines(snap))
-    lines.extend(
-        [
-            "",
-            "<b>Step 3 — Deep dive on 1–2 names only</b>",
-            "<code>/analyze SYMBOL</code> on ✅ tier first, then 🔎 if you care.",
-            "Pick only when: buy range issued + base 3y CAGR acceptable.",
-            "After a few analyses: <code>/rank</code> — order by expected long-term return.",
-            "Send <code>/stop</code> to cancel a long analysis.",
-            "",
-            "<b>Step 4 — Execute & record</b>",
-            "<code>/hold SYMBOL qty avg_price</code> after you buy.",
-            "Use analyze buy/add ranges — not prescan score alone.",
-            "",
-            "<b>Do not</b>",
-            "• Treat MONITOR as sell for holdings",
-            "• Require score≥65 for every tip (/pick is enough to shortlist)",
-            "• Skip /analyze because /candidates filtered a name out",
-            "",
-            "<i>Review: <code>/track analyze</code> monthly — did BUY calls work?</i>",
-        ]
-    )
     return "\n".join(lines)
 
 
 def format_portfolio_workflow() -> str:
     """12–18 name 3y portfolio build — slower, sector-aware funnel."""
+    uni = load_product_universe()
     snap = _pick_snapshot()
     lines = [
         "<b>🏗 Portfolio build workflow (12–18 names, 3y horizon)</b>",
         "Goal: quality portfolio with sector caps, DCA tranches, and analyze-backed ranges.",
+        format_universe_summary(uni),
         "",
-        "<b>Step 1 — Universe (~50 watchlist names)</b>",
-        "Keep names in <code>sip_portfolios.json</code> buckets (core / satellite / ETF).",
+        "<b>Step 1 — One universe</b>",
+        (
+            "Watchlist + SIP names share the same funnel "
+            "(<code>data/portfolio/watchlist.txt</code> ∪ "
+            "<code>sip_portfolios.json</code>)."
+        ),
+        "SIP buckets still drive monthly DCA amounts via <code>/sip plan</code>.",
         "",
         "<b>Step 2 — Batch prescan (quant-only first)</b>",
-        "<code>/sip prescan</code> — writes prescan history for all portfolio symbols.",
-        "<code>/sip prescan full</code> — adds AI eligibility (costs more).",
+        "<code>/sip prescan</code> — writes history for SIP symbols.",
+        "<code>/prescan SYMBOL</code> — add any extra watchlist names.",
         "",
         "<b>Step 3 — Shortlist without over-filtering</b>",
-        "<code>/pick</code> — soft floor; take top scores with sector diversity.",
-        "Target 12–18 survivors — not every checklist box must pass as hard gate.",
+        "<code>/pick daily</code> for 1–2 tips, or <code>/pick</code> for the full soft list.",
+        "Target 12–18 survivors — check <code>/progress</code>.",
         "",
     ]
     lines.extend(_format_pick_lines(snap))
@@ -118,13 +132,13 @@ def format_portfolio_workflow() -> str:
         [
             "",
             "<b>Step 4 — Deep analyze survivors</b>",
-            "<code>/analyze SYMBOL</code> on each shortlisted name (trade-friendly skips prescan gate).",
+            "<code>/analyze SYMBOL</code> on each shortlisted name.",
             "Reject for <b>new</b> capital only — not automatic sell if already held.",
             "Then <code>/rank</code> (or <code>/rank entry</code>) to order by expected base CAGR.",
             "",
             "<b>Step 5 — Size & sector limits</b>",
-            "<code>/capital TOTAL max N</code> — set total capital and per-stock cap.",
-            "Default sector cap 25% — check <code>/hold</code> list for concentration.",
+            "<code>/capital TOTAL max N sector 25</code> — capital, per-stock cap, sector cap.",
+            "<code>/hold</code> shows per-name and sector concentration breaches.",
             "",
             "<b>Step 6 — DCA execution</b>",
             "<code>/sip plan</code> — bucket tables with live prices.",
@@ -135,7 +149,7 @@ def format_portfolio_workflow() -> str:
             "<code>/track pick</code> — did soft picks beat rejects?",
             "<code>/track pick tune</code> — threshold suggestions from your history.",
             "",
-            "<i>Holdings: <code>/hold</code> · Past calls: <code>/track prescan</code></i>",
+            "<i>Progress: <code>/progress</code> · Holdings: <code>/hold</code></i>",
         ]
     )
     return "\n".join(lines)

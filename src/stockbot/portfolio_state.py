@@ -23,6 +23,9 @@ from dataclasses import dataclass
 # for a concentrated-but-not-reckless equity book, and is overridable.
 DEFAULT_MAX_POSITION_PCT = 10.0
 
+# Sector / theme cluster cap — matches the portfolio workflow default (25%).
+DEFAULT_MAX_SECTOR_PCT = 25.0
+
 # Intended position is built in four ~25% tranches (constitution principle 3).
 TRANCHE_COUNT = 4
 
@@ -161,5 +164,39 @@ def concentration_breaches(
         pct = position_pct(value, total_capital_inr)
         if pct is not None and pct > cap_pct:
             breaches.append((ticker, pct))
+    breaches.sort(key=lambda item: (-item[1], item[0]))
+    return breaches
+
+
+def sector_totals(
+    positions: dict[str, float],
+    sector_by_ticker: dict[str, str],
+) -> dict[str, float]:
+    """Sum position value by sector label (missing labels → Unclassified)."""
+    totals: dict[str, float] = {}
+    for ticker, value in positions.items():
+        amount = _finite_positive(value)
+        if amount is None:
+            continue
+        sector = str(sector_by_ticker.get(ticker) or "Unclassified").strip() or "Unclassified"
+        totals[sector] = round(totals.get(sector, 0.0) + amount, 2)
+    return totals
+
+
+def sector_concentration_breaches(
+    positions: dict[str, float],
+    sector_by_ticker: dict[str, str],
+    total_capital_inr: object,
+    max_sector_pct: float = DEFAULT_MAX_SECTOR_PCT,
+) -> list[tuple[str, float]]:
+    """(sector, pct_of_capital) for every sector over the cap, worst first."""
+    breaches: list[tuple[str, float]] = []
+    cap_pct = _finite_positive(max_sector_pct)
+    if cap_pct is None:
+        return breaches
+    for sector, value in sector_totals(positions, sector_by_ticker).items():
+        pct = position_pct(value, total_capital_inr)
+        if pct is not None and pct > cap_pct:
+            breaches.append((sector, pct))
     breaches.sort(key=lambda item: (-item[1], item[0]))
     return breaches
