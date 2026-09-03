@@ -152,6 +152,8 @@ def test_compact_prescan_card_ixigo_style():
     assert "Sell signal: ❌ No" in html
     assert "Check calculated ratios" in html
     assert "Pre-scan only." in html
+    assert "<blockquote>" in html
+    assert "<code>" in html
     # Compact: no long beginner essay sections
     assert "In plain English" not in html
     assert "Your scores" not in html

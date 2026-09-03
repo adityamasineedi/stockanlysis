@@ -147,7 +147,8 @@ NEXT_ACTION_LABELS: dict[str, str] = {
     "NO_RESEARCH": "Skip research for now",
 }
 
-# Compact single-ticker card (Telegram — keep short; no font-size API).
+# Compact single-ticker card. Telegram HTML has no font-size tag; blockquote +
+# <code> is the densest native rendering (monospace, inset, typically smaller).
 ENTRY_HEADLINES: dict[str, tuple[str, str]] = {
     "AUTO_DEEP_ANALYSIS": ("🟢", "RESEARCH ENTRY OPEN"),
     "SECTOR_SPECIFIC_REVIEW": ("🔎", "SECTOR REVIEW BEFORE RESEARCH"),
@@ -167,6 +168,18 @@ def _pillar_light(score: float | None) -> str:
     return "🔴"
 
 
+def telegram_small_block(lines: list[str]) -> str:
+    """Inset compact block — closest Telegram gets to a smaller font."""
+    body = "\n".join(lines).strip("\n")
+    if not body:
+        return ""
+    return f"<blockquote>{body}</blockquote>"
+
+
+def telegram_code_line(text: str) -> str:
+    return f"<code>{text}</code>"
+
+
 def format_qgs_compact(
     *,
     quality: float | None,
@@ -182,7 +195,7 @@ def format_qgs_compact(
         parts.append(f"S {strength:.1f} {_pillar_light(strength)}")
     if not parts:
         return None
-    return "📊 " + " | ".join(parts)
+    return telegram_code_line("📊 " + " | ".join(parts))
 
 
 def _de_light(value: float) -> str:
@@ -236,18 +249,22 @@ def format_metric_lines(
 ) -> list[str]:
     lines: list[str] = []
     if debt_equity is not None:
-        lines.append(f"💰 D/E {debt_equity:.2f}× {_de_light(debt_equity)}")
+        lines.append(telegram_code_line(f"💰 D/E {debt_equity:.2f}× {_de_light(debt_equity)}"))
     if roe is not None:
-        lines.append(f"📈 ROE {roe:.1f}% {_roe_light(roe)}")
+        lines.append(telegram_code_line(f"📈 ROE {roe:.1f}% {_roe_light(roe)}"))
     if ocf_pat is not None:
-        lines.append(f"💵 OCF/PAT {ocf_pat:.2f}× {_ocf_pat_light(ocf_pat)}")
+        lines.append(telegram_code_line(f"💵 OCF/PAT {ocf_pat:.2f}× {_ocf_pat_light(ocf_pat)}"))
     if net_debt_ebitda is not None:
         lines.append(
-            f"🏦 Net Debt/EBITDA {net_debt_ebitda:.2f}× {_nd_ebitda_light(net_debt_ebitda)}"
+            telegram_code_line(
+                f"🏦 Net Debt/EBITDA {net_debt_ebitda:.2f}× {_nd_ebitda_light(net_debt_ebitda)}"
+            )
         )
     if interest_coverage is not None:
         lines.append(
-            f"💳 Interest Coverage {interest_coverage:.2f}× {_ic_light(interest_coverage)}"
+            telegram_code_line(
+                f"💳 Interest Coverage {interest_coverage:.2f}× {_ic_light(interest_coverage)}"
+            )
         )
     return lines
 

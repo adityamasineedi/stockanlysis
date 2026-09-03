@@ -49,6 +49,8 @@ from stockbot.portfolio_screener.prescan_display import (
     format_metric_lines,
     format_qgs_compact,
     synthesize_why,
+    telegram_code_line,
+    telegram_small_block,
 )
 from stockbot.portfolio_screener.quant_engine import compute_quant_score
 from stockbot.portfolio_screener.red_flags import governance_notes
@@ -197,21 +199,21 @@ class EligibilityResult:
         entry_icon, entry_label = ENTRY_HEADLINES.get(
             self.verdict, ("📋", self.verdict.replace("_", " "))
         )
-        lines = [
+        header = [
             f"👀 <b>{name}</b>",
-            "",
             f"{entry_icon} <b>{entry_label}</b>",
         ]
         if self.final_score is not None:
-            lines.append(f"Score: {self.final_score:.1f}/100")
+            header.append(f"<b>Score: {self.final_score:.1f}/100</b>")
 
+        body: list[str] = []
         qgs = format_qgs_compact(
             quality=self.quality_score,
             growth=self.growth_score,
             strength=self.financial_strength_score,
         )
         if qgs:
-            lines.extend(["", qgs])
+            body.append(qgs)
 
         metrics = format_metric_lines(
             debt_equity=self.debt_equity,
@@ -221,8 +223,7 @@ class EligibilityResult:
             interest_coverage=self.interest_coverage,
         )
         if metrics:
-            lines.append("")
-            lines.extend(metrics)
+            body.extend(metrics)
 
         why = synthesize_why(
             key_reason=self.key_reason,
@@ -248,10 +249,8 @@ class EligibilityResult:
                 "Strong quality signals, but reported cash conversion needs "
                 "explanation (common in defence / project companies)."
             )
-        lines.extend(["", "⚠️ WHY?", _esc(why)])
-
-        lines.append("")
-        lines.extend(
+        body.extend(["", "⚠️ WHY?", _esc(why), ""])
+        body.extend(
             format_action_lines(
                 verdict=self.verdict,
                 suitable_for_deep_analysis=self.suitable_for_deep_analysis,
@@ -267,25 +266,24 @@ class EligibilityResult:
                 "DATA_UNAVAILABLE": "Required data missing",
                 "DATA_INSUFFICIENT": "Not enough history",
             }.get(self.hard_filter_status, self.hard_filter_status)
-            lines.append(
+            body.append(
                 f"⛔ {_esc(hard_plain)}"
                 + (f" — {_esc(reason)}" if reason else "")
             )
 
         if self.derived_metric_count >= 3 or self.computed_metric_warnings:
-            lines.extend(
-                ["", "⚠️ Check calculated ratios before decisions."]
-            )
+            body.extend(["", "⚠️ Check calculated ratios before decisions."])
         if self.financials_basis:
-            lines.append(
+            body.append(
                 f"<i>{_esc(self.financials_basis)} · "
                 f"{_esc(_financials_source_label(self.financials_source))}</i>"
             )
         if self.recheck_note:
-            lines.append(f"📅 {_esc(self.recheck_note)}")
+            body.append(f"📅 {_esc(self.recheck_note)}")
+        body.append("ℹ️ <i>Pre-scan only.</i>")
 
-        lines.extend(["", "ℹ️ <i>Pre-scan only.</i>"])
-        return "\n".join(lines)
+        small = telegram_small_block(body)
+        return "\n".join(header + (["", small] if small else []))
 
     def _why_routed_blocked(self) -> tuple[str | None, str | None]:
         """Short auditable lines instead of one truncated Why paragraph."""
@@ -320,21 +318,21 @@ class EligibilityResult:
         if self.company_name:
             name = f"{name} — {_esc(self.company_name)}"
 
-        lines = [
+        header = [
             f"👀 <b>{name}</b>",
-            "",
             "🧡 <b>CASH / WC CHECK FIRST</b>",
         ]
         if self.final_score is not None:
-            lines.append(f"Score: {self.final_score:.1f}/100")
+            header.append(f"<b>Score: {self.final_score:.1f}/100</b>")
 
+        body: list[str] = []
         qgs = format_qgs_compact(
             quality=self.quality_score,
             growth=self.growth_score,
             strength=self.financial_strength_score,
         )
         if qgs:
-            lines.extend(["", qgs])
+            body.append(qgs)
 
         metrics = format_metric_lines(
             debt_equity=self.debt_equity,
@@ -344,11 +342,12 @@ class EligibilityResult:
             interest_coverage=self.interest_coverage,
         )
         if metrics:
-            lines.append("")
-            lines.extend(metrics)
+            body.extend(metrics)
 
         if self.ocf_pat_3y_cumulative is not None:
-            lines.append(f"💧 3Y OCF/PAT {self.ocf_pat_3y_cumulative:.2f}×")
+            body.append(
+                telegram_code_line(f"💧 3Y OCF/PAT {self.ocf_pat_3y_cumulative:.2f}×")
+            )
         if self.cfo_3y_sum_abs is not None or self.pat_3y_sum_abs is not None:
             cfo = (
                 f"₹{self.cfo_3y_sum_abs:.0f} Cr"
@@ -360,10 +359,10 @@ class EligibilityResult:
                 if self.pat_3y_sum_abs is not None
                 else "?"
             )
-            lines.append(f"💧 3Y totals: CFO {cfo} / PAT {pat}")
+            body.append(telegram_code_line(f"💧 3Y totals: CFO {cfo} / PAT {pat}"))
 
         why_routed, why_blocked = self._why_routed_blocked()
-        lines.extend(
+        body.extend(
             [
                 "",
                 "⚠️ WHY?",
@@ -374,11 +373,11 @@ class EligibilityResult:
             ]
         )
         if why_routed:
-            lines.append(f"📌 Why this route: {_esc(why_routed)}")
+            body.append(f"📌 Why this route: {_esc(why_routed)}")
         if why_blocked:
-            lines.append(f"🧱 What blocks full research: {_esc(why_blocked)}")
+            body.append(f"🧱 What blocks full research: {_esc(why_blocked)}")
 
-        lines.extend(
+        body.extend(
             [
                 "",
                 "➡️ New research: ❌ until WC explained",
@@ -392,15 +391,16 @@ class EligibilityResult:
             ]
         )
         for item in WC_RECONCILIATION_CHECKLIST:
-            lines.append(f"• {_esc(item)}")
-        lines.append(
+            body.append(f"• {_esc(item)}")
+        body.append(
             "Classify: <code>TEMPORARY_BILLING_CYCLE</code> · "
             "<code>WORKING_CAPITAL_STRESS</code> · "
             "<code>DATA_OR_SCOPE_ERROR</code> · <code>INCONCLUSIVE</code>."
         )
+        body.append("ℹ️ <i>Pre-scan only.</i>")
 
-        lines.extend(["", "ℹ️ <i>Pre-scan only.</i>"])
-        return "\n".join(lines)
+        small = telegram_small_block(body)
+        return "\n".join(header + (["", small] if small else []))
 
 
 def _financials_source_label(source: str | None) -> str:
