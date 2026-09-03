@@ -147,6 +147,186 @@ NEXT_ACTION_LABELS: dict[str, str] = {
     "NO_RESEARCH": "Skip research for now",
 }
 
+# Compact single-ticker card. Telegram HTML has no font-size tag; blockquote +
+# <code> is the densest native rendering (monospace, inset, typically smaller).
+ENTRY_HEADLINES: dict[str, tuple[str, str]] = {
+    "AUTO_DEEP_ANALYSIS": ("🟢", "RESEARCH ENTRY OPEN"),
+    "SECTOR_SPECIFIC_REVIEW": ("🔎", "SECTOR REVIEW BEFORE RESEARCH"),
+    "HOLDING_MONITOR_ONLY": ("👀", "MONITOR ONLY — NO NEW RESEARCH"),
+    "NOT_SUITABLE_FOR_3Y_RESEARCH": ("🔴", "RESEARCH ENTRY REJECTED"),
+    "DATA_UNAVAILABLE_RETRY": ("📭", "DATA MISSING — RETRY"),
+}
+
+
+def _pillar_light(score: float | None) -> str:
+    if score is None:
+        return "⚪"
+    if score >= 60:
+        return "🟢"
+    if score >= 40:
+        return "🟡"
+    return "🔴"
+
+
+def telegram_small_block(lines: list[str]) -> str:
+    """Inset compact block — closest Telegram gets to a smaller font."""
+    body = "\n".join(lines).strip("\n")
+    if not body:
+        return ""
+    return f"<blockquote>{body}</blockquote>"
+
+
+def telegram_code_line(text: str) -> str:
+    return f"<code>{text}</code>"
+
+
+def format_qgs_compact(
+    *,
+    quality: float | None,
+    growth: float | None,
+    strength: float | None,
+) -> str | None:
+    parts: list[str] = []
+    if quality is not None:
+        parts.append(f"Q {quality:.1f} {_pillar_light(quality)}")
+    if growth is not None:
+        parts.append(f"G {growth:.1f} {_pillar_light(growth)}")
+    if strength is not None:
+        parts.append(f"S {strength:.1f} {_pillar_light(strength)}")
+    if not parts:
+        return None
+    return telegram_code_line("📊 " + " | ".join(parts))
+
+
+def _de_light(value: float) -> str:
+    if value <= 0.5:
+        return "🟢"
+    if value <= 1.0:
+        return "🟡"
+    return "🔴"
+
+
+def _roe_light(value: float) -> str:
+    if value >= 15:
+        return "🟢"
+    if value >= 8:
+        return "🟡"
+    return "🔴"
+
+
+def _ocf_pat_light(value: float) -> str:
+    if value >= 0.80:
+        return "🟢"
+    if value >= 0.50:
+        return "🟡"
+    return "🔴"
+
+
+def _nd_ebitda_light(value: float) -> str:
+    # Negative = net cash — healthy for non-financials.
+    if value <= 1.0:
+        return "🟢"
+    if value <= 3.0:
+        return "🟡"
+    return "🔴"
+
+
+def _ic_light(value: float) -> str:
+    if value >= 5.0:
+        return "🟢"
+    if value >= 2.0:
+        return "🟡"
+    return "🔴"
+
+
+def format_metric_lines(
+    *,
+    debt_equity: float | None = None,
+    roe: float | None = None,
+    ocf_pat: float | None = None,
+    net_debt_ebitda: float | None = None,
+    interest_coverage: float | None = None,
+) -> list[str]:
+    lines: list[str] = []
+    if debt_equity is not None:
+        lines.append(telegram_code_line(f"💰 D/E {debt_equity:.2f}× {_de_light(debt_equity)}"))
+    if roe is not None:
+        lines.append(telegram_code_line(f"📈 ROE {roe:.1f}% {_roe_light(roe)}"))
+    if ocf_pat is not None:
+        lines.append(telegram_code_line(f"💵 OCF/PAT {ocf_pat:.2f}× {_ocf_pat_light(ocf_pat)}"))
+    if net_debt_ebitda is not None:
+        lines.append(
+            telegram_code_line(
+                f"🏦 Net Debt/EBITDA {net_debt_ebitda:.2f}× {_nd_ebitda_light(net_debt_ebitda)}"
+            )
+        )
+    if interest_coverage is not None:
+        lines.append(
+            telegram_code_line(
+                f"💳 Interest Coverage {interest_coverage:.2f}× {_ic_light(interest_coverage)}"
+            )
+        )
+    return lines
+
+
+def format_action_lines(*, verdict: str, suitable_for_deep_analysis: bool) -> list[str]:
+    if verdict == "AUTO_DEEP_ANALYSIS":
+        research = "✅ /analyze"
+        holding = "✅ Hold OK to research"
+    elif verdict == "SECTOR_SPECIFIC_REVIEW":
+        research = "🔎 Sector lens → /analyze"
+        holding = "👀 Monitor"
+    elif verdict == "DATA_UNAVAILABLE_RETRY":
+        research = "📭 Retry /prescan"
+        holding = "👀 Wait for data"
+    elif verdict == "HOLDING_MONITOR_ONLY":
+        research = "❌"
+        holding = "👀 Monitor"
+    else:
+        research = "❌"
+        holding = "👀 Monitor"
+    if not suitable_for_deep_analysis and verdict == "SECTOR_SPECIFIC_REVIEW":
+        research = "❌"
+    return [
+        f"➡️ New research: {research}",
+        f"➡️ Existing holding: {holding}",
+        "➡️ Sell signal: ❌ No",
+    ]
+
+
+def synthesize_why(
+    *,
+    key_reason: str,
+    quality: float | None,
+    growth: float | None,
+    strength: float | None,
+) -> str:
+    reason = (key_reason or "").strip()
+    if reason:
+        if len(reason) > 140:
+            return reason[:137] + "…"
+        return reason
+    strong: list[str] = []
+    weak: list[str] = []
+    for label, score in (
+        ("quality/returns", quality),
+        ("growth", growth),
+        ("financial strength", strength),
+    ):
+        if score is None:
+            continue
+        if score >= 60:
+            strong.append(label)
+        elif score < 40:
+            weak.append(label)
+    if strong and weak:
+        return f"{' + '.join(strong).capitalize()} good, but {'/'.join(weak)} weak."
+    if weak:
+        return f"{'/'.join(weak).capitalize()} weak for a 3-year compounder screen."
+    if strong:
+        return f"{' + '.join(strong).capitalize()} look fine — see gate above."
+    return "See score and gate above."
+
 
 def format_quality_growth_strength(
     *,
