@@ -123,9 +123,10 @@ def _latest_fiscal_incomplete(pnl: pd.DataFrame) -> bool:
     sales = _row(pnl, _REVENUE_ALIASES)
     eps = _row(pnl, _EPS_ALIASES)
     ttm_col = next((c for c in pnl.columns if str(c).strip().upper() == "TTM"), None)
-    if ttm_col is not None:
-        if _cell(sales, ttm_col) is not None or _cell(eps, ttm_col) is not None:
-            return False
+    if ttm_col is not None and (
+        _cell(sales, ttm_col) is not None or _cell(eps, ttm_col) is not None
+    ):
+        return False
 
     annual = _annual_columns(pnl)
     if not annual:
