@@ -231,6 +231,35 @@ def _parse_ts(raw: str) -> datetime:
     return ts
 
 
+def _event_date(raw: object) -> str:
+    """Return YYYY-MM-DD for Telegram/markdown detail lines (empty if unknown)."""
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    try:
+        return _parse_ts(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        # Already a date prefix, or non-ISO stamp — keep first 10 chars when plausible.
+        if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+            return text[:10]
+        return ""
+
+
+def _dated(prefix: str, when: object, message: str) -> str:
+    """Build ``PREFIX (YYYY-MM-DD): message`` so /health bullets show the event date."""
+    day = _event_date(when)
+    head = prefix.strip()
+    if day and head:
+        return f"{head} ({day}): {message}"
+    if day:
+        return f"({day}) {message}"
+    if head:
+        return f"{head}: {message}"
+    return message
+
+
 def _connect_analyses() -> sqlite3.Connection:
     return connect_analyses_db()
 
@@ -298,13 +327,18 @@ def _audit_llm_calls(findings: list[Finding], days: int) -> dict[str, object]:
         cost = float(row["cost_inr"])
 
         if stage == "stage1" or (stage == "unknown" and inp > 30_000 and "haiku" not in model):
+            ticker = str(row["ticker"] or "").upper()
             if inp >= STAGE1_INPUT_CRITICAL:
                 findings.append(
                     Finding(
                         "critical",
                         "token_waste",
                         "Stage 1 input extremely large",
-                        f"{inp:,} input tokens (₹{cost:.2f}) — trim annual-report sections further.",
+                        _dated(
+                            ticker,
+                            row["called_at"],
+                            f"{inp:,} input tokens (₹{cost:.2f}) — trim annual-report sections further.",
+                        ),
                         {"called_at": row["called_at"], "ticker": row["ticker"], "input_tokens": inp},
                     )
                 )
@@ -314,21 +348,30 @@ def _audit_llm_calls(findings: list[Finding], days: int) -> dict[str, object]:
                         "warning",
                         "token_waste",
                         "Stage 1 input larger than trimmed target",
-                        f"{inp:,} input tokens — expected ≤~15k after audit/governance trim.",
+                        _dated(
+                            ticker,
+                            row["called_at"],
+                            f"{inp:,} input tokens — expected ≤~15k after audit/governance trim.",
+                        ),
                         {"called_at": row["called_at"], "ticker": row["ticker"], "input_tokens": inp},
                     )
                 )
 
         if out > 0 and think > 0 and stage.startswith("stage2"):
             ratio = think / out
+            ticker = str(row["ticker"] or "").upper()
             if ratio >= THINKING_RATIO_CRITICAL:
                 findings.append(
                     Finding(
                         "critical",
                         "token_waste",
                         "Stage 2 thinking dominates output",
-                        f"{ratio:.0%} of output tokens are thinking ({think:,}/{out:,}) — "
-                        f"consider LITE path or shorter prompt.",
+                        _dated(
+                            ticker,
+                            row["called_at"],
+                            f"{ratio:.0%} of output tokens are thinking ({think:,}/{out:,}) — "
+                            "consider LITE path or shorter prompt.",
+                        ),
                         {
                             "called_at": row["called_at"],
                             "ticker": row["ticker"],
@@ -344,7 +387,11 @@ def _audit_llm_calls(findings: list[Finding], days: int) -> dict[str, object]:
                         "warning",
                         "token_waste",
                         "High Stage 2 thinking ratio",
-                        f"{ratio:.0%} thinking tokens on {row['stage'] or 'stage2'}.",
+                        _dated(
+                            ticker,
+                            row["called_at"],
+                            f"{ratio:.0%} thinking tokens on {row['stage'] or 'stage2'}.",
+                        ),
                         {"called_at": row["called_at"], "ticker": row["ticker"], "thinking_ratio": round(ratio, 3)},
                     )
                 )
@@ -374,9 +421,13 @@ def _audit_llm_calls(findings: list[Finding], days: int) -> dict[str, object]:
                         "warning",
                         "token_waste",
                         "Stage 2 retry did not read prompt cache",
-                        f"Call #{prior_stage2 + 1} for {ticker_key or '?'} wrote {cache_create:,} "
-                        f"cache tokens (₹{cost:.2f}) without a cache read — prior Stage 2 was "
-                        f"within 1h; retries should reuse the prompt cache.",
+                        _dated(
+                            ticker_key or "?",
+                            row["called_at"],
+                            f"Call #{prior_stage2 + 1} wrote {cache_create:,} "
+                            f"cache tokens (₹{cost:.2f}) without a cache read — prior Stage 2 was "
+                            f"within 1h; retries should reuse the prompt cache.",
+                        ),
                         {
                             "called_at": row["called_at"],
                             "ticker": row["ticker"],
@@ -418,8 +469,13 @@ def _audit_llm_calls(findings: list[Finding], days: int) -> dict[str, object]:
                     "critical",
                     "cost_leak",
                     "Likely abandoned analysis session",
-                    f"{ticker}: {len(deep_calls)} Stage 1/2 calls totalling ₹{session_cost:.2f} "
-                    f"with no saved analysis in the window (bot restart / failed validation?).",
+                    _dated(
+                        ticker,
+                        first,
+                        f"{len(deep_calls)} Stage 1/2 calls totalling ₹{session_cost:.2f} "
+                        f"through {_event_date(last) or last.date().isoformat()} "
+                        "with no saved analysis in the window (bot restart / failed validation?).",
+                    ),
                     {
                         "ticker": ticker,
                         "calls": len(deep_calls),
@@ -441,13 +497,19 @@ def _audit_llm_calls(findings: list[Finding], days: int) -> dict[str, object]:
                         "warning",
                         "cost_leak",
                         "Retries exceeded saved analysis cost",
-                        f"{ticker}: logged ₹{session_cost:.2f} across {len(deep_calls)} calls but "
-                        f"saved analysis cost ₹{saved_cost:.2f} (₹{excess:.2f} likely retries/truncation).",
+                        _dated(
+                            ticker,
+                            first,
+                            f"logged ₹{session_cost:.2f} across {len(deep_calls)} calls but "
+                            f"saved analysis cost ₹{saved_cost:.2f} (₹{excess:.2f} likely retries/truncation).",
+                        ),
                         {
                             "ticker": ticker,
                             "session_cost_inr": round(session_cost, 2),
                             "saved_cost_inr": saved_cost,
                             "excess_inr": round(excess, 2),
+                            "first": first.isoformat(),
+                            "last": last.isoformat(),
                         },
                     )
                 )
@@ -481,15 +543,20 @@ def _audit_analyses(findings: list[Finding], days: int) -> dict[str, object]:
     for row in rows:
         cost = float(row["cost_inr"])
         ticker = row["ticker"]
+        created_at = row["created_at"]
         if cost >= ANALYSIS_COST_CRITICAL_INR:
             findings.append(
                 Finding(
                     "critical",
                     "cost_leak",
                     "Single analysis near per-run cap",
-                    f"{ticker} cost ₹{cost:.2f} (cap ₹{settings.per_analysis_cost_cap_inr:.0f}) — "
-                    "check retries/truncation/Stage 2 FULL path.",
-                    {"ticker": ticker, "cost_inr": cost, "created_at": row["created_at"]},
+                    _dated(
+                        ticker,
+                        created_at,
+                        f"cost ₹{cost:.2f} (cap ₹{settings.per_analysis_cost_cap_inr:.0f}) — "
+                        "check retries/truncation/Stage 2 FULL path.",
+                    ),
+                    {"ticker": ticker, "cost_inr": cost, "created_at": created_at},
                 )
             )
         elif cost >= ANALYSIS_COST_WARN_INR:
@@ -498,8 +565,8 @@ def _audit_analyses(findings: list[Finding], days: int) -> dict[str, object]:
                     "warning",
                     "cost_leak",
                     "Expensive analysis run",
-                    f"{ticker} cost ₹{cost:.2f}.",
-                    {"ticker": ticker, "cost_inr": cost},
+                    _dated(ticker, created_at, f"cost ₹{cost:.2f}."),
+                    {"ticker": ticker, "cost_inr": cost, "created_at": created_at},
                 )
             )
 
@@ -510,8 +577,12 @@ def _audit_analyses(findings: list[Finding], days: int) -> dict[str, object]:
                     "warning",
                     "token_waste",
                     "Large brief stored in DB",
-                    f"{ticker} brief_text {brief_len // 1024} KB — inflates SQLite; consider trimming stored brief.",
-                    {"ticker": ticker, "brief_bytes": brief_len},
+                    _dated(
+                        ticker,
+                        created_at,
+                        f"brief_text {brief_len // 1024} KB — inflates SQLite; consider trimming stored brief.",
+                    ),
+                    {"ticker": ticker, "brief_bytes": brief_len, "created_at": created_at},
                 )
             )
 
@@ -523,8 +594,8 @@ def _audit_analyses(findings: list[Finding], days: int) -> dict[str, object]:
                     "critical",
                     "quality",
                     "Invalid verdict_json in DB",
-                    f"{ticker} row id={row['id']} has corrupt JSON.",
-                    {"ticker": ticker, "id": row["id"]},
+                    _dated(ticker, created_at, f"row id={row['id']} has corrupt JSON."),
+                    {"ticker": ticker, "id": row["id"], "created_at": created_at},
                 )
             )
             continue
@@ -535,8 +606,12 @@ def _audit_analyses(findings: list[Finding], days: int) -> dict[str, object]:
                     "info",
                     "quality",
                     "Missing expected_return block",
-                    f"{ticker} ({row['created_at'][:10]}) — re-run or backfill for scenario CAGR card.",
-                    {"ticker": ticker},
+                    _dated(
+                        ticker,
+                        created_at,
+                        "re-run or backfill for scenario CAGR card.",
+                    ),
+                    {"ticker": ticker, "created_at": created_at},
                 )
             )
 
@@ -548,8 +623,12 @@ def _audit_analyses(findings: list[Finding], days: int) -> dict[str, object]:
                     "info",
                     "token_waste",
                     "FULL Stage 2 despite clean prescan routing",
-                    f"{ticker} used FULL — check extraction red flags or FORCE_STAGE2_FULL.",
-                    {"ticker": ticker, "reasons": reasons},
+                    _dated(
+                        ticker,
+                        created_at,
+                        "used FULL — check extraction red flags or FORCE_STAGE2_FULL.",
+                    ),
+                    {"ticker": ticker, "reasons": reasons, "created_at": created_at},
                 )
             )
 
@@ -559,8 +638,12 @@ def _audit_analyses(findings: list[Finding], days: int) -> dict[str, object]:
                     "warning",
                     "quality",
                     "Stored analysis failed validation flag",
-                    f"{ticker} has validation_passed=0 in DB (unexpected for delivered reports).",
-                    {"ticker": ticker},
+                    _dated(
+                        ticker,
+                        created_at,
+                        "validation_passed=0 in DB (unexpected for delivered reports).",
+                    ),
+                    {"ticker": ticker, "created_at": created_at},
                 )
             )
 
@@ -629,6 +712,7 @@ def _audit_fixtures(findings: list[Finding], days: int) -> None:
         return
     since = datetime.now(UTC) - timedelta(days=days)
     truncated: list[str] = []
+    dates: list[str] = []
     for path in fixtures_dir.glob("*.json"):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -642,20 +726,28 @@ def _audit_fixtures(findings: list[Finding], days: int) -> None:
                 ts = datetime.strptime(m.group(1)[:15], "%Y%m%dT%H%M%S").replace(tzinfo=UTC)
                 if ts < since:
                     continue
+                dates.append(ts.date().isoformat())
             except ValueError:
                 pass
         truncated.append(path.name)
 
     if truncated:
+        date_note = ""
+        if dates:
+            uniq = sorted(set(dates))
+            if len(uniq) == 1:
+                date_note = f" (dated {uniq[0]})"
+            else:
+                date_note = f" (dated {uniq[0]} … {uniq[-1]})"
         findings.append(
             Finding(
                 "warning",
                 "token_waste",
                 "Truncated LLM responses saved as fixtures",
-                f"{len(truncated)} fixture(s) with stop_reason=max_tokens — "
+                f"{len(truncated)} fixture(s) with stop_reason=max_tokens{date_note} — "
                 "raise Stage 2 max_tokens (LITE base is now 32k; prefer /analyze lite "
                 "over repeated FULL retries).",
-                {"files": truncated[:10], "total": len(truncated)},
+                {"files": truncated[:10], "total": len(truncated), "dates": dates[:10]},
             )
         )
 

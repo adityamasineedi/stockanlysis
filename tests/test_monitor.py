@@ -161,6 +161,45 @@ def test_to_telegram_html_escapes_and_summarizes():
     assert len(text) <= 4096
 
 
+def test_event_date_and_dated_helpers():
+    from stockbot.monitor.health_audit import _dated, _event_date
+
+    assert _event_date("2026-09-01T14:30:00+00:00") == "2026-09-01"
+    assert _event_date(datetime(2026, 9, 1, 14, 30, tzinfo=UTC)) == "2026-09-01"
+    assert _dated("HEROMOTOCO", "2026-09-01T10:00:00+00:00", "cost ₹60.00.") == (
+        "HEROMOTOCO (2026-09-01): cost ₹60.00."
+    )
+
+
+def test_expensive_analysis_detail_includes_created_date(tmp_path, monkeypatch):
+    """Telegram /health only shows detail — dates must not hide in evidence JSON."""
+    _patch_audit_paths(tmp_path, monkeypatch)
+    from stockbot.storage import save_analysis
+    import stockbot.storage as storage_module
+
+    monkeypatch.setattr(storage_module, "DB_PATH", tmp_path / "test.sqlite3")
+    row_id = save_analysis(
+        ticker="HEROMOTOCO",
+        verdict_json={"verdict": "WATCH", "expected_return": {"base": 0.1}},
+        report_md="# report",
+        brief_text="brief",
+        stage1_tokens=100,
+        stage2_tokens=200,
+        cost_inr=60.0,
+        validation_passed=True,
+    )
+    stamped = "2026-09-01T08:15:00+00:00"
+    with storage_module._connect() as conn:
+        conn.execute("UPDATE analyses SET created_at = ? WHERE id = ?", (stamped, row_id))
+
+    report = run_health_audit(days=14, persist=False)
+    expensive = [f for f in report.findings if f.title == "Expensive analysis run"]
+    assert expensive
+    assert "2026-09-01" in expensive[0].detail
+    assert expensive[0].evidence.get("created_at") == stamped
+    assert "2026-09-01" in report.to_telegram_html()
+
+
 def test_to_telegram_html_shows_clean_bill_of_health():
     report = HealthAuditReport(
         generated_at=datetime.now(UTC),
