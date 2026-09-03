@@ -112,4 +112,46 @@ def test_cheap_wc_telegram_card_wording_and_checklist():
         assert item[:40] in html or "Verify CFO and PAT" in html
     assert "₹132 Cr" in html
     assert "₹7846 Cr" in html or "₹7,846" in html or "7846" in html
-    assert "Debt vs equity (D/E): 0.05" in html
+    assert "D/E 0.05" in html
+
+
+def test_compact_prescan_card_ixigo_style():
+    result = EligibilityResult(
+        query="IXIGO",
+        ticker="IXIGO",
+        company_name="Le Travenues Technology Ltd",
+        verdict="NOT_SUITABLE_FOR_3Y_RESEARCH",
+        suitable_for_deep_analysis=False,
+        final_score=35.1,
+        quality_score=6.9,
+        growth_score=67.7,
+        financial_strength_score=94.9,
+        debt_equity=0.02,
+        roe=3.5,
+        ocf_pat_current=2.25,
+        net_debt_ebitda=-5.41,
+        interest_coverage=19.67,
+        derived_metric_count=3,
+        key_reason="",
+    )
+    html = result.telegram_html()
+    assert "👀" in html and "IXIGO" in html
+    assert "RESEARCH ENTRY REJECTED" in html
+    assert "Score: 35.1/100" in html
+    assert "Q 6.9 🔴" in html
+    assert "G 67.7 🟢" in html
+    assert "S 94.9 🟢" in html
+    assert "D/E 0.02× 🟢" in html
+    assert "ROE 3.5% 🔴" in html
+    assert "OCF/PAT 2.25× 🟢" in html
+    assert "Net Debt/EBITDA -5.41× 🟢" in html
+    assert "Interest Coverage 19.67× 🟢" in html
+    assert "⚠️ WHY?" in html
+    assert "New research: ❌" in html
+    assert "Existing holding: 👀 Monitor" in html
+    assert "Sell signal: ❌ No" in html
+    assert "Check calculated ratios" in html
+    assert "Pre-scan only." in html
+    # Compact: no long beginner essay sections
+    assert "In plain English" not in html
+    assert "Your scores" not in html
