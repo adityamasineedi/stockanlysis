@@ -80,7 +80,8 @@ def build_pick_calibration(
     rows = _load_prescan_rows()
     tickers = {str(r.get("ticker") or "").upper() for r in rows if r.get("ticker")}
     resolved = prices if prices is not None else _current_prices(tickers)
-    scored = score_calls(rows, resolved)
+    # score_calls now reports why rows were left out, not just the survivors.
+    scored = score_calls(rows, resolved).calls
 
     by_ticker_row: dict[str, dict] = {}
     for row in rows:

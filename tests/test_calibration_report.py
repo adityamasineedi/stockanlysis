@@ -43,8 +43,8 @@ def test_repeated_tickers_across_rows_are_fetched_once(monkeypatch):
 
     monkeypatch.setattr(prices_mod, "fetch_price_data", fake_fetch)
 
-    rows = [_row("BEL", "AUTO_DEEP_ANALYSIS", 100, 30 * i) for i in range(6)]
-    rows += [_row("CRISIL", "AUTO_DEEP_ANALYSIS", 100, 30 * i) for i in range(6)]
+    rows = [_row("BEL", "AUTO_DEEP_ANALYSIS", 100, 40 + 30 * i) for i in range(6)]
+    rows += [_row("CRISIL", "AUTO_DEEP_ANALYSIS", 100, 40 + 30 * i) for i in range(6)]
     report = _build("prescan", rows, PRESCAN_POSITIVE, PRESCAN_NEGATIVE, now=NOW)
 
     assert sorted(fetched) == ["BEL", "CRISIL"]  # 12 rows, 2 fetches
@@ -96,7 +96,7 @@ def test_report_states_plainly_when_the_ranking_does_not_work():
     )
     assert report.spread.spread_pct == -13.0
     text = _plain(format_calibration_report(report))
-    assert "the score is not discriminating" in text
+    assert "inverted" in text
 
 
 def test_thin_history_gets_a_message_not_a_table():
@@ -130,7 +130,7 @@ def test_unscoreable_rows_count_as_logged_but_not_scored():
     )
     assert report.total_rows == 7
     assert report.scored == 6
-    assert "6 scoreable of 7 logged" in _plain(format_calibration_report(report))
+    assert "7 logged · 6 scoreable" in _plain(format_calibration_report(report))
 
 
 def test_buckets_below_min_sample_are_named_not_summarised():
@@ -145,3 +145,45 @@ def test_buckets_below_min_sample_are_named_not_summarised():
     # The 200% outlier must not be presented as a median.
     assert "SECTOR_SPECIFIC_REVIEW — 1 call(s), too few to summarise" in text
     assert "+200.0%" not in text
+
+
+def test_header_shows_where_the_missing_rows_went():
+    """A report that silently shrinks its sample reads as confidently on twelve
+    rows as on twelve hundred."""
+    rows = [_row(f"OK{i}", "AUTO_DEEP_ANALYSIS", 100, 200) for i in range(6)]
+    rows += [_row(f"NEW{i}", "AUTO_DEEP_ANALYSIS", 100, 2) for i in range(4)]
+    rows += [_row("NOJUDGE", "DATA_UNAVAILABLE_RETRY", 100, 200)]
+    prices = (
+        {f"OK{i}": 118.0 for i in range(6)}
+        | {f"NEW{i}": 118.0 for i in range(4)}
+        | {"NOJUDGE": 118.0}
+    )
+
+    report = _build(
+        "prescan", rows, PRESCAN_POSITIVE, PRESCAN_NEGATIVE, now=NOW, prices=prices
+    )
+    assert report.total_rows == 11
+    assert report.scored == 6
+    assert report.too_recent == 4
+    assert report.not_a_judgment == 1
+
+    text = _plain(format_calibration_report(report))
+    assert "11 logged · 6 scoreable · 4 too recent to score · 1 not judgements" in text
+    # The failed-fetch rows must not appear as a verdict with a return.
+    assert "DATA_UNAVAILABLE_RETRY" not in text
+
+
+def test_hairline_spread_renders_as_no_difference():
+    """The live report said "+0.0 points — the score is discriminating"."""
+    rows = [_row(f"GOOD{i}", "AUTO_DEEP_ANALYSIS", 100, 200) for i in range(6)]
+    rows += [_row(f"BAD{i}", "NOT_SUITABLE_FOR_3Y_RESEARCH", 100, 200) for i in range(6)]
+    # 1.24% vs 1.20% — both render as +1.2%, a 0.04-point gap.
+    prices = {f"GOOD{i}": 101.24 for i in range(6)} | {f"BAD{i}": 101.20 for i in range(6)}
+
+    report = _build(
+        "prescan", rows, PRESCAN_POSITIVE, PRESCAN_NEGATIVE, now=NOW, prices=prices
+    )
+    assert report.spread.spread_pct == 0.04
+    text = _plain(format_calibration_report(report))
+    assert "no discernible difference between the tiers" in text
+    assert "the score is discriminating" not in text
