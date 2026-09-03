@@ -174,8 +174,8 @@ def test_event_date_and_dated_helpers():
 def test_expensive_analysis_detail_includes_created_date(tmp_path, monkeypatch):
     """Telegram /health only shows detail — dates must not hide in evidence JSON."""
     _patch_audit_paths(tmp_path, monkeypatch)
-    from stockbot.storage import save_analysis
     import stockbot.storage as storage_module
+    from stockbot.storage import save_analysis
 
     monkeypatch.setattr(storage_module, "DB_PATH", tmp_path / "test.sqlite3")
     row_id = save_analysis(
