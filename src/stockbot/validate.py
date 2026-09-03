@@ -221,7 +221,39 @@ CONSTITUTION_AUTO_FIX_CHECKS: frozenset[str] = frozenset(
         "buy_zone_discount",
         "bear_adequacy_low_cyclical",
         "bear_adequacy_high_multiple",
+        "holding_period_vs_thesis",
     }
+)
+
+# Default monitoring horizon when thesis is not yet confirmed.
+_MONITORING_HOLDING_PERIOD = (
+    "6–12 months (monitoring); then 3–5 years if thesis confirms"
+)
+
+_THESIS_UNCONFIRMED = frozenset(
+    {"THESIS_UNDER_REVIEW", "THESIS_AT_RISK", "THESIS_BROKEN"}
+)
+
+_MONITORING_HORIZON_MARKERS = (
+    "monitor",
+    "6-12",
+    "6–12",
+    "6 to 12",
+    "under review",
+    "until thesis",
+    "if thesis",
+)
+
+_LONG_TERM_HOLDING_MARKERS = ("3-5", "3–5", "5+", "5+ years", "five year", "5 year")
+
+_STANDARD_SEBI_FOOTER = (
+    "*Research and education, not investment advice. Verify the numbers before "
+    "acting, and consider a SEBI-registered investment adviser.*"
+)
+
+_FOOTER_BLOCK_RE = re.compile(
+    r"\*?Research and education, not investment advice[^\n]*\*?",
+    re.IGNORECASE,
 )
 
 # Prose/structure fixes — deterministic, no full Stage 2 regeneration.
@@ -811,14 +843,25 @@ def _check_anti_chase_blocks_buy_range(verdict: VerdictJSON) -> CheckResult:
     )
 
 
+def _holding_period_has_monitoring_horizon(holding_period: str) -> bool:
+    """True when the text already leads with a monitoring / conditional horizon."""
+    hp = (holding_period or "").lower()
+    return any(m in hp for m in _MONITORING_HORIZON_MARKERS)
+
+
 def _check_holding_period_vs_thesis(verdict: VerdictJSON) -> CheckResult:
-    """Thesis under review → monitoring horizon, not committed 3–5y holding."""
+    """Thesis under review → monitoring horizon, not committed 3–5y holding.
+
+    Conditional phrasing like "6–12 months (monitoring); then 3–5 years if
+    thesis confirms" is allowed — only a bare long-term commitment fails.
+    """
     status = (verdict.thesis_status or "").strip().upper()
-    if status not in {"THESIS_UNDER_REVIEW", "THESIS_AT_RISK", "THESIS_BROKEN"}:
+    if status not in _THESIS_UNCONFIRMED:
         return CheckResult(name="holding_period_vs_thesis", passed=True, message="ok")
     hp = (verdict.holding_period or "").lower()
-    long_term_markers = ("3-5", "3–5", "5+", "5+ years", "five year", "5 year")
-    if any(m in hp for m in long_term_markers):
+    if _holding_period_has_monitoring_horizon(hp):
+        return CheckResult(name="holding_period_vs_thesis", passed=True, message="ok")
+    if any(m in hp for m in _LONG_TERM_HOLDING_MARKERS):
         return CheckResult(
             name="holding_period_vs_thesis",
             passed=False,
@@ -828,6 +871,16 @@ def _check_holding_period_vs_thesis(verdict: VerdictJSON) -> CheckResult:
             ),
         )
     return CheckResult(name="holding_period_vs_thesis", passed=True, message="ok")
+
+
+def _fix_holding_period_for_thesis(verdict: VerdictJSON) -> VerdictJSON:
+    """Rewrite bare long-term holding to a monitoring horizon while thesis is open."""
+    status = (verdict.thesis_status or "").strip().upper()
+    if status not in _THESIS_UNCONFIRMED:
+        return verdict
+    if _holding_period_has_monitoring_horizon(verdict.holding_period or ""):
+        return verdict
+    return verdict.model_copy(update={"holding_period": _MONITORING_HOLDING_PERIOD})
 
 
 def _check_confidence_vs_missing_data(verdict: VerdictJSON, brief: Brief) -> CheckResult:
@@ -1209,42 +1262,66 @@ def _fix_sma_wrong_literals_prose(report_text: str, brief: Brief) -> str:
     return text
 
 
+def _extract_footer_block(text: str) -> tuple[str, str]:
+    """Pull the SEBI footer out of text. Returns (text_without_footer, footer)."""
+    matches = list(_FOOTER_BLOCK_RE.finditer(text))
+    if not matches:
+        return text, ""
+    last = matches[-1]
+    footer = last.group(0).strip()
+    without = (text[: last.start()] + text[last.end() :]).rstrip()
+    return without, footer
+
+
 def _fix_output_order_beginner_before_json(report_text: str) -> str:
-    """Move SHOULD I BUY block before the JSON fence when the model put it after."""
+    """Enforce Beginner Summary → JSON → SEBI footer when structure is salvageable.
+
+    Moves a misplaced SHOULD I BUY block before the JSON fence, and ensures the
+    SEBI disclaimer is the last block after JSON (relocating or appending it).
+    """
     fixed = _collapse_extra_json_fences(report_text)
     fences = list(_JSON_FENCE_RE.finditer(fixed))
     if not fences:
         return fixed
     fence = fences[-1]
-    if _BEGINNER_SUMMARY_NEEDLE in fixed[: fence.start()]:
-        return fixed
 
     before_json = fixed[: fence.start()].rstrip()
     json_block = fixed[fence.start() : fence.end()]
     after_json = fixed[fence.end() :].lstrip()
 
-    footer_match = re.search(
-        r"(\*Research and education, not investment advice.*?)\s*\Z",
-        after_json,
-        re.DOTALL | re.IGNORECASE,
-    )
-    footer = footer_match.group(1).strip() if footer_match else ""
-    middle = after_json[: footer_match.start()].strip() if footer_match else after_json.strip()
+    # Lift footer from either side so we can re-attach it last.
+    before_json, footer_before = _extract_footer_block(before_json)
+    after_json, footer_after = _extract_footer_block(after_json)
+    footer = footer_after or footer_before or _STANDARD_SEBI_FOOTER
 
-    beginner_idx = middle.find(_BEGINNER_SUMMARY_NEEDLE)
-    if beginner_idx < 0:
+    beginner_before = _BEGINNER_SUMMARY_NEEDLE in before_json
+    if not beginner_before:
+        beginner_idx = after_json.find(_BEGINNER_SUMMARY_NEEDLE)
+        if beginner_idx >= 0:
+            beginner_block = after_json[beginner_idx:].strip()
+            extra_after_json = after_json[:beginner_idx].strip()
+            parts = [before_json]
+            if extra_after_json:
+                parts.append(extra_after_json)
+            parts.extend([beginner_block, json_block, footer])
+            return "\n\n".join(p for p in parts if p)
+        # Cannot invent a beginner summary — leave text alone aside from
+        # collapsing fences (already done). Footer still goes last if we can.
+        if footer_after or footer_before:
+            body = after_json.strip()
+            parts = [before_json, json_block]
+            if body:
+                parts.append(body)
+            parts.append(footer)
+            return "\n\n".join(p for p in parts if p)
         return fixed
 
-    beginner_block = middle[beginner_idx:].strip()
-    extra_after_json = middle[:beginner_idx].strip()
-
-    parts = [before_json]
-    if extra_after_json:
-        parts.append(extra_after_json)
-    parts.extend([beginner_block, json_block])
-    if footer:
-        parts.append(footer)
-    return "\n\n".join(parts)
+    after_body = after_json.strip()
+    parts = [before_json, json_block]
+    if after_body:
+        parts.append(after_body)
+    parts.append(footer)
+    return "\n\n".join(p for p in parts if p)
 
 
 def _deepen_bear_valuation_inputs(
@@ -1328,7 +1405,7 @@ def _patch_verdict_json_block(report_text: str, verdict: VerdictJSON) -> str:
     if not matches:
         return report_text
     last = matches[-1]
-    new_inner = json.dumps(verdict.model_dump(mode="json"), indent=2)
+    new_inner = json.dumps(verdict.model_dump(mode="json"), indent=2, ensure_ascii=False)
     replacement = f"```json\n{new_inner}\n```"
     return report_text[: last.start()] + replacement + report_text[last.end() :]
 
@@ -1363,6 +1440,8 @@ def try_auto_fix_report(
         if "bear_adequacy_low_cyclical" in names or "bear_adequacy_high_multiple" in names:
             verdict = _deepen_bear_valuation_inputs(verdict, valuation, brief)
             valuation = compute_valuation(verdict.valuation_inputs)
+        if "holding_period_vs_thesis" in names:
+            verdict = _fix_holding_period_for_thesis(verdict)
         patched = apply_constitution_overrides(verdict, valuation, brief)
         fixed = _patch_verdict_json_block(fixed, patched)
 

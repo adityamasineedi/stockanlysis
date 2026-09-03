@@ -496,6 +496,44 @@ def test_holding_period_fails_when_thesis_under_review_but_3_5_years():
     assert any("holding_period_vs_thesis" in f for f in result.failures)
 
 
+def test_holding_period_passes_when_monitoring_horizon_mentions_3_5_conditionally():
+    """Regression: '6–12 months (monitoring); then 3–5 years if thesis confirms'
+    must not trip holding_period_vs_thesis — the monitoring horizon comes first."""
+    result = validate_report(
+        _report(
+            {
+                "thesis_status": "THESIS_UNDER_REVIEW",
+                "holding_period": (
+                    "6–12 months (monitoring); then 3–5 years if thesis confirms"
+                ),
+                "buy_range_allowed": False,
+                "buy_zone_abs": None,
+            }
+        ),
+        _brief(),
+    )
+    assert result.passed is True
+    assert not any("holding_period_vs_thesis" in f for f in result.failures)
+
+
+def test_auto_fix_holding_period_when_thesis_under_review():
+    report = _report(
+        {
+            "thesis_status": "THESIS_UNDER_REVIEW",
+            "holding_period": "3-5 years",
+            "buy_range_allowed": False,
+            "buy_zone_abs": None,
+        }
+    )
+    initial = validate_report(report, _brief())
+    assert any("holding_period_vs_thesis" in f for f in initial.failures)
+    fixed = try_auto_fix_report(report, initial, _brief())
+    assert fixed is not None
+    fixed_report, revalidated = fixed
+    assert revalidated.passed is True
+    assert "6–12 months (monitoring)" in fixed_report
+
+
 def test_fails_when_price_date_stale():
     stale_date = date(2020, 1, 1)
     result = validate_report(_report({"price_date": stale_date.isoformat()}), _brief())
@@ -1179,6 +1217,58 @@ def test_auto_fix_moves_beginner_summary_before_json():
     initial = validate_report(bad, _brief())
     assert any("output_order" in f and "before the JSON" in f for f in initial.failures)
     fixed = try_auto_fix_report(bad, initial, _brief())
+    assert fixed is not None
+    _fixed_report, revalidated = fixed
+    assert revalidated.passed is True
+
+
+def test_auto_fix_moves_footer_after_json():
+    """Footer before JSON must be relocated after the fence — live insufficient_data case."""
+    verdict = {**BASE_VERDICT}
+    bad = (
+        f"**SHOULD I BUY?**\n- **Decision:** WATCH\n\n"
+        f"*Research and education, not investment advice. Verify the numbers before "
+        f"acting, and consider a SEBI-registered investment adviser.*\n\n"
+        f"```json\n{json.dumps(verdict)}\n```\n"
+    )
+    initial = validate_report(bad, _brief())
+    assert any("output_order" in f and "footer" in f.lower() for f in initial.failures)
+    fixed = try_auto_fix_report(bad, initial, _brief())
+    assert fixed is not None
+    fixed_report, revalidated = fixed
+    assert revalidated.passed is True
+    json_end = fixed_report.rfind("```")
+    assert "Research and education" in fixed_report[json_end:]
+
+
+def test_auto_fix_user_combo_monitoring_holding_deep_buy_zone_footer():
+    """Exact live failure: monitoring holding + deep buy zone + footer before JSON.
+
+    Previously burned ~₹20 then insufficient_data because holding_period false-positive
+    blocked auto-fix of the other two salvageable checks.
+    """
+    # FV mid from BASE_VERDICT = 425; MEDIUM band 15–25% → low must be ≥ ~318.75
+    # 550/792 ≈ 30.6% deep maps here as ~295 on mid 425.
+    overrides = {
+        "thesis_status": "THESIS_UNDER_REVIEW",
+        "holding_period": "6–12 months (monitoring); then 3–5 years if thesis confirms",
+        "risk": "MEDIUM",
+        "buy_zone_abs": [295.0, 340.0],
+    }
+    verdict = {**BASE_VERDICT, **overrides}
+    report = (
+        f"**SHOULD I BUY?**\n- **Decision:** WATCH\n\n"
+        f"*Research and education, not investment advice. Verify the numbers before "
+        f"acting, and consider a SEBI-registered investment adviser.*\n\n"
+        f"```json\n{json.dumps(verdict)}\n```\n"
+    )
+    brief = _brief()
+    initial = validate_report(report, brief)
+    assert initial.passed is False
+    assert not any("holding_period_vs_thesis" in f for f in initial.failures)
+    assert any("buy_zone_discount" in f for f in initial.failures)
+    assert any("output_order" in f for f in initial.failures)
+    fixed = try_auto_fix_report(report, initial, brief)
     assert fixed is not None
     _fixed_report, revalidated = fixed
     assert revalidated.passed is True
