@@ -20,7 +20,11 @@ Write a **compact** report (~1,500–2,500 words of prose) with these sections o
 
 Apply the Quality-First constitution from the system prompt: complete
 `five_year_business_test` before any buy/add zone; withhold buy/add ranges when
-WC gap is unresolved; anti-chase when applicable.
+WC gap is unresolved; anti-chase when applicable. Weight last-3y FINANCIALS over
+an early boom: `DECELERATING` / `NEGATIVE` → UNCERTAIN, not YES, and no full
+Ideal Buy (research still allowed). Short history (~1 year) and missing latest
+figures are `DATA REVIEW` / research — never invent numbers, never auto-reject
+the business solely for incomplete data.
 
 Use placeholder tokens (`{{current_price}}`, `{{rsi14}}`, etc.) for all numbers
 Python will substitute — never hard-code price, technical, or fair-value figures.

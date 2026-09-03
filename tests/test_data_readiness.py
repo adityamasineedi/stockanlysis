@@ -166,3 +166,19 @@ def test_assess_news_ok_when_adv_metadata_present():
     news_field = next(f for f in report.fields if f.name == "news")
     assert news_field.state == "ok"
     assert not any("News/RSS unavailable" in w for w in report.warnings)
+
+
+def test_assess_allows_research_with_short_financial_history():
+    report = assess_data_readiness(_brief(financials=_financials(years=2)))
+    assert report.ready_for_llm is True
+    assert any("research proceeds" in w for w in report.warnings)
+    assert any("Ideal Buy" in w for w in report.warnings)
+    fin_field = next(f for f in report.fields if f.name == "financials")
+    assert fin_field.state == "degraded"
+    assert report.confidence_ceiling <= 5
+
+
+def test_assess_blocks_zero_year_financial_history():
+    report = assess_data_readiness(_brief(financials=_financials(years=0)))
+    assert report.ready_for_llm is False
+    assert any("usable year" in b for b in report.blockers)

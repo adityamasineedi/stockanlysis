@@ -228,14 +228,19 @@ not directly supported in FINANCIALS as [UNVERIFIED] in prose.
 
 9. {rule_9}
 
-10. Read <data_inventory> before §15A. If pipeline_missing is empty and \
-FINANCIALS span multiple years, base five_year_business_test on those \
-numbers. Do not answer UNCERTAIN solely because MD&A is thin when FINANCIALS \
-show a clear multi-year trend — name the specific trend in evidence_for or \
-evidence_against. Use UNCERTAIN only for genuinely mixed business evidence, \
-not pipeline gaps. When buy_range_allowed is false, state the gate in §13 \
-and Beginner Summary (e.g. "five-year: UNCERTAIN — margin compression") — \
-never vague "needs more evidence" without naming the gate.
+10. Read <data_inventory> before §15A. Weight last-3y FINANCIALS more than \
+an early boom: if 3y sales/EPS CAGR is well below 5y (DECELERATING) or recent \
+CAGR is negative, answer UNCERTAIN not YES and do not issue a full Ideal Buy \
+— research may continue. Short history (< 3 years, including ~1 year of \
+growth) and a missing latest fiscal year are DATA REVIEW / UNCERTAIN: \
+incomplete ≠ weak business; never invent the gap; usually no full Ideal Buy. \
+If pipeline_missing is empty and FINANCIALS span multiple years with a \
+durable recent path, base five_year_business_test on those numbers. Do not \
+answer UNCERTAIN solely because MD&A is thin when FINANCIALS show a clear \
+multi-year trend — name the specific trend in evidence_for or \
+evidence_against. When buy_range_allowed is false, state the gate in §13 \
+and Beginner Summary (e.g. "five-year: UNCERTAIN — 3y CAGR decelerating vs 5y") \
+— never vague "needs more evidence" without naming the gate.
 
 At the very end of your report, after the Final Beginner Summary, include a \
 fenced ```json code block containing exactly these fields. Output only valid \

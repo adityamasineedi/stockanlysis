@@ -230,7 +230,7 @@ Terminology: **Prefer** = clear pass · **Borderline** = soft concern · **Criti
 
 | Condition | Eligibility bias |
 |---|---|
-| `years_available` < 3 | Prefer MARGINAL (or NOT_SUITABLE if `quant_score` < 70); note "short history" |
+| `years_available` < 3 | Research allowed — prefer MARGINAL; note "short history — not a full Ideal Buy yet". Do **not** auto-reject as NOT_SUITABLE solely for short history (including ~1 year of growth). NOT_SUITABLE only if other hard fails (broken balance sheet, severe red flags). |
 | `data_completeness` < 0.60 or `data_confidence` = LOW | NOT_SUITABLE; never SUITABLE |
 | `data_completeness` 0.60–0.80 or `data_confidence` = MEDIUM | MARGINAL at best |
 | Non-empty `contradictions` | Downgrade one tier |

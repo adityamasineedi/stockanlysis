@@ -35,7 +35,19 @@ NOW = datetime.now(UTC)
 
 
 def _brief_with_eps(eps: float) -> Brief:
-    pnl = pd.DataFrame({"TTM": [eps]}, index=["EPS in Rs"])
+    # Steady ~10% sales path so the recency 5y gate does not fire; these
+    # fixtures are for anti-chase / valuation tension, not horizon policy.
+    pnl = pd.DataFrame(
+        {
+            "FY21": [100.0, eps * 0.70],
+            "FY22": [110.0, eps * 0.78],
+            "FY23": [121.0, eps * 0.86],
+            "FY24": [133.0, eps * 0.92],
+            "FY25": [146.0, eps * 0.97],
+            "TTM": [161.0, eps],
+        },
+        index=["Sales", "EPS in Rs"],
+    )
     empty = pd.DataFrame()
     fin = Financials(
         pnl=pnl,
@@ -44,7 +56,7 @@ def _brief_with_eps(eps: float) -> Brief:
         ratios=empty,
         quarterly=empty,
         basis="consolidated",
-        years_available=1,
+        years_available=5,
         source="test",
         fetched_at=NOW,
     )
@@ -220,3 +232,23 @@ def test_sync_live_price_updates_display_and_gates():
     assert synced["current_price_abs"] == 408.55
     assert synced["price_date"] == "2026-08-28"
     assert synced["anti_chase_flag"] is False
+
+
+def test_apply_overrides_keeps_yes_on_steady_recent_path():
+    verdict = _verdict(
+        current_price_abs=300.0,
+        buy_zone_abs=(250.0, 280.0),
+        buy_range_allowed=True,
+        five_year_business_test={
+            "answer": "YES",
+            "confidence": "HIGH",
+            "evidence_for": ["ROCE durable"],
+            "evidence_against": [],
+        },
+    )
+    valuation = compute_valuation(verdict.valuation_inputs)
+    updated = apply_constitution_overrides(verdict, valuation, _brief_with_eps(10.0))
+    assert updated.five_year_business_test is not None
+    assert updated.five_year_business_test.answer == "YES"
+    assert updated.buy_zone_abs == (250.0, 280.0)
+    assert updated.buy_range_allowed is True

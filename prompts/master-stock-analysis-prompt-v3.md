@@ -357,10 +357,14 @@ A good company is not automatically a long-term holding.
 
 Answer: **YES / NO / UNCERTAIN** with confidence HIGH|MEDIUM|LOW.
 
-- **Evidence for** (from context only): growth drivers, competitive position, ROCE/ROE durability, cash-flow capability, management execution, market/capacity expansion.
-- **Evidence against**: disruption, leverage/capital intensity, concentration, governance, WC stress, cyclical/commodity risk.
+Weight **last-3y FINANCIALS** more than an early boom. If 3y sales/EPS CAGR is well below 5y CAGR (`DECELERATING`) or recent CAGR is negative, answer **UNCERTAIN** (not YES) — a fade after a boom is a large loss if you buy it as a five-year compounder. Research may continue; do **not** issue a full Ideal Buy.
 
-If **NO** or **UNCERTAIN** → no buy/add range; recommend thesis research / wait.
+- **Evidence for** (from context only): growth drivers, competitive position, ROCE/ROE durability, cash-flow capability, management execution, market/capacity expansion — cite the **recent** 3y path, not only the 5y print.
+- **Evidence against**: disruption, leverage/capital intensity, concentration, governance, WC stress, cyclical/commodity risk, **deceleration** (3y << 5y).
+- **Short history** (`years_available` < 3, including ~1 year of growth): research is allowed; usually **no** full Ideal Buy. Short history is not an automatic “bad business”.
+- **Missing latest year**: `DATA REVIEW` / **UNCERTAIN**. Incomplete ≠ weak. Never invent the gap.
+
+If **NO** or **UNCERTAIN** → no buy/add range; recommend thesis research / wait. Python will also withhold the zone on deceleration, short history, or a hole in the latest fiscal year even if JSON said YES.
 
 ### 16. WHAT WOULD CHANGE THE VERDICT? *(mandatory)*
 
@@ -598,6 +602,7 @@ You supply `valuation_inputs` (an EPS estimate and a P/E multiple range for each
 
 **Constitution gates on JSON:**
 - If `five_year_business_test.answer` is `NO` or `UNCERTAIN`, set `buy_range_allowed` and `add_range_allowed` to `false`, set `buy_zone_abs` to `null` (or omit a numeric zone), and do not invent Ideal Buy / Add More zones in prose.
+- Do **not** answer YES when last-3y CAGR is well below 5y (`DECELERATING`) or recent CAGR is `NEGATIVE`. Short history (< 3 years) and missing latest fiscal figures are research / `DATA REVIEW`, not a YES and not an automatic reject.
 - If reported cash conversion is extremely weak, set `wc_gap_classification`. Only `TEMPORARY_BILLING_CYCLE` may keep `buy_range_allowed=true` / a numeric `buy_zone_abs`. `WORKING_CAPITAL_STRESS`, `DATA_OR_SCOPE_ERROR`, and `INCONCLUSIVE` require `buy_zone_abs=null`.
 - `add_range_allowed` may be `true` only when thesis would be `THESIS_CONFIRMING` or tightly `THESIS_UNDER_REVIEW` and valuation support remains valid.
 - `position_building_plan`: optional conditional 4×25% framework object (triggers + required_conditions); never imply automatic later tranches on price alone.
