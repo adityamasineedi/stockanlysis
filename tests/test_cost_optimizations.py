@@ -81,11 +81,13 @@ def test_build_user_message_omits_general_news():
 
 
 def test_auto_fix_confidence_scale():
+    # Use today so price_date_fresh cannot flake as calendar time advances.
+    today = NOW.date().isoformat()
     report = (
         "Quick verdict. Confidence: 5/7.\n\n"
         "**SHOULD I BUY?**\nNo.\n\n"
         "```json\n"
-        '{"verdict":"WATCH","current_price_abs":100,"price_date":"2026-08-26",'
+        f'{{"verdict":"WATCH","current_price_abs":100,"price_date":"{today}",'
         '"buy_zone_abs":null,'
         '"valuation_inputs":{"eps_bear":10,"eps_base":12,"eps_bull":14,'
         '"multiple_bear":[10,12],"multiple_base":[14,16],"multiple_bull":[18,20]},'
@@ -97,8 +99,8 @@ def test_auto_fix_confidence_scale():
     )
     brief = Brief(
         ticker=TICKER,
-        price=PriceData(100.0, date(2026, 8, 26), pd.DataFrame(), pd.DataFrame(), 110.0, 90.0, "yfinance", NOW),
-        technicals=Technicals(None, None, None, [], [], date(2026, 8, 26), "computed", NOW),
+        price=PriceData(100.0, NOW.date(), pd.DataFrame(), pd.DataFrame(), 110.0, 90.0, "yfinance", NOW),
+        technicals=Technicals(None, None, None, [], [], NOW.date(), "computed", NOW),
         financials=None,
         shareholding=None,
         news=None,
