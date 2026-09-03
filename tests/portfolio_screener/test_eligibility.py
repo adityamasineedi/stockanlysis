@@ -157,3 +157,33 @@ def test_compact_prescan_card_ixigo_style():
     # Compact: no long beginner essay sections
     assert "In plain English" not in html
     assert "Your scores" not in html
+
+
+def test_below_floor_card_says_rejected_not_quant_jargon():
+    """Live IXIGO: HOLDING_MONITOR_ONLY + jargon key_reason must still read as reject."""
+    result = EligibilityResult(
+        query="IXIGO",
+        ticker="IXIGO",
+        company_name="Le Travenues Technology Limited",
+        verdict="HOLDING_MONITOR_ONLY",
+        suitable_for_deep_analysis=False,
+        final_score=35.1,
+        quality_score=6.9,
+        growth_score=67.7,
+        financial_strength_score=94.9,
+        debt_equity=0.02,
+        roe=3.5,
+        ocf_pat_current=2.25,
+        net_debt_ebitda=-5.41,
+        interest_coverage=19.67,
+        key_reason="quant_score 35.12 below 3y research floor; cash PASS",
+    )
+    html = result.telegram_html()
+    assert "RESEARCH ENTRY REJECTED" in html
+    assert "MONITOR ONLY" not in html
+    assert "quant_score" not in html
+    assert "cash PASS" not in html
+    assert "Growth + financial strength good, but quality/returns weak." in html
+    assert "New research: ❌" in html
+    assert "Existing holding: 👀 Monitor" in html
+    assert "Sell signal: ❌ No" in html
