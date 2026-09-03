@@ -126,6 +126,7 @@ from stockbot.report_digest import (
 from stockbot.storage import (
     backfill_cached_verdicts,
     delete_holding,
+    get_financial_plan,
     get_holding,
     get_latest_verdict_json,
     get_risk_policy,
@@ -135,6 +136,7 @@ from stockbot.storage import (
     list_holdings,
     list_latest_analyses,
     record_sip_contribution,
+    save_financial_plan,
     save_holding,
     save_risk_policy,
     save_sip_plan,
@@ -1369,6 +1371,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/refresh SYMBOL — clear cached analysis for symbol\n"
         "/refresh backfill — recompute gates + expected_return on cached rows\n"
         "/capital 500000 max 10 — total capital and per-stock cap\n"
+        "/plan 33 to 40 spend 100000 invest 200000 — can you retire then?\n"
         "/hold BEL 25 412.50 — record a position (/hold to list)\n"
         "/track — score past /prescan calls (default)\n"
         "/track analyze — score past /analyze verdicts\n"
@@ -1865,6 +1868,153 @@ def _parse_capital_args(
             "Use <code>/capital 500000 max 10 sector 25</code>."
         )
     return (capital, cap_pct, sector_pct)
+
+
+PLAN_KEYWORDS = {"spend", "invest", "income", "expenses", "pension"}
+
+
+def _parse_plan_args(args: list[str]) -> dict[str, float] | str:
+    """<code>/plan 33 to 40 spend 100000 invest 200000 [...]</code>.
+
+    Returns the parsed fields or a message explaining what was wrong. Every
+    amount is monthly and in today's rupees except ``pension``, which is annual
+    and in target-year rupees — a pension is quoted as what it will pay.
+    """
+
+    def number(raw: str) -> float | None:
+        try:
+            value = float(raw.replace(",", "").replace("₹", "").replace("%", ""))
+        except ValueError:
+            return None
+        return value if math.isfinite(value) else None
+
+    if len(args) < 3 or args[1].lower() not in {"to", "-", "→"}:
+        return "Start with your ages, e.g. <code>/plan 33 to 40</code>."
+
+    current_age, target_age = number(args[0]), number(args[2])
+    if current_age is None or target_age is None:
+        return "Both ages must be numbers, e.g. <code>/plan 33 to 40</code>."
+    if not (0 < current_age < 120) or not (0 < target_age < 120):
+        return "Ages must be between 0 and 120."
+    if target_age <= current_age:
+        return (
+            f"The target age ({target_age:g}) must be later than your age "
+            f"({current_age:g}) — there is no horizon to plan over otherwise."
+        )
+
+    fields: dict[str, float] = {"current_age": current_age, "target_age": target_age}
+    i = 3
+    while i < len(args):
+        key = args[i].lower()
+        if key not in PLAN_KEYWORDS:
+            return (
+                f"Did not understand <code>{esc(args[i])}</code>. "
+                f"Use one of: {', '.join(sorted(PLAN_KEYWORDS))}."
+            )
+        if i + 1 >= len(args):
+            return f"<code>{key}</code> needs an amount after it."
+        value = number(args[i + 1])
+        if value is None:
+            return f"<code>{esc(args[i + 1])}</code> is not a number."
+        if value < 0:
+            return f"<code>{key}</code> cannot be negative."
+        fields[key] = value
+        i += 2
+
+    for required in ("spend", "invest"):
+        if required not in fields:
+            return (
+                f"Missing <code>{required}</code>. The plan needs both what you "
+                "want to spend and what you are investing, e.g. "
+                "<code>/plan 33 to 40 spend 100000 invest 200000</code>."
+            )
+    if fields["spend"] <= 0:
+        return "Your desired monthly spend must be greater than zero."
+    return fields
+
+
+PLAN_USAGE = (
+    "<b>/plan — can you actually retire then?</b>\n"
+    "<code>/plan 33 to 40 spend 100000 invest 200000</code>\n"
+    "  retire at 40, want ₹1,00,000/month (today's rupees), investing ₹2,00,000/month\n"
+    "<code>… income 400000 expenses 150000</code> — so it can check the gap "
+    "against what you actually have spare\n"
+    "<code>… pension 600000</code> — income per <i>year</i> that continues after you retire\n"
+    "<code>/plan</code> — show the verdict\n\n"
+    "<i>Run this before picking stocks. It costs nothing and it answers a "
+    "question no amount of stock analysis can: whether investing is even the "
+    "thing that gets you there. Capital comes from <code>/capital</code>.</i>"
+)
+
+
+def _plan_report_text(chat_id: int) -> str:
+    """The rendered verdict, or the specific reason there isn't one."""
+    from stockbot.retirement_report import build_plan_assessment, format_plan_report
+
+    plan = get_financial_plan(chat_id)
+    if plan is None:
+        return PLAN_USAGE
+
+    policy = get_risk_policy(chat_id)
+    if policy is None:
+        return (
+            "Set your capital first — <code>/capital 500000</code>.\n\n"
+            "<i>Projecting from a guessed starting amount would put a "
+            "confident number on an invented one.</i>"
+        )
+
+    if plan.years_to_target <= 0:
+        return (
+            f"Your plan targets age {plan.target_age:g} and you are "
+            f"{plan.current_age:g} — there is no horizon left to project over. "
+            "Update it with <code>/plan</code> if the target has moved."
+        )
+
+    assessment = build_plan_assessment(plan, policy.total_capital_inr)
+    if assessment is None:
+        if plan.post_retirement_income_inr:
+            return (
+                "Your post-retirement income already covers the spend you "
+                "asked for, so no corpus is needed to fund it.\n\n"
+                "<i>That makes the plan entirely dependent on that income "
+                "continuing. Worth re-running with "
+                "<code>pension 0</code> to see what happens if it stops.</i>"
+            )
+        return "Could not build a projection from those numbers. " + PLAN_USAGE
+
+    return f"{format_plan_report(assessment)}\n\n{DISCLAIMER}"
+
+
+async def handle_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reject_if_unauthorized(update):
+        return
+    if await _reject_if_analysis_busy(update):
+        return
+    _clear_awaiting_symbol(context)
+    chat_id = update.effective_chat.id
+    args = list(context.args or [])
+
+    if args:
+        parsed = await asyncio.to_thread(_parse_plan_args, args)
+        if isinstance(parsed, str):
+            await update.message.reply_text(
+                f"{parsed}\n\n{PLAN_USAGE}", parse_mode=ParseMode.HTML
+            )
+            return
+        await asyncio.to_thread(
+            save_financial_plan,
+            chat_id,
+            current_age=parsed["current_age"],
+            target_age=parsed["target_age"],
+            monthly_investment_inr=parsed["invest"],
+            desired_monthly_spend_inr=parsed["spend"],
+            monthly_income_inr=parsed.get("income"),
+            monthly_expenses_inr=parsed.get("expenses"),
+            post_retirement_income_inr=parsed.get("pension"),
+        )
+
+    text = await asyncio.to_thread(_plan_report_text, chat_id)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 async def handle_capital(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2730,6 +2880,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("health", handle_health))
     application.add_handler(CommandHandler("sip", handle_sip))
     application.add_handler(CommandHandler("capital", handle_capital))
+    application.add_handler(CommandHandler("plan", handle_plan))
     application.add_handler(CommandHandler("hold", handle_hold))
     application.add_handler(CommandHandler("workflow", handle_workflow))
     application.add_handler(CommandHandler("rank", handle_rank))

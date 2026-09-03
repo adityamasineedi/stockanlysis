@@ -35,7 +35,7 @@ def _row(ticker: str, verdict: str, entry: float | None, days_ago: int) -> dict:
 def _calls(verdict: str, entry: float, now_price: float, days: int, count: int):
     rows = [_row(f"{verdict[:3]}{i}", verdict, entry, days) for i in range(count)]
     prices = {f"{verdict[:3]}{i}".upper(): now_price for i in range(count)}
-    return score_calls(rows, prices, now=NOW)
+    return score_calls(rows, prices, now=NOW).calls
 
 
 def test_forward_return_and_none_safety():
@@ -109,12 +109,12 @@ def test_unscoreable_rows_are_dropped_not_counted_flat():
         {"ticker": "E", "verdict": "", "price_at_scan": 100, "logged_at": NOW.isoformat()},
     ]
     prices = {"A": 1.0, "B": 1.0, "C": 1.0, "E": 1.0}
-    assert score_calls(rows, prices, now=NOW) == []
+    assert score_calls(rows, prices, now=NOW).calls == []
 
     # A ticker with no current price is dropped too.
     good = [_row("D", "V", 100, 30)]
-    assert score_calls(good, {"D": None}, now=NOW) == []
-    assert len(score_calls(good, {"D": 120.0}, now=NOW)) == 1
+    assert score_calls(good, {"D": None}, now=NOW).calls == []
+    assert len(score_calls(good, {"D": 120.0}, now=NOW).calls) == 1
 
 
 def test_tier_spread_is_the_headline_and_survives_any_market():
@@ -165,3 +165,69 @@ def test_age_buckets_keep_chronological_order():
     calls += _calls("W", 100, 110, 30, 5)   # under 3 months
     labels = [b.label for b in bucket_by_age(calls)]
     assert labels == ["under 3 months", "over 12 months"]
+
+
+def test_a_hairline_spread_is_not_a_finding():
+    """The exact live failure: two medians that both display as +1.2% differ by
+    0.04, which printed as "+0.0 points — the score is discriminating"."""
+    from stockbot.calibration import TierSpread
+
+    hairline = TierSpread("AUTO", "REJECT", 1.24, 1.20, 13, 17)
+    assert hairline.spread_pct == 0.04
+    assert hairline.finding == "NO_DIFFERENCE"
+    assert hairline.discriminates is False
+
+
+def test_spread_finding_boundaries():
+    from stockbot.calibration import MIN_MATERIAL_SPREAD_PCT, TierSpread
+
+    m = MIN_MATERIAL_SPREAD_PCT
+
+    def finding(gap: float) -> str:
+        return TierSpread("A", "B", 10.0 + gap, 10.0, 6, 6).finding
+
+    assert finding(m) == "DISCRIMINATING"       # exactly the threshold counts
+    assert finding(m - 0.01) == "NO_DIFFERENCE"
+    assert finding(0.0) == "NO_DIFFERENCE"
+    assert finding(-(m - 0.01)) == "NO_DIFFERENCE"
+    assert finding(-m) == "INVERTED"            # and so does its mirror
+
+
+def test_inverted_is_reported_not_flattened():
+    """The names it passed on beating the ones it liked is a real result, not
+    an absence of one."""
+    calls = _calls("AUTO_DEEP_ANALYSIS", 100, 102, 200, 6)
+    calls += _calls("NOT_SUITABLE_FOR_3Y_RESEARCH", 100, 115, 200, 6)
+    spread = tier_spread(calls, {"AUTO_DEEP_ANALYSIS"}, {"NOT_SUITABLE_FOR_3Y_RESEARCH"})
+    assert spread.finding == "INVERTED"
+    assert spread.discriminates is False
+
+
+def test_calls_younger_than_the_minimum_are_pending_not_scored():
+    """A same-day call measures that morning's market, not the verdict. The
+    live report scored 57 such rows and printed "~0d" against every bucket."""
+    from stockbot.calibration import MIN_DAYS_TO_SCORE
+
+    young = score_calls([_row("A", "V", 100, MIN_DAYS_TO_SCORE - 1)], {"A": 120.0}, now=NOW)
+    assert young.calls == []
+    assert young.too_recent == 1
+    assert young.unscoreable == 0  # pending, not broken
+
+    old = score_calls([_row("A", "V", 100, MIN_DAYS_TO_SCORE)], {"A": 120.0}, now=NOW)
+    assert len(old.calls) == 1
+    assert old.too_recent == 0
+
+
+def test_non_judgment_verdicts_are_never_scored():
+    """DATA_UNAVAILABLE_RETRY means the fetch failed and MODEL_NOT_APPLICABLE
+    that no model fits — neither is an opinion that can be right or wrong."""
+    from stockbot.calibration import NON_JUDGMENT_VERDICTS
+
+    rows = [_row(f"X{i}", verdict, 100, 200) for i, verdict in enumerate(NON_JUDGMENT_VERDICTS)]
+    rows.append(_row("KEEP", "SECTOR_SPECIFIC_REVIEW", 100, 200))
+    prices = {f"X{i}": 150.0 for i in range(len(NON_JUDGMENT_VERDICTS))} | {"KEEP": 150.0}
+
+    result = score_calls(rows, prices, now=NOW)
+    assert result.not_a_judgment == len(NON_JUDGMENT_VERDICTS)
+    # A routing decision is still a decision, so it stays.
+    assert [c.label for c in result.calls] == ["SECTOR_SPECIFIC_REVIEW"]

@@ -26,12 +26,31 @@ import math
 import statistics
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 # Below this, report the count and decline to summarise.
 MIN_SAMPLE = 5
 
 # Annualizing anything shorter turns noise into an impressive-looking rate.
 MIN_DAYS_TO_ANNUALIZE = 180
+
+# A tier spread inside this band is noise between two medians, not evidence
+# that the ranking works. Without it a 0.04-point gap reported success while
+# the display rounded that same gap to "+0.0 points".
+MIN_MATERIAL_SPREAD_PCT = 1.0
+
+# A verdict needs time to be right or wrong about a business. Scoring a
+# same-day call measures that morning's market, not the judgement — the live
+# report showed "~0d" against every bucket and presented it as a track record.
+MIN_DAYS_TO_SCORE = 30
+
+# Verdicts that record "we could not assess", not "we assessed and concluded".
+# They carry no opinion about a business, so they cannot be right or wrong and
+# do not belong in a report about judgement quality. Routing decisions
+# (SECTOR_SPECIFIC_REVIEW, REVIEW_EXCEPTION) are judgements and stay.
+NON_JUDGMENT_VERDICTS = frozenset({"DATA_UNAVAILABLE_RETRY", "MODEL_NOT_APPLICABLE"})
+
+SpreadFinding = Literal["DISCRIMINATING", "NO_DIFFERENCE", "INVERTED"]
 
 # Calls of different ages are not the same measurement, so they are compared
 # within a band rather than pooled.
@@ -137,6 +156,21 @@ class ScoredCall:
         return age_band(self.days)
 
 
+@dataclass(frozen=True)
+class ScoringResult:
+    """Scored calls, plus why the rest were left out.
+
+    The counts are not bookkeeping: a report that silently shrinks its sample
+    looks as confident on twelve rows as on twelve hundred. Surfacing them lets
+    the reader see that most history is pending rather than damning.
+    """
+
+    calls: list[ScoredCall]
+    too_recent: int
+    not_a_judgment: int
+    unscoreable: int
+
+
 def score_calls(
     rows: list[dict],
     current_prices: dict[str, float | None],
@@ -145,28 +179,55 @@ def score_calls(
     entry_key: str = "price_at_scan",
     time_key: str = "logged_at",
     now: datetime | None = None,
-) -> list[ScoredCall]:
-    """Resolve each logged call into a return, dropping what cannot be scored.
+) -> ScoringResult:
+    """Resolve each logged call into a return, saying what it had to leave out.
 
-    A row without an entry price, without a usable timestamp, or whose ticker
-    has no current price is omitted rather than counted as flat — a call with
-    an unknown outcome is not a zero-return call, and treating it as one would
-    quietly drag every median toward zero.
+    Rows are dropped, never counted as flat: a call with an unknown outcome is
+    not a zero-return call, and treating it as one would quietly drag every
+    median toward zero. Three separate reasons, counted separately:
+
+    - **not a judgement** — the verdict records that the bot could not assess
+      (see NON_JUDGMENT_VERDICTS); it cannot be right or wrong.
+    - **too recent** — younger than MIN_DAYS_TO_SCORE, so the number measures
+      this week's market rather than the verdict.
+    - **unscoreable** — no entry price, no usable timestamp, or no current
+      price for that ticker.
     """
     scored: list[ScoredCall] = []
+    too_recent = 0
+    not_a_judgment = 0
+    unscoreable = 0
+
     for row in rows:
         ticker = str(row.get("ticker") or "").strip().upper()
         label = str(row.get(label_key) or "").strip()
         if not ticker or not label:
+            unscoreable += 1
+            continue
+        if label.upper() in NON_JUDGMENT_VERDICTS:
+            not_a_judgment += 1
             continue
         days = days_since(row.get(time_key), now)
         if days is None:
+            unscoreable += 1
             continue
         change = forward_return_pct(row.get(entry_key), current_prices.get(ticker))
         if change is None:
+            unscoreable += 1
+            continue
+        # Age is checked last so a too-recent row is reported as pending rather
+        # than lumped in with rows that can never be scored at all.
+        if days < MIN_DAYS_TO_SCORE:
+            too_recent += 1
             continue
         scored.append(ScoredCall(ticker=ticker, label=label, return_pct=change, days=days))
-    return scored
+
+    return ScoringResult(
+        calls=scored,
+        too_recent=too_recent,
+        not_a_judgment=not_a_judgment,
+        unscoreable=unscoreable,
+    )
 
 
 def build_bucket(label: str, calls: list[ScoredCall]) -> CalibrationBucket:
@@ -226,8 +287,24 @@ class TierSpread:
         return round(self.positive_median_pct - self.negative_median_pct, 2)
 
     @property
+    def finding(self) -> SpreadFinding:
+        """Three states, because "positive" is not the same as "meaningful".
+
+        A bare ``spread_pct > 0`` called a 0.04-point gap success, and the
+        renderer's ``:+.1f`` printed that same gap as "+0.0 points" — the
+        sentence contradicted its own number. Anything inside
+        ±MIN_MATERIAL_SPREAD_PCT is noise between two medians, not evidence of
+        ranking skill.
+        """
+        if self.spread_pct >= MIN_MATERIAL_SPREAD_PCT:
+            return "DISCRIMINATING"
+        if self.spread_pct <= -MIN_MATERIAL_SPREAD_PCT:
+            return "INVERTED"
+        return "NO_DIFFERENCE"
+
+    @property
     def discriminates(self) -> bool:
-        return self.spread_pct > 0
+        return self.finding == "DISCRIMINATING"
 
 
 def tier_spread(
