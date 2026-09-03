@@ -21,6 +21,13 @@ from stockbot.models import (
 from stockbot.validate import try_auto_fix_report, validate_report
 
 NOW = datetime.now(UTC)
+# Fixtures that go through validate_report must date their price to *today*.
+# A hardcoded date silently rots: price_date_fresh fails once it is more than
+# five trading days old, and that failure is not auto-fixable, so
+# try_auto_fix_report returns None and any "auto-fix succeeded" assertion
+# breaks — on a clock, not on a commit. tests/test_validate.py already uses
+# this idiom for the same reason.
+TODAY = NOW.date()
 TICKER = TickerInfo(symbol="T", exchange="NSE", company_name="Test", isin=None)
 
 
@@ -85,7 +92,8 @@ def test_auto_fix_confidence_scale():
         "Quick verdict. Confidence: 5/7.\n\n"
         "**SHOULD I BUY?**\nNo.\n\n"
         "```json\n"
-        '{"verdict":"WATCH","current_price_abs":100,"price_date":"2026-08-26",'
+        '{"verdict":"WATCH","current_price_abs":100,'
+        f'"price_date":"{TODAY.isoformat()}",'
         '"buy_zone_abs":null,'
         '"valuation_inputs":{"eps_bear":10,"eps_base":12,"eps_bull":14,'
         '"multiple_bear":[10,12],"multiple_base":[14,16],"multiple_bull":[18,20]},'
@@ -97,8 +105,8 @@ def test_auto_fix_confidence_scale():
     )
     brief = Brief(
         ticker=TICKER,
-        price=PriceData(100.0, date(2026, 8, 26), pd.DataFrame(), pd.DataFrame(), 110.0, 90.0, "yfinance", NOW),
-        technicals=Technicals(None, None, None, [], [], date(2026, 8, 26), "computed", NOW),
+        price=PriceData(100.0, TODAY, pd.DataFrame(), pd.DataFrame(), 110.0, 90.0, "yfinance", NOW),
+        technicals=Technicals(None, None, None, [], [], TODAY, "computed", NOW),
         financials=None,
         shareholding=None,
         news=None,
