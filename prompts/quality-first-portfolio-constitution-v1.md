@@ -89,11 +89,33 @@ A stock must pass the **sector-appropriate** model before staged buy/add plans:
 
 ## Five-year business test (compulsory before buy/add ranges)
 
+Weight the **last ~3 years** more than an early boom. A business that compounded
+hard in years 1–5 and then faded in year 6 is not a YES — that path is a large
+capital loss if you buy the fade. Python enforces this from FINANCIALS CAGRs
+(3y vs 5y, same `DECELERATING` / `NEGATIVE` labels as prescan G).
+
 ```text
-If five_year_business_test.answer != YES:
+If five_year_business_test.answer is NO:
   buy_range_allowed = false
   add_range_allowed = false
   next_action = THESIS_RESEARCH_REQUIRED
+
+If 3y CAGR is well below 5y CAGR (DECELERATING) or recent CAGR is NEGATIVE:
+  answer = UNCERTAIN (never upgrade to YES)
+  confidence = LOW
+  buy_range_allowed = false   # withhold full Ideal Buy; research still allowed
+  add_range_allowed = false
+
+If years_available < 3 (including ~1 year of growth):
+  research is allowed
+  do not issue a full Ideal Buy / Add More zone
+  do not auto-reject the name as a bad business solely for short history
+
+If the latest fiscal sales/EPS are missing:
+  DATA REVIEW / UNCERTAIN
+  never invent the missing year
+  incomplete data ≠ weak business
+  no full Ideal Buy until the latest year is present
 ```
 
 ## Conditional phased capital (illustrative framework — not auto-execution)

@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
+from stockbot.five_year_policy import apply_five_year_horizon_to_verdict
 from stockbot.models import Brief
 from stockbot.trade_policy import (
     anti_chase_pe_threshold,
@@ -269,4 +270,7 @@ def apply_constitution_overrides(
         updates["buy_range_allowed"] = False
         updates["add_range_allowed"] = False
         updates["buy_zone_abs"] = None
-    return verdict.model_copy(update=updates)
+    patched = verdict.model_copy(update=updates)
+    # Recency-weighted 5y path: boom-then-fade, short history, and holes in
+    # the latest year cannot keep a YES + Ideal Buy. Research stays allowed.
+    return apply_five_year_horizon_to_verdict(patched, brief)

@@ -24,6 +24,9 @@ from stockbot.trade_policy import business_context_blocks_preflight
 logger = logging.getLogger(__name__)
 
 CHARS_PER_TOKEN_ESTIMATE = 4
+# LLM research may run with a single usable year. A full Ideal Buy still
+# needs MIN_FINANCIAL_YEARS of history (enforced in five_year_policy).
+MIN_RESEARCH_YEARS = 1
 MIN_FINANCIAL_YEARS = 3
 PREFERRED_FINANCIAL_YEARS = 5
 
@@ -374,6 +377,8 @@ def _confidence_ceiling(financials: Financials | None, ar_sections: dict[str, st
     ceiling = 10
     if financials is None:
         ceiling = min(ceiling, 4)
+    elif financials.years_available < MIN_FINANCIAL_YEARS:
+        ceiling = min(ceiling, 5)
     if not ar_sections:
         ceiling = min(ceiling, 5)
     return ceiling
@@ -416,10 +421,10 @@ def assess_data_readiness(
                 attempts=tuple(a for a in attempts if a.field == "financials"),
             )
         )
-    elif fin.years_available < MIN_FINANCIAL_YEARS:
+    elif fin.years_available < MIN_RESEARCH_YEARS:
         blockers.append(
-            f"Only {fin.years_available} fiscal years available — need ≥{MIN_FINANCIAL_YEARS} "
-            f"for institution-grade analysis."
+            f"Only {fin.years_available} fiscal years available — need ≥{MIN_RESEARCH_YEARS} "
+            "usable year to research the name."
         )
         fields.append(
             FieldStatus(
@@ -429,6 +434,22 @@ def assess_data_readiness(
                 chain=FALLBACK_CHAINS["financials"],
                 attempts=tuple(a for a in attempts if a.field == "financials"),
                 note=f"{fin.years_available} years",
+            )
+        )
+    elif fin.years_available < MIN_FINANCIAL_YEARS:
+        warnings.append(
+            f"Only {fin.years_available} fiscal year(s) available — research proceeds; "
+            f"a full Ideal Buy needs ≥{MIN_FINANCIAL_YEARS} years and a durable recent path. "
+            "Short history is not an automatic reject."
+        )
+        fields.append(
+            FieldStatus(
+                name="financials",
+                state="degraded",
+                source=fin.source,
+                chain=FALLBACK_CHAINS["financials"],
+                attempts=tuple(a for a in attempts if a.field == "financials"),
+                note=f"{fin.years_available} years — research only",
             )
         )
     else:
@@ -609,13 +630,17 @@ def assess_data_readiness(
             )
         )
 
+    ceiling = brief.confidence_ceiling
+    if fin is not None and fin.years_available < MIN_FINANCIAL_YEARS:
+        ceiling = min(ceiling, 5)
+
     return DataReadinessReport(
         symbol=brief.ticker.symbol,
         ready_for_llm=not blockers,
         blockers=tuple(blockers),
         warnings=tuple(warnings),
         fields=tuple(fields),
-        confidence_ceiling=brief.confidence_ceiling,
+        confidence_ceiling=ceiling,
     )
 
 
