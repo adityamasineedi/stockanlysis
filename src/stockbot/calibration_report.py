@@ -49,6 +49,8 @@ class CalibrationReport:
     spread: TierSpread | None
     by_label: list[CalibrationBucket]
     by_age: list[CalibrationBucket]
+    too_recent: int = 0
+    not_a_judgment: int = 0
 
     @property
     def has_enough_history(self) -> bool:
@@ -130,7 +132,8 @@ def _build(
         str(r.get("ticker") or "").strip().upper() for r in rows if r.get("ticker")
     }
     resolved = prices if prices is not None else _current_prices(tickers)
-    calls: list[ScoredCall] = score_calls(rows, resolved, now=now)
+    result = score_calls(rows, resolved, now=now)
+    calls: list[ScoredCall] = result.calls
     return CalibrationReport(
         source=source,
         total_rows=len(rows),
@@ -138,6 +141,8 @@ def _build(
         spread=tier_spread(calls, positive, negative),
         by_label=bucket_by_label(calls),
         by_age=bucket_by_age(calls),
+        too_recent=result.too_recent,
+        not_a_judgment=result.not_a_judgment,
     )
 
 
@@ -159,6 +164,20 @@ def build_analyze_calibration(
     )
 
 
+def _counts_line(report: CalibrationReport) -> str:
+    """Logged vs scored, and where the difference went.
+
+    Without this the sample silently shrinks and a report built on twelve rows
+    reads as confidently as one built on twelve hundred.
+    """
+    parts = [f"{report.total_rows} logged", f"{report.scored} scoreable"]
+    if report.too_recent:
+        parts.append(f"{report.too_recent} too recent to score")
+    if report.not_a_judgment:
+        parts.append(f"{report.not_a_judgment} not judgements")
+    return " · ".join(parts) + "."
+
+
 def _pct(value: float | None) -> str:
     return "—" if value is None else f"{value:+.1f}%"
 
@@ -173,21 +192,24 @@ def format_calibration_report(report: CalibrationReport) -> str:
     if not report.has_enough_history:
         return (
             f"{title}\n"
-            f"{report.scored} scoreable call(s) from {report.total_rows} logged.\n\n"
+            f"{_counts_line(report)}\n\n"
             f"Not enough history yet — at least {MIN_SAMPLE} are needed before any "
             "median is worth printing. This fills in on its own as you keep "
             "using the bot; nothing to do."
         )
 
-    lines = [title, f"{report.scored} scoreable of {report.total_rows} logged.", ""]
+    lines = [title, _counts_line(report), ""]
 
     if report.spread is not None:
         spread = report.spread
-        verdict = (
-            "the score is discriminating"
-            if spread.discriminates
-            else "<b>the score is not discriminating</b>"
-        )
+        # Three states, not two: a gap smaller than the materiality threshold
+        # is noise between medians and must not be reported as either success
+        # or failure.
+        verdict = {
+            "DISCRIMINATING": "the score is discriminating",
+            "NO_DIFFERENCE": "<b>no discernible difference between the tiers</b>",
+            "INVERTED": "<b>inverted — the names it passed on did better</b>",
+        }[spread.finding]
         lines.extend(
             [
                 "<b>Does the ranking work?</b>",

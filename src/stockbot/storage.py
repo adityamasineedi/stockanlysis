@@ -123,6 +123,27 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    # The goal and the cashflow behind it, kept apart from risk_policy on
+    # purpose: that table is the holder's *limits*, this one is where they are
+    # trying to get to. Separate tables also mean no migration — a new table is
+    # created correctly by CREATE TABLE IF NOT EXISTS, whereas adding columns to
+    # risk_policy would be silently skipped on the deployed database and then
+    # fail on every read.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS financial_plan (
+            chat_id INTEGER PRIMARY KEY,
+            current_age REAL NOT NULL,
+            target_age REAL NOT NULL,
+            monthly_income_inr REAL,
+            monthly_expenses_inr REAL,
+            monthly_investment_inr REAL NOT NULL,
+            desired_monthly_spend_inr REAL NOT NULL,
+            post_retirement_income_inr REAL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
     # Current state, so rows are updated in place — unlike sip_contributions,
     # which is the append-only historical record and stays that way.
     conn.execute(
@@ -602,6 +623,43 @@ class RiskPolicy:
 
 
 @dataclass(frozen=True)
+class FinancialPlan:
+    """Where the holder is trying to get to, and what they are putting in.
+
+    Amounts in today's rupees; ``post_retirement_income_inr`` is annual and
+    already in target-year terms, because a pension or rental figure is quoted
+    as what it will actually pay.
+    """
+
+    chat_id: int
+    current_age: float
+    target_age: float
+    monthly_income_inr: float | None
+    monthly_expenses_inr: float | None
+    monthly_investment_inr: float
+    desired_monthly_spend_inr: float
+    post_retirement_income_inr: float | None
+    updated_at: datetime
+
+    @property
+    def years_to_target(self) -> int:
+        """Whole years left. Zero once the target age is reached."""
+        return max(int(self.target_age - self.current_age), 0)
+
+    @property
+    def monthly_surplus_inr(self) -> float | None:
+        """Income less expenses, or None when either is undeclared.
+
+        Not the same as ``monthly_investment_inr``: the gap between what is
+        left over and what is actually invested is the headroom the savings
+        lever has to work with.
+        """
+        if self.monthly_income_inr is None or self.monthly_expenses_inr is None:
+            return None
+        return round(self.monthly_income_inr - self.monthly_expenses_inr, 2)
+
+
+@dataclass(frozen=True)
 class Holding:
     chat_id: int
     ticker: str
@@ -670,6 +728,79 @@ def get_risk_policy(chat_id: int) -> RiskPolicy | None:
             if row["emergency_fund_months"] is not None
             else None
         ),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def save_financial_plan(
+    chat_id: int,
+    *,
+    current_age: float,
+    target_age: float,
+    monthly_investment_inr: float,
+    desired_monthly_spend_inr: float,
+    monthly_income_inr: float | None = None,
+    monthly_expenses_inr: float | None = None,
+    post_retirement_income_inr: float | None = None,
+) -> FinancialPlan:
+    """Create or update this chat's plan."""
+    now = datetime.now(UTC).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO financial_plan
+                (chat_id, current_age, target_age, monthly_income_inr,
+                 monthly_expenses_inr, monthly_investment_inr,
+                 desired_monthly_spend_inr, post_retirement_income_inr, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                current_age = excluded.current_age,
+                target_age = excluded.target_age,
+                monthly_income_inr = excluded.monthly_income_inr,
+                monthly_expenses_inr = excluded.monthly_expenses_inr,
+                monthly_investment_inr = excluded.monthly_investment_inr,
+                desired_monthly_spend_inr = excluded.desired_monthly_spend_inr,
+                post_retirement_income_inr = excluded.post_retirement_income_inr,
+                updated_at = excluded.updated_at
+            """,
+            (
+                chat_id,
+                float(current_age),
+                float(target_age),
+                monthly_income_inr,
+                monthly_expenses_inr,
+                float(monthly_investment_inr),
+                float(desired_monthly_spend_inr),
+                post_retirement_income_inr,
+                now,
+            ),
+        )
+    plan = get_financial_plan(chat_id)
+    assert plan is not None  # just written
+    return plan
+
+
+def get_financial_plan(chat_id: int) -> FinancialPlan | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM financial_plan WHERE chat_id = ?", (chat_id,)
+        ).fetchone()
+    if row is None:
+        return None
+
+    def optional(key: str) -> float | None:
+        value = row[key]
+        return float(value) if value is not None else None
+
+    return FinancialPlan(
+        chat_id=int(row["chat_id"]),
+        current_age=float(row["current_age"]),
+        target_age=float(row["target_age"]),
+        monthly_income_inr=optional("monthly_income_inr"),
+        monthly_expenses_inr=optional("monthly_expenses_inr"),
+        monthly_investment_inr=float(row["monthly_investment_inr"]),
+        desired_monthly_spend_inr=float(row["desired_monthly_spend_inr"]),
+        post_retirement_income_inr=optional("post_retirement_income_inr"),
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
 

@@ -1,4 +1,4 @@
-"""Risk policy and holdings persistence."""
+"""Risk policy, financial plan and holdings persistence."""
 
 from __future__ import annotations
 
@@ -33,6 +33,84 @@ def test_policy_updates_in_place(store):
     assert policy.total_capital_inr == 750_000.0
     assert policy.max_position_pct == 8.0
     assert policy.emergency_fund_months == 6.0
+
+
+def test_plan_round_trip_and_optional_fields(store):
+    plan = store.save_financial_plan(
+        42,
+        current_age=33,
+        target_age=40,
+        monthly_investment_inr=200_000,
+        desired_monthly_spend_inr=100_000,
+    )
+    assert plan.years_to_target == 7
+    assert plan.desired_monthly_spend_inr == 100_000.0
+    # Undeclared stays undeclared rather than defaulting to zero, which would
+    # read as "earns nothing after retiring".
+    assert plan.monthly_income_inr is None
+    assert plan.post_retirement_income_inr is None
+    assert plan.monthly_surplus_inr is None
+
+    assert store.get_financial_plan(42) == plan
+    assert store.get_financial_plan(999) is None
+
+
+def test_plan_updates_in_place(store):
+    store.save_financial_plan(
+        42,
+        current_age=33,
+        target_age=40,
+        monthly_investment_inr=200_000,
+        desired_monthly_spend_inr=100_000,
+    )
+    store.save_financial_plan(
+        42,
+        current_age=34,
+        target_age=45,
+        monthly_investment_inr=250_000,
+        desired_monthly_spend_inr=120_000,
+        monthly_income_inr=400_000,
+        monthly_expenses_inr=150_000,
+        post_retirement_income_inr=600_000,
+    )
+
+    plan = store.get_financial_plan(42)
+    assert plan.years_to_target == 11
+    assert plan.monthly_investment_inr == 250_000.0
+    assert plan.post_retirement_income_inr == 600_000.0
+    # Surplus is what is left over, not what is invested — the gap between the
+    # two is the headroom the savings lever has.
+    assert plan.monthly_surplus_inr == 250_000.0
+
+
+def test_reaching_the_target_age_leaves_no_negative_horizon(store):
+    """Age past target must not produce a negative number of years, which would
+    silently invert every projection."""
+    plan = store.save_financial_plan(
+        42,
+        current_age=45,
+        target_age=40,
+        monthly_investment_inr=200_000,
+        desired_monthly_spend_inr=100_000,
+    )
+    assert plan.years_to_target == 0
+
+
+def test_plan_and_policy_are_separate_records(store):
+    """Two tables on purpose: limits in one, the goal in the other. Declaring
+    one must not imply the other."""
+    store.save_risk_policy(42, 5_000_000)
+    assert store.get_financial_plan(42) is None
+
+    store.save_financial_plan(
+        7,
+        current_age=33,
+        target_age=40,
+        monthly_investment_inr=200_000,
+        desired_monthly_spend_inr=100_000,
+    )
+    assert store.get_risk_policy(7) is None
+    assert store.get_financial_plan(42) is None  # per chat
 
 
 def test_holding_round_trip_and_cost_basis(store):
