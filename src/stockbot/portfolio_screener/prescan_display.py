@@ -152,7 +152,7 @@ NEXT_ACTION_LABELS: dict[str, str] = {
 ENTRY_HEADLINES: dict[str, tuple[str, str]] = {
     "AUTO_DEEP_ANALYSIS": ("🟢", "RESEARCH ENTRY OPEN"),
     "SECTOR_SPECIFIC_REVIEW": ("🔎", "SECTOR REVIEW BEFORE RESEARCH"),
-    "HOLDING_MONITOR_ONLY": ("👀", "MONITOR ONLY — NO NEW RESEARCH"),
+    "HOLDING_MONITOR_ONLY": ("🔴", "RESEARCH ENTRY REJECTED"),
     "NOT_SUITABLE_FOR_3Y_RESEARCH": ("🔴", "RESEARCH ENTRY REJECTED"),
     "DATA_UNAVAILABLE_RETRY": ("📭", "DATA MISSING — RETRY"),
 }
@@ -294,6 +294,25 @@ def format_action_lines(*, verdict: str, suitable_for_deep_analysis: bool) -> li
     ]
 
 
+_JARGON_WHY_MARKERS = (
+    "quant_score",
+    "quant ",
+    "research floor",
+    "cash pass",
+    "cash watch",
+    "cash critical",
+    "auto-eligible",
+    "3y research",
+    "deep spend",
+    "hard_exclude",
+)
+
+
+def _is_jargon_why(reason: str) -> bool:
+    low = reason.lower()
+    return any(marker in low for marker in _JARGON_WHY_MARKERS)
+
+
 def synthesize_why(
     *,
     key_reason: str,
@@ -301,11 +320,6 @@ def synthesize_why(
     growth: float | None,
     strength: float | None,
 ) -> str:
-    reason = (key_reason or "").strip()
-    if reason:
-        if len(reason) > 140:
-            return reason[:137] + "…"
-        return reason
     strong: list[str] = []
     weak: list[str] = []
     for label, score in (
@@ -323,9 +337,15 @@ def synthesize_why(
         return f"{' + '.join(strong).capitalize()} good, but {'/'.join(weak)} weak."
     if weak:
         return f"{'/'.join(weak).capitalize()} weak for a 3-year compounder screen."
+
+    reason = (key_reason or "").strip()
+    if reason and not _is_jargon_why(reason):
+        if len(reason) > 140:
+            return reason[:137] + "…"
+        return reason
     if strong:
         return f"{' + '.join(strong).capitalize()} look fine — see gate above."
-    return "See score and gate above."
+    return "Score is below the 3-year research bar."
 
 
 def format_quality_growth_strength(
