@@ -801,9 +801,11 @@ def build_pick_messages(
             format_daily_tips_html,
             select_daily_tips,
         )
+        from stockbot.product_universe import load_product_universe
 
-        tips = select_daily_tips(limit=2, pick_rows=matched)
-        return [format_daily_tips_html(tips, limit=2)], None
+        uni = load_product_universe()
+        tips = select_daily_tips(limit=2, pick_rows=matched, universe=uni)
+        return [format_daily_tips_html(tips, limit=2, universe=uni)], None
     return format_pick_telegram_chunks(matched), None
 
 

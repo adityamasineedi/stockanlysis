@@ -220,21 +220,35 @@ def select_daily_tips(
 ) -> list[dict[str, Any]]:
     """Curate ≤``limit`` tip names: analyze_now first, then if_interested.
 
-    Prefers unified-universe symbols; falls back to any soft pick if needed.
+    Universe symbols sort ahead within each tier, but off-list soft picks
+    (prescan outside watchlist∪SIP) are never dropped — same funnel as /progress.
     """
     uni = universe or load_product_universe()
     uni_set = set(uni.tickers)
     picks = pick_rows if pick_rows is not None else query_pick_outcomes(load_prescan_outcomes())
-    in_uni = [r for r in picks if str(r.get("ticker") or "").upper() in uni_set]
-    pool = in_uni or picks
-    now = [r for r in pool if pick_tier(r) == "analyze_now"]
-    later = [r for r in pool if pick_tier(r) == "analyze_if_interested"]
-    ordered = now + later
+
+    def _tier_ordered(tier: str) -> list[dict[str, Any]]:
+        tier_rows = [r for r in picks if pick_tier(r) == tier]
+        in_uni = [
+            r for r in tier_rows if str(r.get("ticker") or "").upper() in uni_set
+        ]
+        off = [
+            r for r in tier_rows if str(r.get("ticker") or "").upper() not in uni_set
+        ]
+        return in_uni + off
+
+    ordered = _tier_ordered("analyze_now") + _tier_ordered("analyze_if_interested")
     return ordered[: max(1, limit)]
 
 
-def format_daily_tips_html(rows: list[dict[str, Any]], *, limit: int = 2) -> str:
+def format_daily_tips_html(
+    rows: list[dict[str, Any]],
+    *,
+    limit: int = 2,
+    universe: ProductUniverse | None = None,
+) -> str:
     """Beginner-friendly HTML for today's 1–2 tips."""
+    uni_set = set((universe or load_product_universe()).tickers)
     tips = rows[: max(1, limit)]
     lines = [
         "<b>🎯 Today’s tips (max 2)</b>",
@@ -254,7 +268,8 @@ def format_daily_tips_html(rows: list[dict[str, Any]], *, limit: int = 2) -> str
         return "\n".join(lines)
 
     for i, row in enumerate(tips, start=1):
-        ticker = html_escape(str(row.get("ticker") or "?"))
+        raw_ticker = str(row.get("ticker") or "?")
+        ticker = html_escape(raw_ticker)
         tier = pick_tier(row)
         quant = row.get("quant_score")
         score = f"{float(quant):.0f}" if isinstance(quant, (int, float)) else "?"
@@ -262,8 +277,13 @@ def format_daily_tips_html(rows: list[dict[str, Any]], *, limit: int = 2) -> str
             cue = "✅ Run /analyze now"
         else:
             cue = "🔎 Worth /analyze if interested"
-        lines.append(f"{i}. <b>{ticker}</b> — quant {score} · {cue}")
-        lines.append(f"   Next: <code>/analyze lite {ticker}</code> (cheaper) or <code>/analyze {ticker}</code>")
+        off = raw_ticker.upper() not in uni_set
+        off_bit = " · off-list" if off else ""
+        lines.append(f"{i}. <b>{ticker}</b> — quant {score} · {cue}{off_bit}")
+        lines.append(
+            f"   Next: <code>/analyze lite {ticker}</code> (cheaper) or "
+            f"<code>/analyze {ticker}</code>"
+        )
 
     lines.extend(
         [

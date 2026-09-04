@@ -19,42 +19,65 @@ from stockbot.product_universe import format_universe_summary, load_product_univ
 
 
 def _pick_snapshot() -> dict[str, Any]:
+    uni = load_product_universe()
+    uni_set = set(uni.tickers)
     rows = load_prescan_outcomes()
     picks = query_pick_outcomes(rows)
     analyze_now = [r for r in picks if pick_tier(r) == "analyze_now"]
     if_interested = [r for r in picks if pick_tier(r) == "analyze_if_interested"]
+    off_list = [
+        r
+        for r in picks
+        if str(r.get("ticker") or "").strip().upper() not in uni_set
+    ]
     return {
         "total_logged": len(rows),
         "pick_count": len(picks),
+        "off_list_count": len(off_list),
         "analyze_now": analyze_now[:3],
         "if_interested": if_interested[:3],
+        "universe_tickers": uni_set,
     }
 
 
 def _format_pick_lines(snapshot: dict[str, Any]) -> list[str]:
     lines: list[str] = []
+    uni_set: set[str] = snapshot.get("universe_tickers") or set()
     if snapshot["total_logged"] == 0:
         lines.append(
-            "No prescan history yet — run <code>/prescan SYMBOL</code> on your watchlist first."
+            "No prescan history yet — run <code>/prescan SYMBOL</code> "
+            "(watchlist or any NSE name you care about)."
         )
         return lines
     lines.append(
         f"From {snapshot['pick_count']} soft pick(s) in {snapshot['total_logged']} logged name(s):"
     )
+    if snapshot["off_list_count"]:
+        lines.append(
+            f"📌 {snapshot['off_list_count']} soft pick(s) are off watchlist/SIP — "
+            "still tippable; add to watchlist when you want them in the 12–18 book."
+        )
+
+    def _tickers(rows: list[dict[str, Any]]) -> str:
+        bits: list[str] = []
+        for r in rows:
+            raw = str(r.get("ticker") or "?").strip().upper()
+            label = html_escape(raw or "?")
+            if raw and raw not in uni_set:
+                label = f"{label} (off-list)"
+            bits.append(label)
+        return ", ".join(bits)
+
     if snapshot["analyze_now"]:
-        tickers = ", ".join(
-            html_escape(str(r.get("ticker") or "?")) for r in snapshot["analyze_now"]
-        )
-        lines.append(f"• Run /analyze first: {tickers}")
+        lines.append(f"• Run /analyze first: {_tickers(snapshot['analyze_now'])}")
     if snapshot["if_interested"]:
-        tickers = ", ".join(
-            html_escape(str(r.get("ticker") or "?")) for r in snapshot["if_interested"]
+        lines.append(
+            f"• Worth /analyze if interested: {_tickers(snapshot['if_interested'])}"
         )
-        lines.append(f"• Worth /analyze if interested: {tickers}")
     if not snapshot["analyze_now"] and not snapshot["if_interested"]:
         lines.append(
-            "• No names pass <code>/pick</code> right now — widen watchlist or "
-            "prescan more."
+            "• No names pass <code>/pick</code> right now — "
+            "prescan more names (on or off the watchlist)."
         )
     return lines
 
@@ -70,21 +93,22 @@ def format_daily_workflow() -> str:
         format_universe_summary(uni),
         "",
         "<b>Step 1 — Refresh the list (weekly or when stale)</b>",
-        "<code>/prescan SYMBOL</code> on new universe names, or",
+        "<code>/prescan SYMBOL</code> on watchlist names <b>or any NSE name</b>, or",
         "<code>/sip prescan</code> for the full SIP + watchlist batch (quant-only).",
+        "Off-list soft picks still appear in tips and <code>/progress</code>.",
         "",
         "<b>Step 2 — Today’s curated tips</b>",
         "<code>/pick daily</code> — max 2 names (analyze_now first).",
         "Full soft list anytime: <code>/pick</code>. MONITOR is not a sell.",
         "",
-        format_daily_tips_html(tips, limit=2),
+        format_daily_tips_html(tips, limit=2, universe=uni),
         "",
-            "<b>Step 3 — Deep dive on those 1–2 names only</b>",
-            "<code>/analyze lite SYMBOL</code> — cheaper/faster Stage 2 for daily tips.",
-            "Use plain <code>/analyze SYMBOL</code> when you want the full Sonnet report.",
-            "Pick only when buy range issued + base 3y CAGR OK.",
-            "After a few analyses: <code>/rank</code> — order by expected long-term return.",
-            "Send <code>/stop</code> to cancel a long analysis.",
+        "<b>Step 3 — Deep dive on those 1–2 names only</b>",
+        "<code>/analyze lite SYMBOL</code> — cheaper/faster Stage 2 for daily tips.",
+        "Use plain <code>/analyze SYMBOL</code> when you want the full Sonnet report.",
+        "Pick only when buy range issued + base 3y CAGR OK.",
+        "After a few analyses: <code>/rank</code> — order by expected long-term return.",
+        "Send <code>/stop</code> to cancel a long analysis.",
         "",
         "<b>Step 4 — Execute & record</b>",
         "<code>/hold SYMBOL qty avg_price</code> after you buy.",
@@ -94,11 +118,12 @@ def format_daily_workflow() -> str:
         "• Treat MONITOR as sell for holdings",
         "• Require score≥65 for every tip (/pick is enough to shortlist)",
         "• Skip /analyze because /candidates filtered a name out",
+        "• Ignore off-list soft picks — they are part of the same funnel",
         "",
         "<i>Review: <code>/track analyze</code> monthly — did BUY calls work?</i>",
+        "",
+        "<i>Soft-pick snapshot</i>",
     ]
-    # Drop duplicate blank from embedding daily tips; keep pick snapshot for context.
-    lines.extend(["", "<i>Soft-pick snapshot</i>"])
     lines.extend(_format_pick_lines(snap))
     return "\n".join(lines)
 
@@ -112,17 +137,22 @@ def format_portfolio_workflow() -> str:
         "Goal: quality portfolio with sector caps, DCA tranches, and analyze-backed ranges.",
         format_universe_summary(uni),
         "",
-        "<b>Step 1 — One universe</b>",
+        "<b>Step 1 — One funnel (universe + off-list research)</b>",
         (
             "Watchlist + SIP names share the same funnel "
             "(<code>data/portfolio/watchlist.txt</code> ∪ "
             "<code>sip_portfolios.json</code>)."
         ),
+        (
+            "You can still <code>/prescan</code> / <code>/analyze</code> names "
+            "not on that list — they show in <code>/pick</code>, "
+            "<code>/progress</code>, and tips as off-list."
+        ),
         "SIP buckets still drive monthly DCA amounts via <code>/sip plan</code>.",
         "",
         "<b>Step 2 — Batch prescan (quant-only first)</b>",
         "<code>/sip prescan</code> — writes history for SIP symbols.",
-        "<code>/prescan SYMBOL</code> — add any extra watchlist names.",
+        "<code>/prescan SYMBOL</code> — any NSE name you want researched.",
         "",
         "<b>Step 3 — Shortlist without over-filtering</b>",
         "<code>/pick daily</code> for 1–2 tips, or <code>/pick</code> for the full soft list.",

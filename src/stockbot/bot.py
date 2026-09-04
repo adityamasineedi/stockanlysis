@@ -1534,11 +1534,12 @@ def _build_workflow_message(mode: str) -> str:
 
 
 async def handle_workflow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Daily / portfolio playbooks — read-only; allowed while /analyze runs."""
     if await _reject_if_unauthorized(update):
         return
-    if await _reject_if_analysis_busy(update):
-        return
     _clear_awaiting_symbol(context)
+    if update.message is None:
+        return
     args = list(context.args or [])
     sub = args[0].lower() if args else "daily"
     if sub in {"help", "?"}:
@@ -1555,8 +1556,16 @@ async def handle_workflow(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode=ParseMode.HTML,
         )
         return
-    text = await asyncio.to_thread(_build_workflow_message, sub)
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    try:
+        text = await asyncio.to_thread(_build_workflow_message, sub)
+    except Exception as exc:
+        logger.exception("handle_workflow failed")
+        await update.message.reply_text(f"Workflow failed: {esc(exc)}")
+        return
+    from stockbot.portfolio_sip_messages import split_telegram_chunks
+
+    for chunk in split_telegram_chunks(text):
+        await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
 
 
 def _build_rank_message(mode: str, limit: int) -> str:
