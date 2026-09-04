@@ -88,10 +88,12 @@ def score_earnings_quality(metrics: StockMetrics) -> float:
         # CFO/PAT is meaningless for banks — neutral mid score
         return 65.0
 
+    # Do NOT re-score OCF/PAT here — cash_flow_quality already owns that signal.
+    # Earnings quality focuses on earnings stability and free-cash conversion.
     parts = [
-        (linear_score(metrics.ocf_to_pat, bad=0.3, good=1.2), 0.45),
+        (stability_score(metrics.eps_series), 0.55),
         (linear_score(metrics.fcf_to_pat, bad=0.0, good=1.0), 0.25),
-        (stability_score(metrics.eps_series), 0.30),
+        (stability_score(metrics.net_income_series), 0.20),
     ]
     score, coverage = weighted_mean(parts)
     return clamp(score * (0.6 + 0.4 * coverage))
