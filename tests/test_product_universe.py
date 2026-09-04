@@ -75,9 +75,49 @@ def test_select_daily_tips_prefers_analyze_now(tmp_path: Path, monkeypatch) -> N
     )
     tips = select_daily_tips(limit=2, universe=uni, pick_rows=rows)
     assert [r["ticker"] for r in tips] == ["NOW", "LATER"]
-    html = format_daily_tips_html(tips)
+    html = format_daily_tips_html(tips, universe=uni)
     assert "NOW" in html
     assert "/analyze NOW" in html
+
+
+def test_select_daily_tips_includes_off_universe_even_when_universe_has_picks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Off-list analyze_now must not be hidden by a weaker on-list later tip."""
+    from stockbot.product_universe import ProductUniverse, UniverseSymbol
+
+    rows = [
+        {
+            "ticker": "ONLIST",
+            "quant_score": 55,
+            "quality_score": 60,
+            "growth_score": 50,
+            "strength_score": 50,
+            "hard_filter_status": "PASS",
+            "cash_conversion_status": "PASS",
+            "verdict": "HOLDING_MONITOR_ONLY",
+        },
+        {
+            "ticker": "OFFLIST",
+            "quant_score": 70,
+            "quality_score": 75,
+            "growth_score": 70,
+            "strength_score": 70,
+            "hard_filter_status": "PASS",
+            "cash_conversion_status": "PASS",
+            "verdict": "AUTO_DEEP_ANALYSIS",
+        },
+    ]
+    uni = ProductUniverse(
+        symbols=(UniverseSymbol("ONLIST", frozenset({"watchlist"})),),
+        watchlist_path=tmp_path / "wl.txt",
+        sip_path=None,
+    )
+    tips = select_daily_tips(limit=2, universe=uni, pick_rows=rows)
+    assert [r["ticker"] for r in tips] == ["OFFLIST", "ONLIST"]
+    html = format_daily_tips_html(tips, universe=uni)
+    assert "OFFLIST" in html
+    assert "off-list" in html
 
 
 def test_portfolio_progress_counts_stages(monkeypatch, tmp_path: Path) -> None:
@@ -129,3 +169,44 @@ def test_portfolio_progress_counts_stages(monkeypatch, tmp_path: Path) -> None:
     assert "BUYME" in html
     assert "HELD" in html
     assert "12–18" in html
+
+
+def test_portfolio_progress_includes_off_universe_soft_picks(monkeypatch, tmp_path: Path) -> None:
+    """/prescan names not on watchlist must still show under soft picks."""
+    from stockbot import storage
+    from stockbot.product_universe import ProductUniverse, UniverseSymbol
+
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "prog2.db")
+    uni = ProductUniverse(
+        symbols=(UniverseSymbol("TCS", frozenset({"watchlist"})),),
+        watchlist_path=tmp_path / "wl.txt",
+        sip_path=None,
+    )
+    pick_row = {
+        "ticker": "PRECWIRE",
+        "quant_score": 54.0,
+        "quality_score": 60.0,
+        "growth_score": 50.0,
+        "strength_score": 50.0,
+        "hard_filter_status": "PASS",
+        "cash_conversion_status": "PASS",
+        "verdict": "HOLDING_MONITOR_ONLY",
+    }
+    monkeypatch.setattr(
+        "stockbot.portfolio_progress.load_prescan_outcomes",
+        lambda: [pick_row],
+    )
+    monkeypatch.setattr(
+        "stockbot.portfolio_progress.query_pick_outcomes",
+        lambda rows: [pick_row],
+    )
+    report = build_portfolio_progress(None, universe=uni)
+    assert report.soft_pick_count == 1
+    assert report.off_universe_count == 1
+    prec = next(r for r in report.rows if r.symbol == "PRECWIRE")
+    assert prec.soft_pick is True
+    assert prec.in_universe is False
+    html = format_portfolio_progress_html(report, universe=uni)
+    assert "PRECWIRE" in html
+    assert "off-list" in html
+    assert "soft picks" in html.lower() or "Soft pick" in html

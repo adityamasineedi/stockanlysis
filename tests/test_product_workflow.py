@@ -19,6 +19,7 @@ def test_daily_workflow_mentions_pick_and_analyze() -> None:
     assert "/progress" in text
     assert "Daily tip" in text
     assert "Universe:" in text
+    assert "off-list" in text.lower() or "Off-list" in text or "any NSE" in text
 
 
 def test_portfolio_workflow_mentions_sip_prescan_and_track_pick() -> None:
@@ -29,6 +30,7 @@ def test_portfolio_workflow_mentions_sip_prescan_and_track_pick() -> None:
     assert "sector 25" in text
     assert "12–18" in text
     assert "Universe:" in text
+    assert "off-list" in text.lower() or "not on that list" in text
 
 
 def test_pick_calibration_empty_history() -> None:
