@@ -273,6 +273,9 @@ def rescore_prescan_row(
     Used so /candidates reflects scoring-calibration changes for every name
     that has ever been /prescan'd — without requiring a manual re-prescan.
     Verdict / AI routing fields are kept from the last full /prescan.
+
+    If live fundamentals are incomplete (DATA_*), the stored row is left
+    unchanged so a bad fetch cannot wipe a good prior /prescan.
     """
     row = normalize_prescan_row(row)
     if not force and not row_needs_score_refresh(row) and _row_has_qgs(row):
@@ -309,6 +312,20 @@ def rescore_prescan_row(
     m = metrics[0]
     config = ScreenerRunConfig(skip_ai=True, dry_run=True)
     quant = compute_quant_score(m, config)
+    if quant.hard_filter.status in {"DATA_INSUFFICIENT", "DATA_UNAVAILABLE"}:
+        logger.warning(
+            "rescore_prescan_row: incomplete data for %s (%s) — keeping prior score",
+            ticker,
+            quant.hard_filter.status,
+        )
+        return row
+    if not quant.data_validation.critical_ok:
+        logger.warning(
+            "rescore_prescan_row: critical metrics missing for %s — keeping prior score",
+            ticker,
+        )
+        return row
+
     issuer = classify_issuer(m)
     cash = assess_cash_conversion(m, issuer)
     band = candidate_band(quant.final_quant_score, config.constraints)
@@ -556,7 +573,8 @@ from stockbot.portfolio_screener.prescan_display import (
 CANDIDATES_USAGE = (
     "📋 <b>Candidates — how to use</b>\n"
     "/candidates — all analyze-ready names from your /prescan history\n"
-    "/candidates refresh — re-score every prescanned name with the live scorer\n"
+    "/candidates refresh — <b>once</b>: re-score every prescanned name, then list\n"
+    "/refresh scores — same one-shot re-score (no list filter)\n"
     "/candidates pick — soft tip list (quant ≥50 or strong Q/G/S pillar)\n"
     "/candidates strong — top tier (overall score 80+)\n"
     "/candidates candidate — good picks (score 70–79)\n"
@@ -565,9 +583,8 @@ CANDIDATES_USAGE = (
     "/candidates all — every logged prescan (latest per symbol)\n\n"
     "Names are grouped by tier, best first. Each row shows: symbol · overall "
     "score · Q/G/S pillars · status icons (explained under the list).\n"
-    "Scores refresh automatically when the scorer version changes; "
-    "<code>/candidates refresh</code> forces a full re-score.\n"
-    "💡 Run <code>/prescan SYMBOL</code> first to build the list."
+    "💡 After a scorer change, run <code>/candidates refresh</code> once. "
+    "New <code>/prescan SYMBOL</code> rows always use the live scorer."
 )
 
 PICK_USAGE = (
@@ -604,7 +621,8 @@ def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
         return CandidatesFilter(
             analyze_ready_only=True,
             label="Analyze-ready (all bands)",
-            refresh_scores=True,
+            # Stored list by default — use /candidates refresh once after scorer changes.
+            refresh_scores=False,
         )
 
     lowered = [a.lower() for a in args]
@@ -613,8 +631,8 @@ def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
 
     if lowered[0] == "refresh":
         return CandidatesFilter(
-            analyze_ready_only=False,
-            label="All logged prescans (refreshed scores)",
+            analyze_ready_only=True,
+            label="Analyze-ready (all bands)",
             refresh_scores=True,
             force_refresh=True,
         )
@@ -624,14 +642,14 @@ def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
             analyze_ready_only=False,
             pick_mode=True,
             label="Soft pick (quant≥50 or pillar≥70)",
-            refresh_scores=True,
+            refresh_scores=False,
         )
 
     if lowered[0] == "all":
         return CandidatesFilter(
             analyze_ready_only=False,
             label="All logged prescans",
-            refresh_scores=True,
+            refresh_scores=False,
         )
 
     if lowered[0] == "quality":
@@ -645,7 +663,7 @@ def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
             min_quality=min_q,
             analyze_ready_only=True,
             label=f"Q≥{min_q:.0f} analyze-ready",
-            refresh_scores=True,
+            refresh_scores=False,
         )
 
     band_key = lowered[0]
@@ -662,7 +680,7 @@ def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
         bands={band},
         analyze_ready_only=True,
         label=labels.get(band, band),
-        refresh_scores=True,
+        refresh_scores=False,
     )
 
 
@@ -927,7 +945,8 @@ def build_pick_messages(
         )
 
     rows = load_prescan_outcomes(target)
-    rows, n_refreshed = refresh_prescan_scores(rows, path=target, persist=True, force=False)
+    # /pick reads stored scores only — use /candidates refresh or /refresh scores
+    # for a one-shot live re-score of the whole prescan history.
     stale = sum(1 for row in rows if not _row_has_qgs(row))
     if stale:
         logger.info("Backfilling Q/G/S for %d prescan row(s) missing pillar scores", stale)
@@ -935,13 +954,12 @@ def build_pick_messages(
     matched = query_pick_outcomes(rows)
     summary = summarize_pick_policy(rows)
     logger.info(
-        "pick_policy eligible=%d skipped=%d min_quant=%.0f min_pillar=%.0f daily=%s refreshed=%d",
+        "pick_policy eligible=%d skipped=%d min_quant=%.0f min_pillar=%.0f daily=%s",
         summary.eligible_count,
         summary.skipped_count,
         summary.min_quant,
         summary.min_pillar,
         daily,
-        n_refreshed,
     )
     if daily:
         from stockbot.portfolio_progress import (

@@ -290,6 +290,91 @@ def test_parse_candidates_refresh_forces_rescore() -> None:
     assert isinstance(parsed, CandidatesFilter)
     assert parsed.force_refresh is True
     assert parsed.refresh_scores is True
+    assert parsed.analyze_ready_only is True
+
+
+def test_parse_candidates_default_does_not_auto_refresh() -> None:
+    parsed = parse_candidates_filter([])
+    assert isinstance(parsed, CandidatesFilter)
+    assert parsed.refresh_scores is False
+    assert parsed.force_refresh is False
+
+
+def test_rescore_keeps_prior_when_live_data_incomplete(monkeypatch) -> None:
+    from stockbot.fetch import tickers as tickers_mod
+    from stockbot.portfolio_screener import data_loader as data_loader_mod
+    from stockbot.portfolio_screener import outcome_log
+    from stockbot.portfolio_screener import quant_engine as quant_engine_mod
+    from stockbot.portfolio_screener.models import (
+        ComponentScores,
+        DataValidationResult,
+        HardFilterResult,
+        QuantScreenResult,
+        StockMetrics,
+    )
+
+    metrics = StockMetrics(ticker="AUTO1", current_price_abs=10.0)
+
+    def _bad_quant(m: StockMetrics, cfg: object) -> QuantScreenResult:
+        return QuantScreenResult(
+            ticker=m.ticker,
+            base_score=0.0,
+            red_flag_penalty=0.0,
+            final_quant_score=0.0,
+            components=ComponentScores(
+                business_quality=0.0,
+                financial_strength=0.0,
+                growth=0.0,
+                cash_flow_quality=0.0,
+                capital_efficiency=0.0,
+                valuation=0.0,
+                balance_sheet=0.0,
+                earnings_quality=0.0,
+                risk=0.0,
+            ),
+            red_flags=[],
+            data_validation=DataValidationResult(
+                ticker=m.ticker,
+                data_completeness_score=10.0,
+                data_quality_score=10.0,
+                data_confidence="LOW",
+                missing_metrics={"revenue": "missing"},
+                contradictions=[],
+                critical_ok=False,
+            ),
+            hard_filter=HardFilterResult(
+                ticker=m.ticker,
+                status="DATA_INSUFFICIENT",
+                reasons=["critical data incomplete"],
+            ),
+            sector=None,
+            industry=None,
+        )
+
+    monkeypatch.setattr(
+        tickers_mod,
+        "resolve_ticker",
+        lambda query, table: type("T", (), {"symbol": "AUTO1"})(),
+    )
+    monkeypatch.setattr(tickers_mod, "load_symbol_table", lambda: None)
+    monkeypatch.setattr(data_loader_mod, "fetch_universe_metrics", lambda tickers: [metrics])
+    monkeypatch.setattr(quant_engine_mod, "compute_quant_score", _bad_quant)
+
+    row = {
+        "ticker": "AUTO1",
+        "quant_score": 80.0,
+        "quality_score": 71.0,
+        "growth_score": 40.0,
+        "strength_score": 85.0,
+        "hard_filter_status": "PASS",
+        "verdict": "AUTO_DEEP_ANALYSIS",
+        "candidate_band": "CANDIDATE",
+        "cash_conversion_status": "PASS",
+    }
+    out = outcome_log.rescore_prescan_row(row, persist=False, force=True)
+    assert out["quant_score"] == 80.0
+    assert out["hard_filter_status"] == "PASS"
+    assert out.get("weights_version") is None
 
 
 def test_rescore_prescan_row_updates_quant_and_stamp(monkeypatch, tmp_path: Path) -> None:
