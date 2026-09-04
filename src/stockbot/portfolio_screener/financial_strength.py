@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from stockbot.portfolio_screener.models import StockMetrics
 from stockbot.portfolio_screener.score_utils import (
-    clamp,
+    finalize_pillar,
     linear_score,
     series_present,
     weighted_mean,
@@ -31,7 +31,17 @@ def score_financial_strength(metrics: StockMetrics) -> float:
             ),
         ]
         score, coverage = weighted_mean(parts)
-        return clamp(score * (0.6 + 0.4 * coverage))
+        return finalize_pillar(score, coverage)
+
+    # Utilities: regulated leverage — softer industrial curves.
+    if issuer == "UTILITY":
+        de_bad, de_good = 4.0, 0.8
+        nd_bad = 6.0
+        ic_bad, ic_good = 1.0, 6.0
+    else:
+        de_bad, de_good = 2.5, 0.2
+        nd_bad = 4.0
+        ic_bad, ic_good = 1.5, 10.0
 
     debt_trend_score: float | None = None
     debt = series_present(metrics.debt_series)
@@ -53,16 +63,17 @@ def score_financial_strength(metrics: StockMetrics) -> float:
             )
 
     # FCF polarity lives in cash_flow_quality — do not re-score it here.
+    # D/E is owned here (not again in BS / risk).
     parts = [
-        (linear_score(metrics.debt_equity, bad=2.5, good=0.2, higher_is_better=False), 0.30),
+        (linear_score(metrics.debt_equity, bad=de_bad, good=de_good, higher_is_better=False), 0.30),
         (
-            linear_score(metrics.net_debt_ebitda, bad=4.0, good=0.0, higher_is_better=False),
+            linear_score(metrics.net_debt_ebitda, bad=nd_bad, good=0.0, higher_is_better=False),
             0.25,
         ),
-        (linear_score(metrics.interest_coverage, bad=1.5, good=10.0), 0.25),
+        (linear_score(metrics.interest_coverage, bad=ic_bad, good=ic_good), 0.25),
         (linear_score(metrics.current_ratio, bad=0.8, good=2.0), 0.10),
         (debt_trend_score, 0.05),
         (cash_score, 0.05),
     ]
     score, coverage = weighted_mean(parts)
-    return clamp(score * (0.6 + 0.4 * coverage))
+    return finalize_pillar(score, coverage)

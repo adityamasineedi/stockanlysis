@@ -7,7 +7,11 @@ double-counted the same profitability stack and crushed mixed names.
 from __future__ import annotations
 
 from stockbot.portfolio_screener.models import StockMetrics
-from stockbot.portfolio_screener.score_utils import clamp, linear_score, weighted_mean
+from stockbot.portfolio_screener.score_utils import (
+    finalize_pillar,
+    linear_score,
+    weighted_mean,
+)
 
 
 def score_capital_efficiency(metrics: StockMetrics) -> float:
@@ -17,4 +21,4 @@ def score_capital_efficiency(metrics: StockMetrics) -> float:
         (linear_score(metrics.asset_turnover, bad=0.3, good=1.5), 0.40),
     ]
     score, coverage = weighted_mean(parts)
-    return clamp(score * (0.6 + 0.4 * coverage))
+    return finalize_pillar(score, coverage)

@@ -20,6 +20,12 @@ from stockbot.portfolio_screener.scoring_config import (
     ValuationRisk,
 )
 
+# WC-timing issuers: multi-year negative OCF alone is not a hard veto —
+# cash routing already flags WATCH / ESCALATED_WATCH for research.
+_WC_TIMING_SKIP_NEG_OCF = frozenset(
+    {"DEFENCE_EPC_PROJECT", "EPC_PROJECT_BUSINESS", "UTILITY"}
+)
+
 
 def classify_valuation_risk(
     metrics: StockMetrics,
@@ -80,8 +86,8 @@ def apply_hard_filters(
             human_override=human_override,
         )
 
-    # Persistent negative OCF — skip for banks (deposit/loan flows dominate CFO)
-    if not is_financial:
+    # Persistent negative OCF — skip banks and WC-timing issuers
+    if not is_financial and issuer not in _WC_TIMING_SKIP_NEG_OCF:
         ocf = series_present(metrics.ocf_series)
         if len(ocf) >= thresholds.persistent_negative_ocf_years:
             tail = ocf[-thresholds.persistent_negative_ocf_years :]
@@ -99,32 +105,41 @@ def apply_hard_filters(
                 f"persistent losses for {thresholds.persistent_loss_years}+ years"
             )
 
-    # Leverage / interest coverage — skip for financials and loss-makers (IC is
-    # not a meaningful solvency test when EBIT/PAT is negative).
+    # Leverage — skip for financials and loss-makers. One leverage metric alone
+    # must not veto; IC and ND/EBITDA need corroboration from another stress signal.
     if not is_financial and not loss_making:
-        if (
-            metrics.interest_coverage is not None
-            and metrics.debt is not None
-            and metrics.debt > 0
-            and metrics.interest_coverage < thresholds.min_interest_coverage
-        ):
-            # Utilities: hard-exclude only if coverage is truly broken (< 1.0)
-            floor = 1.0 if issuer == "UTILITY" else thresholds.min_interest_coverage
-            if metrics.interest_coverage < floor:
-                reasons.append(
-                    f"weak interest coverage {metrics.interest_coverage:.2f} < {floor}"
-                )
-
         debt_series = series_present(metrics.debt_series)
+        debt_rising = False
+        if len(debt_series) >= 2 and debt_series[0] > 0:
+            debt_rising = debt_series[-1] > debt_series[0]
+
         max_de = (
             thresholds.max_debt_equity * 1.2
             if issuer == "UTILITY"
             else thresholds.max_debt_equity
         )
-        if metrics.debt_equity is not None and metrics.debt_equity > max_de:
+        max_nd = thresholds.max_net_debt_ebitda * (1.3 if issuer == "UTILITY" else 1.0)
+        ic_floor = 1.0 if issuer == "UTILITY" else thresholds.min_interest_coverage
+        extreme_de = thresholds.max_debt_equity * (1.8 if issuer == "UTILITY" else 1.5)
+
+        weak_ic = (
+            metrics.interest_coverage is not None
+            and metrics.debt is not None
+            and metrics.debt > 0
+            and metrics.interest_coverage < ic_floor
+        )
+        high_de = metrics.debt_equity is not None and metrics.debt_equity > max_de
+        high_nd = (
+            metrics.net_debt_ebitda is not None and metrics.net_debt_ebitda > max_nd
+        )
+        is_extreme_de = (
+            metrics.debt_equity is not None and metrics.debt_equity > extreme_de
+        )
+
+        if high_de:
             if len(debt_series) >= 3 and debt_series[0] > 0:
                 d0, d_last = debt_series[0], debt_series[-1]
-                if d0 >= d_last * 0.25:
+                if debt_rising:
                     reasons.append(
                         f"very high D/E {metrics.debt_equity:.2f} with rising absolute "
                         f"debt ({d0:.0f}→{d_last:.0f} Cr over {len(debt_series)}y)"
@@ -139,20 +154,20 @@ def apply_hard_filters(
                     f"very high consolidated D/E {metrics.debt_equity:.2f} — "
                     "incompatible with 3-year profitable-compounder gate"
                 )
-
-        extreme_de = thresholds.max_debt_equity * (1.8 if issuer == "UTILITY" else 1.5)
-        if (
-            metrics.debt_equity is not None
-            and metrics.debt_equity > extreme_de
-            and not any("very high" in r or "D/E" in r for r in reasons)
-        ):
+        elif is_extreme_de:
             reasons.append(
                 f"extreme D/E {metrics.debt_equity:.2f} — requires dedicated "
                 "leveraged-cycle analysis instead of auto 3y compounding"
             )
 
-        max_nd = thresholds.max_net_debt_ebitda * (1.3 if issuer == "UTILITY" else 1.0)
-        if metrics.net_debt_ebitda is not None and metrics.net_debt_ebitda > max_nd:
+        # IC alone is not enough — need D/E, ND/EBITDA, or rising debt
+        if weak_ic and (high_de or high_nd or debt_rising or is_extreme_de):
+            reasons.append(
+                f"weak interest coverage {metrics.interest_coverage:.2f} < {ic_floor}"
+            )
+
+        # ND/EBITDA alone is not enough — need D/E or weak IC
+        if high_nd and (high_de or weak_ic or is_extreme_de):
             reasons.append(
                 f"net debt/EBITDA {metrics.net_debt_ebitda:.2f} > {max_nd:.1f}"
             )
@@ -170,8 +185,7 @@ def apply_hard_filters(
         )
 
     # Persistent OCF<<PAT is scored in cash_flow_quality and routed as
-    # CRITICAL / WATCH — do not hard-exclude on the same signal. One weak
-    # cash metric must not veto a name that other pillars still support.
+    # CRITICAL / WATCH — do not hard-exclude on the same signal.
 
     if (
         metrics.adv_inr_cr is not None

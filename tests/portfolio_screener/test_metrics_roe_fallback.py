@@ -75,6 +75,25 @@ def test_roe_computed_from_pat_and_book_equity_when_ratio_missing():
     assert "roe" not in m.missing
 
 
+def test_roic_computed_from_nopat_and_invested_capital():
+    ticker = TickerInfo(symbol="BBOX", exchange="NSE", company_name="Black Box", isin=None)
+    m = extract_metrics(
+        ticker,
+        financials=_financials_without_roe_ratio(),
+        price=None,
+        shareholding=None,
+        market_meta={"sector": "Technology", "market_cap_cr": 13000.0},
+    )
+    # Equity 36+1251=1287, debt 400, cash 70 → IC 1617
+    # OP 160, tax from (160-218)/160 negative → default 25% → NOPAT 120
+    assert m.roic is not None
+    assert m.metric_sources.get("roic") == "computed"
+    invested = 1287.0 + 400.0 - 70.0
+    expected = (160.0 * 0.75) / invested * 100.0
+    assert abs(m.roic - expected) < 0.05
+    assert "roic" not in m.missing
+
+
 def test_single_missing_roe_without_compute_does_not_force_data_insufficient():
     # If PAT/equity also missing, roe stays null — but alone it must not
     # flip critical_ok (key trio needs ≥2 gaps).
