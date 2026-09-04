@@ -263,3 +263,221 @@ def test_build_candidates_messages_empty_log(tmp_path: Path) -> None:
     assert chunks == []
     assert err is not None
     assert "No prescan log" in err
+
+
+def test_row_needs_score_refresh_when_stamp_missing_or_old() -> None:
+    from stockbot.portfolio_screener.outcome_log import row_needs_score_refresh
+    from stockbot.portfolio_screener.scoring_config import WEIGHTS_VERSION
+
+    assert row_needs_score_refresh({"ticker": "X"}) is True
+    assert row_needs_score_refresh({"ticker": "X", "weights_version": "v0.9"}) is True
+    assert (
+        row_needs_score_refresh(
+            {
+                "ticker": "X",
+                "weights_version": WEIGHTS_VERSION,
+                "quality_score": 70,
+                "growth_score": 60,
+                "strength_score": 80,
+            }
+        )
+        is False
+    )
+
+
+def test_parse_candidates_refresh_forces_rescore() -> None:
+    parsed = parse_candidates_filter(["refresh"])
+    assert isinstance(parsed, CandidatesFilter)
+    assert parsed.force_refresh is True
+    assert parsed.refresh_scores is True
+    assert parsed.analyze_ready_only is True
+
+
+def test_parse_candidates_default_does_not_auto_refresh() -> None:
+    parsed = parse_candidates_filter([])
+    assert isinstance(parsed, CandidatesFilter)
+    assert parsed.refresh_scores is False
+    assert parsed.force_refresh is False
+
+
+def test_rescore_keeps_prior_when_live_data_incomplete(monkeypatch) -> None:
+    from stockbot.fetch import tickers as tickers_mod
+    from stockbot.portfolio_screener import data_loader as data_loader_mod
+    from stockbot.portfolio_screener import outcome_log
+    from stockbot.portfolio_screener import quant_engine as quant_engine_mod
+    from stockbot.portfolio_screener.models import (
+        ComponentScores,
+        DataValidationResult,
+        HardFilterResult,
+        QuantScreenResult,
+        StockMetrics,
+    )
+
+    metrics = StockMetrics(ticker="AUTO1", current_price_abs=10.0)
+
+    def _bad_quant(m: StockMetrics, cfg: object) -> QuantScreenResult:
+        return QuantScreenResult(
+            ticker=m.ticker,
+            base_score=0.0,
+            red_flag_penalty=0.0,
+            final_quant_score=0.0,
+            components=ComponentScores(
+                business_quality=0.0,
+                financial_strength=0.0,
+                growth=0.0,
+                cash_flow_quality=0.0,
+                capital_efficiency=0.0,
+                valuation=0.0,
+                balance_sheet=0.0,
+                earnings_quality=0.0,
+                risk=0.0,
+            ),
+            red_flags=[],
+            data_validation=DataValidationResult(
+                ticker=m.ticker,
+                data_completeness_score=10.0,
+                data_quality_score=10.0,
+                data_confidence="LOW",
+                missing_metrics={"revenue": "missing"},
+                contradictions=[],
+                critical_ok=False,
+            ),
+            hard_filter=HardFilterResult(
+                ticker=m.ticker,
+                status="DATA_INSUFFICIENT",
+                reasons=["critical data incomplete"],
+            ),
+            sector=None,
+            industry=None,
+        )
+
+    monkeypatch.setattr(
+        tickers_mod,
+        "resolve_ticker",
+        lambda query, table: type("T", (), {"symbol": "AUTO1"})(),
+    )
+    monkeypatch.setattr(tickers_mod, "load_symbol_table", lambda: None)
+    monkeypatch.setattr(data_loader_mod, "fetch_universe_metrics", lambda tickers: [metrics])
+    monkeypatch.setattr(quant_engine_mod, "compute_quant_score", _bad_quant)
+
+    row = {
+        "ticker": "AUTO1",
+        "quant_score": 80.0,
+        "quality_score": 71.0,
+        "growth_score": 40.0,
+        "strength_score": 85.0,
+        "hard_filter_status": "PASS",
+        "verdict": "AUTO_DEEP_ANALYSIS",
+        "candidate_band": "CANDIDATE",
+        "cash_conversion_status": "PASS",
+    }
+    out = outcome_log.rescore_prescan_row(row, persist=False, force=True)
+    assert out["quant_score"] == 80.0
+    assert out["hard_filter_status"] == "PASS"
+    assert out.get("weights_version") is None
+
+
+def test_rescore_prescan_row_updates_quant_and_stamp(monkeypatch, tmp_path: Path) -> None:
+    from stockbot.fetch import tickers as tickers_mod
+    from stockbot.portfolio_screener import data_loader as data_loader_mod
+    from stockbot.portfolio_screener import outcome_log
+    from stockbot.portfolio_screener import quant_engine as quant_engine_mod
+    from stockbot.portfolio_screener.models import (
+        ComponentScores,
+        DataValidationResult,
+        HardFilterResult,
+        QuantScreenResult,
+        StockMetrics,
+    )
+    from stockbot.portfolio_screener.scoring_config import WEIGHTS_VERSION
+
+    monkeypatch.setattr(outcome_log, "OUTCOMES_PATH", tmp_path / "prescan_outcomes.jsonl")
+    monkeypatch.setattr(outcome_log, "PORTFOLIO_DIR", tmp_path)
+
+    metrics = StockMetrics(
+        ticker="BEL",
+        current_price_abs=300.0,
+    )
+
+    def _fake_quant(m: StockMetrics, cfg: object) -> QuantScreenResult:
+        return QuantScreenResult(
+            ticker=m.ticker,
+            base_score=62.0,
+            red_flag_penalty=0.0,
+            final_quant_score=62.0,
+            components=ComponentScores(
+                business_quality=91.0,
+                financial_strength=84.0,
+                growth=80.0,
+                cash_flow_quality=40.0,
+                capital_efficiency=50.0,
+                valuation=30.0,
+                balance_sheet=70.0,
+                earnings_quality=70.0,
+                risk=80.0,
+            ),
+            red_flags=[],
+            data_validation=DataValidationResult(
+                ticker=m.ticker,
+                data_completeness_score=90.0,
+                data_quality_score=90.0,
+                data_confidence="HIGH",
+                missing_metrics={},
+                contradictions=[],
+                critical_ok=True,
+            ),
+            hard_filter=HardFilterResult(
+                ticker=m.ticker,
+                status="PASS",
+                reasons=[],
+            ),
+            sector="Industrials",
+            industry="Aerospace & Defense",
+        )
+
+    monkeypatch.setattr(
+        tickers_mod,
+        "resolve_ticker",
+        lambda query, table: type("T", (), {"symbol": "BEL"})(),
+    )
+    monkeypatch.setattr(tickers_mod, "load_symbol_table", lambda: None)
+    monkeypatch.setattr(data_loader_mod, "fetch_universe_metrics", lambda tickers: [metrics])
+    monkeypatch.setattr(quant_engine_mod, "compute_quant_score", _fake_quant)
+    monkeypatch.setattr(
+        "stockbot.portfolio_screener.issuer_routing.classify_issuer",
+        lambda m: "DEFENCE_EPC_PROJECT",
+    )
+    monkeypatch.setattr(
+        "stockbot.portfolio_screener.issuer_routing.assess_cash_conversion",
+        lambda m, issuer: type(
+            "C",
+            (),
+            {"status": "WATCH", "ocf_pat_3y": 0.4, "reason": "wc"},
+        )(),
+    )
+
+    row = {
+        "ticker": "BEL",
+        "quant_score": 56.4,
+        "quality_score": 91.0,
+        "growth_score": 80.0,
+        "strength_score": 84.0,
+        "verdict": "SECTOR_SPECIFIC_REVIEW",
+        "candidate_band": "REMOVE",
+        "cash_conversion_status": "WATCH",
+        "hard_filter_status": "PASS",
+    }
+    enriched = outcome_log.rescore_prescan_row(row, persist=True, force=True)
+    assert enriched["quant_score"] == 62.0
+    assert enriched["weights_version"] == WEIGHTS_VERSION
+    assert enriched["candidate_band"] == "WATCHLIST"
+    assert (tmp_path / "prescan_outcomes.jsonl").exists()
+
+    updated, n = outcome_log.refresh_prescan_scores(
+        [enriched],
+        path=tmp_path / "prescan_outcomes.jsonl",
+        persist=False,
+        force=False,
+    )
+    assert n == 0  # already stamped current
+    assert updated[0]["quant_score"] == 62.0

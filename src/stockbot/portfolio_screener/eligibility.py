@@ -1022,6 +1022,8 @@ def check_deep_analysis_eligibility(
             "quality_score": round(quant.components.business_quality, 1),
             "growth_score": round(quant.components.growth, 1),
             "strength_score": round(quant.components.financial_strength, 1),
+            "weights_version": config.weights_version,
+            "screening_version": config.screening_version,
         }
     )
     return result

@@ -1243,8 +1243,21 @@ async def handle_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if await _reject_if_analysis_busy(update):
         return
     _clear_awaiting_symbol(context)
+    if update.message is None:
+        return
     args = list(context.args or [])
+    status = None
+    if args and args[0].lower() == "refresh":
+        status = await update.message.reply_text(
+            "♻️ One-shot refresh: re-scoring every prescanned name…"
+        )
+
     chunks, err = await asyncio.to_thread(build_candidates_messages, args)
+    if status is not None:
+        try:
+            await status.delete()
+        except Exception:
+            logger.debug("candidates status delete failed", exc_info=True)
     if err:
         await update.message.reply_text(err, parse_mode=ParseMode.HTML)
         return
@@ -1355,6 +1368,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/prescan — tap from menu, then send the stock name\n"
         "/prescan <symbol> — one-step example: /prescan BEL\n"
         "/candidates — list analyze-ready names from prescan history\n"
+        "/candidates refresh — one-shot re-score of every prescanned name\n"
         "/candidates pick — soft tip list (quant ≥50 or strong Q/G/S)\n"
         "/candidates strong|candidate|watchlist — filter by score tier\n"
         "/candidates quality 65 — Quality ≥65 and analyze-ready\n"
@@ -1381,6 +1395,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "prescan skipped for /analyze\n\n"
         "📁 Portfolio & money tracking\n"
         "/refresh SYMBOL — clear cached analysis for symbol\n"
+        "/refresh scores — one-shot re-score of every /prescan name\n"
         "/refresh backfill — recompute gates + expected_return on cached rows\n"
         "/capital 500000 max 10 — total capital and per-stock cap\n"
         "/plan 33 to 40 spend 100000 invest 200000 — can you retire then?\n"
@@ -1413,13 +1428,48 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if await _reject_if_analysis_busy(update):
         return
     _clear_awaiting_symbol(context)
+    if update.message is None:
+        return
     args = list(context.args or [])
     if not args:
         await update.message.reply_text(
             "Usage:\n"
             "/refresh SYMBOL — drop cached analysis for that symbol\n"
+            "/refresh scores — one-shot re-score of every /prescan name "
+            "(then use /candidates)\n"
             "/refresh backfill — recompute constitution gates + expected_return "
             "on all cached analyses (no LLM spend)"
+        )
+        return
+    if args[0].lower() in {"scores", "prescan", "candidates"}:
+        status = await update.message.reply_text(
+            "♻️ One-shot refresh: re-scoring every prescanned name…"
+        )
+
+        def _refresh() -> tuple[int, int]:
+            from stockbot.portfolio_screener.outcome_log import (
+                load_prescan_outcomes,
+                refresh_prescan_scores,
+            )
+
+            rows = load_prescan_outcomes()
+            _updated, n = refresh_prescan_scores(rows, persist=True, force=True)
+            return n, len(rows)
+
+        try:
+            n_refreshed, n_total = await asyncio.to_thread(_refresh)
+        except Exception as exc:
+            logger.exception("refresh scores failed")
+            await update.message.reply_text(f"Score refresh failed: {esc(exc)}")
+            return
+        try:
+            await status.delete()
+        except Exception:
+            logger.debug("refresh scores status delete failed", exc_info=True)
+        await update.message.reply_text(
+            f"♻️ Re-scored <b>{n_refreshed}</b> of {n_total} prescanned name(s).\n"
+            "Open the list: <code>/candidates</code>",
+            parse_mode=ParseMode.HTML,
         )
         return
     if args[0].lower() == "backfill":
@@ -1770,7 +1820,7 @@ BOT_COMMANDS = [
     BotCommand("analyze", "Deep analysis; /analyze lite = cheaper/faster"),
     BotCommand("stop", "Cancel running analysis or prescan"),
     BotCommand("preflight", "Free data audit before /analyze"),
-    BotCommand("refresh", "Clear cache or backfill stored verdicts"),
+    BotCommand("refresh", "Clear cache, refresh scores, or backfill verdicts"),
     BotCommand("help", "Usage instructions"),
     BotCommand("spend", "Month-to-date cost"),
     BotCommand("health", "Audit; /health clear verifies then clears"),
