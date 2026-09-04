@@ -1,4 +1,8 @@
-"""Capital efficiency score (0–100)."""
+"""Capital Efficiency (CE) pillar — ROIC + asset turnover only.
+
+ROE / ROCE / OPM live in Quality (Q). Do not re-score them here — that
+double-counted the same profitability stack and crushed mixed names.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +11,10 @@ from stockbot.portfolio_screener.score_utils import clamp, linear_score, weighte
 
 
 def score_capital_efficiency(metrics: StockMetrics) -> float:
+    """Score how efficiently capital is deployed — not another ROE copy."""
     parts = [
-        (linear_score(metrics.roe, bad=5.0, good=22.0), 0.30),
-        (linear_score(metrics.roce, bad=5.0, good=25.0), 0.35),
-        (linear_score(metrics.roic, bad=5.0, good=20.0), 0.10),
-        (linear_score(metrics.asset_turnover, bad=0.3, good=1.5), 0.15),
-        (linear_score(metrics.operating_margin, bad=0.05, good=0.25), 0.10),
+        (linear_score(metrics.roic, bad=5.0, good=20.0), 0.60),
+        (linear_score(metrics.asset_turnover, bad=0.3, good=1.5), 0.40),
     ]
     score, coverage = weighted_mean(parts)
     return clamp(score * (0.6 + 0.4 * coverage))
