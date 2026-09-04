@@ -169,20 +169,9 @@ def apply_hard_filters(
             f"of promoter holding (>= {thresholds.max_promoter_pledge_pct:.0f}%)"
         )
 
-    # Persistent OCF<<PAT — skip financials and WC-heavy (handled as WATCH in routing)
-    if not is_financial and issuer not in {
-        "DEFENCE_EPC_PROJECT",
-        "EPC_PROJECT_BUSINESS",
-        "UTILITY",
-    }:
-        ocf = series_present(metrics.ocf_series)
-        if len(ocf) >= 3 and len(pat) >= 3:
-            recent_pat = pat[-3:]
-            recent_ocf = ocf[-3:]
-            if all(p > 0 for p in recent_pat) and all(
-                o < p * 0.3 for o, p in zip(recent_ocf, recent_pat, strict=True)
-            ):
-                reasons.append("persistent OCF << PAT — severe earnings quality gap")
+    # Persistent OCF<<PAT is scored in cash_flow_quality and routed as
+    # CRITICAL / WATCH — do not hard-exclude on the same signal. One weak
+    # cash metric must not veto a name that other pillars still support.
 
     if (
         metrics.adv_inr_cr is not None

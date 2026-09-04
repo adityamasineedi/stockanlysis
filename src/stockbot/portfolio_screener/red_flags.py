@@ -4,9 +4,10 @@ Promoter *holding* % is never a red flag by itself.
 Only *pledged* share of promoter holding uses pledge thresholds
 (aligned with eligibility prompt: Prefer ≤10, Borderline 10–25, Critical >25).
 
-OCF/PAT gaps are recorded as flags for routing, but carry **zero score
-penalty** — cash_flow_quality already embeds that weakness. Stacking a
-second −10 crushed mixed names into the low 30s on a 0–100 scale.
+Score penalties apply only to governance / dilution surprises. Signals already
+inside Q/G/S/cash/valuation/risk pillars (OCF/PAT, D/E, P/E, margin trend,
+small-cap size) stay as **zero-penalty flags** for routing and WHY — stacking
+another −5/−10 crushed mixed names on the 0–100 scale.
 """
 
 from __future__ import annotations
@@ -20,6 +21,21 @@ _PLEDGE_PREFER_MAX = 10.0
 _PLEDGE_BORDERLINE_MAX = 25.0
 _PLEDGE_SEVERE_AT = 40.0
 
+# Flags that remain visible for routing but must not re-hit the composite.
+_ZERO_PENALTY_CODES = frozenset(
+    {
+        "OCF_PAT_GAP",
+        "OCF_PAT_ESCALATED",
+        "OCF_PAT_WATCH",
+        "MARGIN_DOWN",
+        "SMALL_CAP",
+        "MID_SMALL_CAP",
+        "HIGH_LEVERAGE",
+        "ELEVATED_LEVERAGE",
+        "RICH_VALUATION",
+    }
+)
+
 
 def collect_red_flags(
     metrics: StockMetrics,
@@ -32,8 +48,13 @@ def collect_red_flags(
         severity: str,
         code: str,
         message: str,
+        *,
+        force_zero_penalty: bool = False,
     ) -> None:
-        penalty = getattr(penalties, severity)
+        if force_zero_penalty or code in _ZERO_PENALTY_CODES:
+            penalty = 0.0
+        else:
+            penalty = getattr(penalties, severity)
         flags.append(
             RedFlag(
                 severity=severity,  # type: ignore[arg-type]
@@ -86,42 +107,32 @@ def collect_red_flags(
 
         issuer = classify_issuer(metrics)
         cash = assess_cash_conversion(metrics, issuer)
-        # OCF/PAT is already scored inside cash_flow_quality (and was double-hit
-        # via earnings_quality). Keep the flag for routing / Telegram context,
-        # but do NOT subtract another −10/−5 from the composite — that triple
-        # count pushed mixed names into the low 30s on a 0–100 scale.
         if cash.status == "CRITICAL":
-            flags.append(
-                RedFlag(
-                    severity="major",
-                    code="OCF_PAT_GAP",
-                    message=(
-                        f"OCF/PAT current={cash.ocf_pat_current} "
-                        f"3y_cum={cash.ocf_pat_3y} (Critical)"
-                    ),
-                    penalty=0.0,
-                )
+            add(
+                "major",
+                "OCF_PAT_GAP",
+                (
+                    f"OCF/PAT current={cash.ocf_pat_current} "
+                    f"3y_cum={cash.ocf_pat_3y} (Critical)"
+                ),
+                force_zero_penalty=True,
             )
         elif cash.status == "ESCALATED_WATCH":
-            flags.append(
-                RedFlag(
-                    severity="moderate",
-                    code="OCF_PAT_ESCALATED",
-                    message=(
-                        f"OCF/PAT ESCALATED_WATCH: current={cash.ocf_pat_current} "
-                        f"3y_cum={cash.ocf_pat_3y}"
-                    ),
-                    penalty=0.0,
-                )
+            add(
+                "moderate",
+                "OCF_PAT_ESCALATED",
+                (
+                    f"OCF/PAT ESCALATED_WATCH: current={cash.ocf_pat_current} "
+                    f"3y_cum={cash.ocf_pat_3y}"
+                ),
+                force_zero_penalty=True,
             )
         elif cash.status == "WATCH":
-            flags.append(
-                RedFlag(
-                    severity="minor",
-                    code="OCF_PAT_WATCH",
-                    message=f"OCF/PAT WATCH: {cash.reason}",
-                    penalty=0.0,
-                )
+            add(
+                "minor",
+                "OCF_PAT_WATCH",
+                f"OCF/PAT WATCH: {cash.reason}",
+                force_zero_penalty=True,
             )
         elif cash.status in {
             "NOT_APPLICABLE",
@@ -130,13 +141,11 @@ def collect_red_flags(
         }:
             pass
         else:
-            flags.append(
-                RedFlag(
-                    severity="minor",
-                    code="OCF_PAT_WATCH",
-                    message=f"OCF/PAT={metrics.ocf_to_pat:.2f}",
-                    penalty=0.0,
-                )
+            add(
+                "minor",
+                "OCF_PAT_WATCH",
+                f"OCF/PAT={metrics.ocf_to_pat:.2f}",
+                force_zero_penalty=True,
             )
 
     margins = series_present(metrics.operating_margin_series)
@@ -145,20 +154,46 @@ def collect_red_flags(
             "moderate",
             "MARGIN_DOWN",
             "Operating margin deteriorated over available history",
+            force_zero_penalty=True,
         )
 
     if metrics.market_cap_cr is not None and metrics.market_cap_cr < 500:
-        add("moderate", "SMALL_CAP", f"Market cap ₹{metrics.market_cap_cr:.0f} Cr")
+        add(
+            "moderate",
+            "SMALL_CAP",
+            f"Market cap ₹{metrics.market_cap_cr:.0f} Cr",
+            force_zero_penalty=True,
+        )
     elif metrics.market_cap_cr is not None and metrics.market_cap_cr < 2000:
-        add("minor", "MID_SMALL_CAP", f"Market cap ₹{metrics.market_cap_cr:.0f} Cr")
+        add(
+            "minor",
+            "MID_SMALL_CAP",
+            f"Market cap ₹{metrics.market_cap_cr:.0f} Cr",
+            force_zero_penalty=True,
+        )
 
     if metrics.debt_equity is not None and metrics.debt_equity > 2.0:
-        add("major", "HIGH_LEVERAGE", f"D/E={metrics.debt_equity:.2f}")
+        add(
+            "major",
+            "HIGH_LEVERAGE",
+            f"D/E={metrics.debt_equity:.2f}",
+            force_zero_penalty=True,
+        )
     elif metrics.debt_equity is not None and metrics.debt_equity > 1.0:
-        add("minor", "ELEVATED_LEVERAGE", f"D/E={metrics.debt_equity:.2f}")
+        add(
+            "minor",
+            "ELEVATED_LEVERAGE",
+            f"D/E={metrics.debt_equity:.2f}",
+            force_zero_penalty=True,
+        )
 
     if metrics.pe is not None and metrics.pe > 80:
-        add("moderate", "RICH_VALUATION", f"P/E={metrics.pe:.1f}")
+        add(
+            "moderate",
+            "RICH_VALUATION",
+            f"P/E={metrics.pe:.1f}",
+            force_zero_penalty=True,
+        )
 
     return flags
 
