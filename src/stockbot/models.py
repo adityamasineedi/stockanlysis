@@ -141,6 +141,11 @@ class BriefMetadata:
     ttm_eps: float | None = None  # TTM EPS read from the same FINANCIALS table as the report
     pe_price_eps: float | None = None  # price / ttm_eps — the multiple the report must quote
     adv_inr_cr: float | None = None  # average daily turnover ₹ crore
+    quarterly_pe: float | None = None  # price / (latest quarter EPS × 4)
+    sales_ttm_cr: float | None = None
+    pat_ttm_cr: float | None = None
+    opm_pct: float | None = None
+    order_book_cr: float | None = None
 
 
 @dataclass(frozen=True)
