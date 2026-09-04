@@ -1,8 +1,12 @@
-"""Red-flag penalty system — separate from base metric scores.
+"""Red-flag penalty system — for signals not already priced into pillars.
 
 Promoter *holding* % is never a red flag by itself.
 Only *pledged* share of promoter holding uses pledge thresholds
 (aligned with eligibility prompt: Prefer ≤10, Borderline 10–25, Critical >25).
+
+OCF/PAT gaps are recorded as flags for routing, but carry **zero score
+penalty** — cash_flow_quality already embeds that weakness. Stacking a
+second −10 crushed mixed names into the low 30s on a 0–100 scale.
 """
 
 from __future__ import annotations
@@ -82,23 +86,42 @@ def collect_red_flags(
 
         issuer = classify_issuer(metrics)
         cash = assess_cash_conversion(metrics, issuer)
+        # OCF/PAT is already scored inside cash_flow_quality (and was double-hit
+        # via earnings_quality). Keep the flag for routing / Telegram context,
+        # but do NOT subtract another −10/−5 from the composite — that triple
+        # count pushed mixed names into the low 30s on a 0–100 scale.
         if cash.status == "CRITICAL":
-            add(
-                "major",
-                "OCF_PAT_GAP",
-                f"OCF/PAT current={cash.ocf_pat_current} 3y_cum={cash.ocf_pat_3y} (Critical)",
+            flags.append(
+                RedFlag(
+                    severity="major",
+                    code="OCF_PAT_GAP",
+                    message=(
+                        f"OCF/PAT current={cash.ocf_pat_current} "
+                        f"3y_cum={cash.ocf_pat_3y} (Critical)"
+                    ),
+                    penalty=0.0,
+                )
             )
         elif cash.status == "ESCALATED_WATCH":
-            add(
-                "moderate",
-                "OCF_PAT_ESCALATED",
-                f"OCF/PAT ESCALATED_WATCH: current={cash.ocf_pat_current} 3y_cum={cash.ocf_pat_3y}",
+            flags.append(
+                RedFlag(
+                    severity="moderate",
+                    code="OCF_PAT_ESCALATED",
+                    message=(
+                        f"OCF/PAT ESCALATED_WATCH: current={cash.ocf_pat_current} "
+                        f"3y_cum={cash.ocf_pat_3y}"
+                    ),
+                    penalty=0.0,
+                )
             )
         elif cash.status == "WATCH":
-            add(
-                "minor",
-                "OCF_PAT_WATCH",
-                f"OCF/PAT WATCH: {cash.reason}",
+            flags.append(
+                RedFlag(
+                    severity="minor",
+                    code="OCF_PAT_WATCH",
+                    message=f"OCF/PAT WATCH: {cash.reason}",
+                    penalty=0.0,
+                )
             )
         elif cash.status in {
             "NOT_APPLICABLE",
@@ -107,10 +130,13 @@ def collect_red_flags(
         }:
             pass
         else:
-            add(
-                "minor",
-                "OCF_PAT_WATCH",
-                f"OCF/PAT={metrics.ocf_to_pat:.2f}",
+            flags.append(
+                RedFlag(
+                    severity="minor",
+                    code="OCF_PAT_WATCH",
+                    message=f"OCF/PAT={metrics.ocf_to_pat:.2f}",
+                    penalty=0.0,
+                )
             )
 
     margins = series_present(metrics.operating_margin_series)

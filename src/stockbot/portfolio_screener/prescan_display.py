@@ -358,6 +358,10 @@ def synthesize_why(
     quality: float | None,
     growth: float | None,
     strength: float | None,
+    final_score: float | None = None,
+    roe: float | None = None,
+    ocf_pat: float | None = None,
+    pe: float | None = None,
 ) -> str:
     strong: list[str] = []
     weak: list[str] = []
@@ -372,16 +376,44 @@ def synthesize_why(
             strong.append(label)
         elif score < 40:
             weak.append(label)
+
+    cash_notes: list[str] = []
+    if ocf_pat is not None and ocf_pat < 0.5:
+        cash_notes.append(f"cash conversion weak (OCF/PAT {ocf_pat:.2f})")
+    if roe is not None and roe < 8.0:
+        cash_notes.append(f"ROE low ({roe:.1f}%)")
+    if pe is not None and pe >= 50.0:
+        cash_notes.append(f"valuation rich (P/E {pe:.0f}×)")
+
     if strong and weak:
-        return f"{' + '.join(strong).capitalize()} good, but {'/'.join(weak)} weak."
+        base = f"{' + '.join(strong).capitalize()} good, but {'/'.join(weak)} weak."
+        if cash_notes:
+            return f"{base} Also {', '.join(cash_notes)}."
+        return base
     if weak:
-        return f"{'/'.join(weak).capitalize()} weak for a 3-year compounder screen."
+        base = f"{'/'.join(weak).capitalize()} weak for a 3-year compounder screen."
+        if cash_notes:
+            return f"{base} Also {', '.join(cash_notes)}."
+        return base
+    if cash_notes:
+        lead = cash_notes[0][0].upper() + cash_notes[0][1:]
+        rest = cash_notes[1:]
+        body = lead if not rest else f"{lead}, {', '.join(rest)}"
+        score_bit = ""
+        if final_score is not None and final_score < 55:
+            score_bit = f" Score {final_score:.0f} is below the research bar."
+        return f"{body}.{score_bit}".strip()
 
     reason = (key_reason or "").strip()
     if reason and not _is_jargon_why(reason):
         if len(reason) > 140:
             return reason[:137] + "…"
         return reason
+    if strong and final_score is not None and final_score < 55:
+        return (
+            f"{' + '.join(strong).capitalize()} look fine, but overall score "
+            f"{final_score:.0f} is below the research bar (other pillars drag)."
+        )
     if strong:
         return f"{' + '.join(strong).capitalize()} look fine — see gate above."
     return "Score is below the 3-year research bar."

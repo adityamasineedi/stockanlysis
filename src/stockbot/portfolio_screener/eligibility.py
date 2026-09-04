@@ -244,6 +244,10 @@ class EligibilityResult:
             quality=self.quality_score,
             growth=self.growth_score,
             strength=self.financial_strength_score,
+            final_score=self.final_score,
+            roe=self.roe,
+            ocf_pat=self.ocf_pat_current,
+            pe=self.pe,
         )
         # Prefer a short sector/cash override when the routing meaning is richer.
         if (
