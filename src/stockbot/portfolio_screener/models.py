@@ -102,12 +102,22 @@ class StockMetrics:
     operating_margin_series: list[float | None] = field(default_factory=list)
 
     pe: float | None = None
+    # Price / (latest quarter EPS × 4) — Screener-style quarterly P/E.
+    quarterly_pe: float | None = None
     forward_pe: float | None = None
     pb: float | None = None
     ev_ebitda: float | None = None
     peg: float | None = None
     price_fcf: float | None = None
     dividend_yield_pct: float | None = None
+
+    # Explicit TTM levels (₹ Cr on Screener) when a TTM column exists.
+    sales_ttm_cr: float | None = None
+    pat_ttm_cr: float | None = None
+    # Operating margin as percent (Screener OPM %) — same as operating_margin×100.
+    opm_pct: float | None = None
+    # Order book from annual-report parse when available (not invented).
+    order_book_cr: float | None = None
 
     revenue_cagr_3y: float | None = None
     revenue_cagr_5y: float | None = None

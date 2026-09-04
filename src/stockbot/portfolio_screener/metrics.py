@@ -231,6 +231,67 @@ def _compute_margins(
     return safe_div(operating_profit, revenue)
 
 
+def _cell_from_row(row: pd.Series | None, column: object) -> float | None:
+    if row is None or column not in row.index:
+        return None
+    value = row[column]
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ttm_value(row: pd.Series | None) -> float | None:
+    """Prefer an explicit TTM column; else None (caller may fall back to latest)."""
+    if row is None:
+        return None
+    for col in row.index:
+        if str(col).strip().upper() == "TTM":
+            return _cell_from_row(row, col)
+    return None
+
+
+def _latest_quarter_eps(quarterly: pd.DataFrame | None) -> float | None:
+    if quarterly is None or quarterly.empty:
+        return None
+    eps_row = _row(quarterly, _EPS_ALIASES)
+    if eps_row is None:
+        return None
+    values = _series_values(eps_row)
+    return latest(values)
+
+
+def ttm_or_latest_from_aliases(
+    df: pd.DataFrame,
+    aliases: tuple[str, ...],
+) -> float | None:
+    """Prefer TTM column for a named P&L row; else latest annual value."""
+    row = _row(df, aliases)
+    ttm = _ttm_value(row)
+    if ttm is not None:
+        return ttm
+    return latest(_series_values(row))
+
+
+def latest_quarter_eps(quarterly: pd.DataFrame | None) -> float | None:
+    return _latest_quarter_eps(quarterly)
+
+
+def compute_quarterly_pe(
+    price: float | None,
+    latest_quarter_eps_value: float | None,
+) -> float | None:
+    """Screener-style Quarterly P/E = price / (latest quarter EPS × 4)."""
+    if price is None or latest_quarter_eps_value is None or latest_quarter_eps_value <= 0:
+        return None
+    annualized = latest_quarter_eps_value * 4.0
+    if annualized <= 0:
+        return None
+    return price / annualized
+
+
 def fetch_market_metadata(symbol: str) -> dict[str, float | str | None]:
     """Cheap yfinance info pull for sector / market cap / forward PE.
 
@@ -355,6 +416,7 @@ def extract_metrics(
     price: PriceData | None,
     shareholding: Shareholding | None,
     market_meta: dict[str, float | str | None] | None = None,
+    order_book_cr: float | None = None,
 ) -> StockMetrics:
     m = StockMetrics(
         ticker=ticker.symbol,
@@ -722,6 +784,8 @@ def extract_metrics(
     m.operating_margin = _compute_margins(m.revenue, m.operating_profit)
     if m.operating_margin is not None:
         m.metric_sources["operating_margin"] = "computed"
+        m.opm_pct = m.operating_margin * 100.0
+        m.metric_sources["opm_pct"] = "computed"
     m.ebitda_margin = _compute_margins(m.revenue, m.ebitda)
     if m.ebitda_margin is not None:
         m.metric_sources["ebitda_margin"] = "computed"
@@ -729,6 +793,49 @@ def extract_metrics(
         m.operating_margin_series = [
             safe_div(o, r) for o, r in zip(op_series, m.revenue_series, strict=False)
         ]
+
+    sales_ttm = _ttm_value(rev_row)
+    if sales_ttm is not None:
+        m.sales_ttm_cr = sales_ttm
+        m.metric_sources["sales_ttm_cr"] = "fetched"
+    elif m.revenue is not None:
+        m.sales_ttm_cr = m.revenue
+        m.metric_sources["sales_ttm_cr"] = "computed"
+        m.raw_notes.append("sales_ttm_cr uses latest Sales column (no explicit TTM)")
+    else:
+        _mark_missing(m, "sales_ttm_cr", "Sales/Revenue TTM unavailable")
+
+    pat_ttm = _ttm_value(pat_row)
+    if pat_ttm is not None:
+        m.pat_ttm_cr = pat_ttm
+        m.metric_sources["pat_ttm_cr"] = "fetched"
+    elif m.net_income is not None:
+        m.pat_ttm_cr = m.net_income
+        m.metric_sources["pat_ttm_cr"] = "computed"
+        m.raw_notes.append("pat_ttm_cr uses latest Net Profit column (no explicit TTM)")
+    else:
+        _mark_missing(m, "pat_ttm_cr", "PAT TTM unavailable")
+
+    q_eps = _latest_quarter_eps(financials.quarterly)
+    q_pe = compute_quarterly_pe(m.current_price_abs, q_eps)
+    if q_pe is not None:
+        m.quarterly_pe = q_pe
+        m.metric_sources["quarterly_pe"] = "computed"
+        m.raw_notes.append(
+            f"Quarterly P/E = price / (latest quarter EPS {q_eps:.2f} × 4) = {q_pe:.2f}"
+        )
+    else:
+        _mark_missing(
+            m,
+            "quarterly_pe",
+            "cannot compute quarterly P/E (price or positive quarter EPS missing)",
+        )
+
+    if order_book_cr is not None and order_book_cr > 0:
+        m.order_book_cr = float(order_book_cr)
+        m.metric_sources["order_book_cr"] = "fetched"
+    else:
+        _mark_missing(m, "order_book_cr", "order book not parsed from annual report")
 
     total_assets = latest(_series_values(_row(bs, _TOTAL_ASSETS_ALIASES)))
     m.asset_turnover = safe_div(m.revenue, total_assets)
@@ -760,8 +867,11 @@ def extract_metrics(
 
     if m.pe is None and m.current_price_abs and m.eps and m.eps > 0:
         m.pe = m.current_price_abs / m.eps
+        m.metric_sources["pe"] = "computed"
     elif m.pe is None:
         _mark_missing(m, "pe", "cannot compute P/E (price or positive EPS missing)")
+    elif "pe" not in m.metric_sources:
+        m.metric_sources["pe"] = "yfinance"
 
     if m.peg is None and m.pe is not None and m.eps_cagr_3y is not None and m.eps_cagr_3y > 0:
         m.peg = m.pe / (m.eps_cagr_3y * 100.0)

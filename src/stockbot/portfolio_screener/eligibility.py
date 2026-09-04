@@ -147,6 +147,13 @@ class EligibilityResult:
     interest_coverage: float | None = None
     net_debt_ebitda: float | None = None
     roe: float | None = None
+    market_cap_cr: float | None = None
+    pe: float | None = None
+    quarterly_pe: float | None = None
+    opm_pct: float | None = None
+    sales_ttm_cr: float | None = None
+    pat_ttm_cr: float | None = None
+    order_book_cr: float | None = None
     next_research_action: str | None = None
     quality_override: bool = False
     quality_score: float | None = None
@@ -221,6 +228,13 @@ class EligibilityResult:
             ocf_pat=self.ocf_pat_current,
             net_debt_ebitda=self.net_debt_ebitda,
             interest_coverage=self.interest_coverage,
+            market_cap_cr=self.market_cap_cr,
+            pe=self.pe,
+            quarterly_pe=self.quarterly_pe,
+            opm_pct=self.opm_pct,
+            sales_ttm_cr=self.sales_ttm_cr,
+            pat_ttm_cr=self.pat_ttm_cr,
+            order_book_cr=self.order_book_cr,
         )
         if metrics:
             body.extend(metrics)
@@ -340,6 +354,13 @@ class EligibilityResult:
             ocf_pat=self.ocf_pat_current,
             net_debt_ebitda=self.net_debt_ebitda,
             interest_coverage=self.interest_coverage,
+            market_cap_cr=self.market_cap_cr,
+            pe=self.pe,
+            quarterly_pe=self.quarterly_pe,
+            opm_pct=self.opm_pct,
+            sales_ttm_cr=self.sales_ttm_cr,
+            pat_ttm_cr=self.pat_ttm_cr,
+            order_book_cr=self.order_book_cr,
         )
         if metrics:
             body.extend(metrics)
@@ -926,6 +947,13 @@ def check_deep_analysis_eligibility(
             round(m.net_debt_ebitda, 2) if m.net_debt_ebitda is not None else None
         ),
         roe=round(m.roe, 2) if m.roe is not None else None,
+        market_cap_cr=round(m.market_cap_cr, 2) if m.market_cap_cr is not None else None,
+        pe=round(m.pe, 2) if m.pe is not None else None,
+        quarterly_pe=round(m.quarterly_pe, 2) if m.quarterly_pe is not None else None,
+        opm_pct=round(m.opm_pct, 2) if m.opm_pct is not None else None,
+        sales_ttm_cr=round(m.sales_ttm_cr, 2) if m.sales_ttm_cr is not None else None,
+        pat_ttm_cr=round(m.pat_ttm_cr, 2) if m.pat_ttm_cr is not None else None,
+        order_book_cr=round(m.order_book_cr, 2) if m.order_book_cr is not None else None,
         next_research_action=routing.next_action,
         quality_override=routing.quality_override,
         quality_score=round(quant.components.business_quality, 1),

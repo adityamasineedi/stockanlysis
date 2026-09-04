@@ -193,6 +193,8 @@ def build_brief_metadata(
     price: PriceData,
     technicals: Technicals,
     financials: Financials | None = None,
+    *,
+    order_book_cr: float | None = None,
 ) -> BriefMetadata:
     meta = fetch_market_metadata(ticker.symbol)
     ttm_eps = _ttm_eps_from_financials(financials)
@@ -206,6 +208,34 @@ def build_brief_metadata(
         else None,
         ohlcv=price.ohlcv_unadjusted,
     )
+
+    sales_ttm: float | None = None
+    pat_ttm: float | None = None
+    opm_pct: float | None = None
+    quarterly_pe: float | None = None
+    if financials is not None:
+        from stockbot.portfolio_screener.metrics import (
+            compute_quarterly_pe,
+            latest_quarter_eps,
+            ttm_or_latest_from_aliases,
+        )
+
+        sales_ttm = ttm_or_latest_from_aliases(
+            financials.pnl, ("Sales", "Revenue", "Total Income")
+        )
+        pat_ttm = ttm_or_latest_from_aliases(
+            financials.pnl, ("Net Profit", "Profit after Tax", "PAT")
+        )
+        op_ttm = ttm_or_latest_from_aliases(
+            financials.pnl, ("Operating Profit", "OPM")
+        )
+        if op_ttm is not None and sales_ttm is not None and sales_ttm > 0:
+            opm_pct = round((op_ttm / sales_ttm) * 100.0, 2)
+        q_eps = latest_quarter_eps(financials.quarterly)
+        quarterly_pe_raw = compute_quarterly_pe(price.current_price_abs, q_eps)
+        if quarterly_pe_raw is not None:
+            quarterly_pe = round(quarterly_pe_raw, 2)
+
     return BriefMetadata(
         ticker=ticker.symbol,
         company_name=ticker.company_name,
@@ -224,6 +254,13 @@ def build_brief_metadata(
         range_52w_high=round(price.week52_high_abs, 2),
         rsi_14=round(technicals.rsi14, 2) if technicals.rsi14 is not None else None,
         adv_inr_cr=adv_cr,
+        quarterly_pe=quarterly_pe,
+        sales_ttm_cr=round(sales_ttm, 2) if sales_ttm is not None else None,
+        pat_ttm_cr=round(pat_ttm, 2) if pat_ttm is not None else None,
+        opm_pct=opm_pct,
+        order_book_cr=round(float(order_book_cr), 2)
+        if order_book_cr is not None and order_book_cr > 0
+        else None,
     )
 
 
@@ -275,6 +312,15 @@ def build_street_consensus(ticker: TickerInfo, price: PriceData) -> StreetConsen
     )
 
 
+def _order_book_from_brief(brief: Brief) -> float | None:
+    summary = brief.annual_report.business_summary
+    if summary is None or summary.order_book_cr is None:
+        return None
+    if summary.order_book_cr <= 0:
+        return None
+    return float(summary.order_book_cr)
+
+
 def build_prescan_summary(brief: Brief) -> PrescanSummary | None:
     """Quant-only prescan summary from brief fetch results (no eligibility AI)."""
     market_meta = fetch_market_metadata(brief.ticker.symbol)
@@ -284,6 +330,7 @@ def build_prescan_summary(brief: Brief) -> PrescanSummary | None:
         price=brief.price,
         shareholding=brief.shareholding,
         market_meta=market_meta,
+        order_book_cr=_order_book_from_brief(brief),
     )
     config = ScreenerRunConfig(skip_ai=True)
     quant = compute_quant_score(metrics, config)
@@ -312,7 +359,14 @@ def build_prescan_summary(brief: Brief) -> PrescanSummary | None:
 
 
 def enrich_brief(brief: Brief) -> Brief:
-    metadata = build_brief_metadata(brief.ticker, brief.price, brief.technicals, brief.financials)
+    order_book = _order_book_from_brief(brief)
+    metadata = build_brief_metadata(
+        brief.ticker,
+        brief.price,
+        brief.technicals,
+        brief.financials,
+        order_book_cr=order_book,
+    )
     prescan_summary = build_prescan_summary(brief)
     news_summary = build_news_summary(brief.news)
     street_consensus = build_street_consensus(brief.ticker, brief.price)
@@ -357,6 +411,11 @@ def format_metadata_json(
         "ttm_eps": metadata.ttm_eps,
         "ttm_pe": metadata.ttm_pe,
         "ttm_pb": metadata.ttm_pb,
+        "quarterly_pe": metadata.quarterly_pe,
+        "sales_ttm_cr": metadata.sales_ttm_cr,
+        "pat_ttm_cr": metadata.pat_ttm_cr,
+        "opm_pct": metadata.opm_pct,
+        "order_book_cr": metadata.order_book_cr,
         "price_stats": {
             "price": metadata.price,
             "price_date": metadata.price_date,

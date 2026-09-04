@@ -239,6 +239,22 @@ def _ic_light(value: float) -> str:
     return "🔴"
 
 
+def _pe_light(value: float) -> str:
+    if value <= 25:
+        return "🟢"
+    if value <= 40:
+        return "🟡"
+    return "🔴"
+
+
+def _opm_light(value: float) -> str:
+    if value >= 15:
+        return "🟢"
+    if value >= 8:
+        return "🟡"
+    return "🔴"
+
+
 def format_metric_lines(
     *,
     debt_equity: float | None = None,
@@ -246,12 +262,35 @@ def format_metric_lines(
     ocf_pat: float | None = None,
     net_debt_ebitda: float | None = None,
     interest_coverage: float | None = None,
+    market_cap_cr: float | None = None,
+    pe: float | None = None,
+    quarterly_pe: float | None = None,
+    opm_pct: float | None = None,
+    sales_ttm_cr: float | None = None,
+    pat_ttm_cr: float | None = None,
+    order_book_cr: float | None = None,
 ) -> list[str]:
     lines: list[str] = []
+    if market_cap_cr is not None:
+        lines.append(telegram_code_line(f"🏛 Market Cap ₹{market_cap_cr:,.0f} Cr"))
+    if pe is not None:
+        lines.append(telegram_code_line(f"📐 Stock P/E {pe:.2f}× {_pe_light(pe)}"))
+    if quarterly_pe is not None:
+        lines.append(
+            telegram_code_line(f"📐 Quarterly P/E {quarterly_pe:.2f}× {_pe_light(quarterly_pe)}")
+        )
     if debt_equity is not None:
         lines.append(telegram_code_line(f"💰 D/E {debt_equity:.2f}× {_de_light(debt_equity)}"))
     if roe is not None:
         lines.append(telegram_code_line(f"📈 ROE {roe:.1f}% {_roe_light(roe)}"))
+    if opm_pct is not None:
+        lines.append(telegram_code_line(f"🏭 OPM {opm_pct:.1f}% {_opm_light(opm_pct)}"))
+    if sales_ttm_cr is not None:
+        lines.append(telegram_code_line(f"📦 Sales TTM ₹{sales_ttm_cr:,.0f} Cr"))
+    if pat_ttm_cr is not None:
+        lines.append(telegram_code_line(f"🧾 PAT TTM ₹{pat_ttm_cr:,.0f} Cr"))
+    if order_book_cr is not None:
+        lines.append(telegram_code_line(f"📋 Order Book ₹{order_book_cr:,.0f} Cr"))
     if ocf_pat is not None:
         lines.append(telegram_code_line(f"💵 OCF/PAT {ocf_pat:.2f}× {_ocf_pat_light(ocf_pat)}"))
     if net_debt_ebitda is not None:
