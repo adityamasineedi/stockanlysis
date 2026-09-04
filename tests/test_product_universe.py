@@ -129,3 +129,44 @@ def test_portfolio_progress_counts_stages(monkeypatch, tmp_path: Path) -> None:
     assert "BUYME" in html
     assert "HELD" in html
     assert "12–18" in html
+
+
+def test_portfolio_progress_includes_off_universe_soft_picks(monkeypatch, tmp_path: Path) -> None:
+    """/prescan names not on watchlist must still show under soft picks."""
+    from stockbot import storage
+    from stockbot.product_universe import ProductUniverse, UniverseSymbol
+
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "prog2.db")
+    uni = ProductUniverse(
+        symbols=(UniverseSymbol("TCS", frozenset({"watchlist"})),),
+        watchlist_path=tmp_path / "wl.txt",
+        sip_path=None,
+    )
+    pick_row = {
+        "ticker": "PRECWIRE",
+        "quant_score": 54.0,
+        "quality_score": 60.0,
+        "growth_score": 50.0,
+        "strength_score": 50.0,
+        "hard_filter_status": "PASS",
+        "cash_conversion_status": "PASS",
+        "verdict": "HOLDING_MONITOR_ONLY",
+    }
+    monkeypatch.setattr(
+        "stockbot.portfolio_progress.load_prescan_outcomes",
+        lambda: [pick_row],
+    )
+    monkeypatch.setattr(
+        "stockbot.portfolio_progress.query_pick_outcomes",
+        lambda rows: [pick_row],
+    )
+    report = build_portfolio_progress(None, universe=uni)
+    assert report.soft_pick_count == 1
+    assert report.off_universe_count == 1
+    prec = next(r for r in report.rows if r.symbol == "PRECWIRE")
+    assert prec.soft_pick is True
+    assert prec.in_universe is False
+    html = format_portfolio_progress_html(report, universe=uni)
+    assert "PRECWIRE" in html
+    assert "off-list" in html
+    assert "soft picks" in html.lower() or "Soft pick" in html

@@ -2,6 +2,10 @@
 
 Read-only snapshot over the unified product universe, prescan pick log, stored
 analyses, SIP membership, and optional holdings.
+
+Funnel symbols from /prescan, /pick, /analyze, and /hold are included even when
+they are not yet on the watchlist ∪ SIP universe — otherwise /progress looked
+empty while soft picks existed off-list.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from stockbot.portfolio_screener.pick_policy import (
 )
 from stockbot.product_universe import (
     ProductUniverse,
+    UniverseSymbol,
     format_universe_summary,
     load_product_universe,
 )
@@ -49,6 +54,7 @@ class SymbolProgress:
     buy_range_issued: bool
     held: bool
     stage: Stage
+    in_universe: bool = True
 
 
 @dataclass(frozen=True)
@@ -74,6 +80,10 @@ class PortfolioProgressReport:
     def analyzed_count(self) -> int:
         return sum(1 for r in self.rows if r.analyzed)
 
+    @property
+    def off_universe_count(self) -> int:
+        return sum(1 for r in self.rows if not r.in_universe)
+
 
 def _buy_range_issued(verdict_json: dict[str, Any]) -> bool:
     if verdict_json.get("buy_range_allowed") is not True:
@@ -96,21 +106,78 @@ def _stage_for(row: SymbolProgress) -> Stage:
     return "not_prescanned"
 
 
+def _row_for_symbol(
+    symbol: str,
+    *,
+    uni_item: UniverseSymbol | None,
+    prescanned_row: dict[str, Any] | None,
+    pick_set: set[str],
+    analyzed_v: dict[str, Any] | None,
+    held: set[str],
+) -> SymbolProgress:
+    soft = symbol in pick_set
+    tier: str | None = None
+    if prescanned_row is not None and is_pick_eligible(prescanned_row):
+        soft = True
+        tier = pick_tier(prescanned_row)
+    elif soft and prescanned_row is not None:
+        tier = pick_tier(prescanned_row)
+
+    draft = SymbolProgress(
+        symbol=symbol,
+        in_sip=bool(uni_item is not None and "sip" in uni_item.sources),
+        sip_bucket=uni_item.sip_bucket_label if uni_item is not None else None,
+        prescanned=prescanned_row is not None,
+        soft_pick=soft,
+        pick_tier=tier,
+        analyzed=analyzed_v is not None,
+        verdict=(
+            str(analyzed_v.get("verdict"))
+            if isinstance(analyzed_v, dict) and analyzed_v.get("verdict")
+            else None
+        ),
+        buy_range_issued=(
+            _buy_range_issued(analyzed_v) if isinstance(analyzed_v, dict) else False
+        ),
+        held=symbol in held,
+        stage="not_prescanned",
+        in_universe=uni_item is not None,
+    )
+    return SymbolProgress(
+        symbol=draft.symbol,
+        in_sip=draft.in_sip,
+        sip_bucket=draft.sip_bucket,
+        prescanned=draft.prescanned,
+        soft_pick=draft.soft_pick,
+        pick_tier=draft.pick_tier,
+        analyzed=draft.analyzed,
+        verdict=draft.verdict,
+        buy_range_issued=draft.buy_range_issued,
+        held=draft.held,
+        stage=_stage_for(draft),
+        in_universe=draft.in_universe,
+    )
+
+
 def build_portfolio_progress(
     chat_id: int | None = None,
     *,
     universe: ProductUniverse | None = None,
 ) -> PortfolioProgressReport:
     uni = universe or load_product_universe()
+    uni_by_symbol = {item.symbol: item for item in uni.symbols}
+
     prescan_rows = load_prescan_outcomes()
     by_ticker = {
         str(r.get("ticker") or "").strip().upper(): r
         for r in prescan_rows
         if str(r.get("ticker") or "").strip()
     }
+    pick_rows = query_pick_outcomes(prescan_rows)
     pick_set = {
         str(r.get("ticker") or "").strip().upper()
-        for r in query_pick_outcomes(prescan_rows)
+        for r in pick_rows
+        if str(r.get("ticker") or "").strip()
     }
     analyses = {
         ticker.upper(): verdict
@@ -120,45 +187,25 @@ def build_portfolio_progress(
     if chat_id is not None:
         held = {h.ticker.upper() for h in list_holdings(chat_id)}
 
-    rows: list[SymbolProgress] = []
-    for item in uni.symbols:
-        symbol = item.symbol
-        prescanned_row = by_ticker.get(symbol)
-        analyzed_v = analyses.get(symbol)
-        soft = symbol in pick_set
-        tier = None
-        if prescanned_row is not None and is_pick_eligible(prescanned_row):
-            soft = True
-            tier = pick_tier(prescanned_row)
-        elif soft and prescanned_row is not None:
-            tier = pick_tier(prescanned_row)
+    # Universe first (stable order), then funnel-only symbols (prescan / pick /
+    # analyze / hold) that are not yet on the watchlist ∪ SIP list.
+    ordered: list[str] = [item.symbol for item in uni.symbols]
+    seen = set(ordered)
+    extras = sorted(
+        (pick_set | set(by_ticker) | set(analyses) | held) - seen
+    )
+    ordered.extend(extras)
 
-        progress = SymbolProgress(
-            symbol=symbol,
-            in_sip="sip" in item.sources,
-            sip_bucket=item.sip_bucket_label,
-            prescanned=prescanned_row is not None,
-            soft_pick=soft,
-            pick_tier=tier,
-            analyzed=analyzed_v is not None,
-            verdict=str(analyzed_v.get("verdict")) if isinstance(analyzed_v, dict) and analyzed_v.get("verdict") else None,
-            buy_range_issued=_buy_range_issued(analyzed_v) if isinstance(analyzed_v, dict) else False,
-            held=symbol in held,
-            stage="not_prescanned",
-        )
+    rows: list[SymbolProgress] = []
+    for symbol in ordered:
         rows.append(
-            SymbolProgress(
-                symbol=progress.symbol,
-                in_sip=progress.in_sip,
-                sip_bucket=progress.sip_bucket,
-                prescanned=progress.prescanned,
-                soft_pick=progress.soft_pick,
-                pick_tier=progress.pick_tier,
-                analyzed=progress.analyzed,
-                verdict=progress.verdict,
-                buy_range_issued=progress.buy_range_issued,
-                held=progress.held,
-                stage=_stage_for(progress),
+            _row_for_symbol(
+                symbol,
+                uni_item=uni_by_symbol.get(symbol),
+                prescanned_row=by_ticker.get(symbol),
+                pick_set=pick_set,
+                analyzed_v=analyses.get(symbol),
+                held=held,
             )
         )
 
@@ -244,8 +291,13 @@ def format_portfolio_progress_html(
             f"<b>{report.analyzed_count}</b> analyzed · "
             f"<b>{report.soft_pick_count}</b> soft picks"
         ),
-        "",
     ]
+    if report.off_universe_count:
+        lines.append(
+            f"📌 <b>{report.off_universe_count}</b> funnel name(s) not yet on "
+            "watchlist/SIP — still counted below."
+        )
+    lines.append("")
 
     by_stage: dict[Stage, list[SymbolProgress]] = {
         "buy_range": [],
@@ -270,6 +322,8 @@ def format_portfolio_progress_html(
                 bits.append("SIP")
             if row.held:
                 bits.append("held")
+            if not row.in_universe:
+                bits.append("off-list")
             lines.append("· " + " · ".join(bits))
         if len(items) > limit:
             lines.append(f"· … +{len(items) - limit} more")
@@ -280,9 +334,15 @@ def format_portfolio_progress_html(
     _show("🧠 Analyzed — no buy range yet", by_stage["analyzed"])
     _show("🎯 Soft pick — needs /analyze", by_stage["soft_pick"])
 
-    not_ready = len(by_stage["prescanned"]) + len(by_stage["not_prescanned"])
+    # Off-list prescans that are not soft picks yet — surface briefly.
+    off_prescan = [r for r in by_stage["prescanned"] if not r.in_universe]
+    _show("📋 Prescanned (off-list, not soft pick yet)", off_prescan, limit=8)
+
+    not_ready = sum(1 for r in by_stage["prescanned"] if r.in_universe) + len(
+        by_stage["not_prescanned"]
+    )
     lines.append(
-        f"⏳ Not ready yet: {not_ready} (prescan or wait). "
+        f"⏳ Universe not ready yet: {not_ready} (prescan or wait). "
         f"Batch: <code>/sip prescan</code>"
     )
     lines.append("")

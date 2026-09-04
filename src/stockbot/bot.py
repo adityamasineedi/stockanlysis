@@ -1268,25 +1268,37 @@ async def handle_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def handle_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show shortlist → analyze → hold progress toward the 12–18 book."""
+    """Show shortlist → analyze → hold progress toward the 12–18 book.
+
+    Read-only — allowed while /analyze is running so the funnel stays visible.
+    """
     if await _reject_if_unauthorized(update):
         return
-    if await _reject_if_analysis_busy(update):
-        return
     _clear_awaiting_symbol(context)
-    chat_id = update.effective_chat.id
+    chat = update.effective_chat
+    if chat is None or update.message is None:
+        return
+    chat_id = chat.id
 
-    def _build() -> str:
+    def _build() -> list[str]:
         from stockbot.portfolio_progress import (
             build_portfolio_progress,
             format_portfolio_progress_html,
         )
+        from stockbot.portfolio_sip_messages import split_telegram_chunks
 
         report = build_portfolio_progress(chat_id)
-        return format_portfolio_progress_html(report)
+        return split_telegram_chunks(format_portfolio_progress_html(report))
 
-    text = await asyncio.to_thread(_build)
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    try:
+        chunks = await asyncio.to_thread(_build)
+    except Exception as exc:
+        # Always reply — never silent-fail /progress.
+        logger.exception("handle_progress failed")
+        await update.message.reply_text(f"Progress failed: {esc(exc)}")
+        return
+    for chunk in chunks:
+        await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
 
 
 async def handle_preflight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
