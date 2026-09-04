@@ -56,6 +56,7 @@ _CASH_ALIASES = ("Cash Equivalents", "Cash", "Cash and Bank")
 _TOTAL_ASSETS_ALIASES = ("Total Assets",)
 _ROE_ALIASES = ("ROE %", "ROE")
 _ROCE_ALIASES = ("ROCE %", "ROCE")
+_ROIC_ALIASES = ("ROIC %", "ROIC", "Return on Invested Capital")
 _CURRENT_RATIO_ALIASES = ("Current Ratio",)
 _CURRENT_ASSETS_ALIASES = ("Current Assets", "Total Current Assets")
 _CURRENT_LIAB_ALIASES = ("Current Liabilities", "Total Current Liabilities")
@@ -754,6 +755,56 @@ def extract_metrics(
                 _mark_missing(
                     m, "roce", "ROCE % missing from ratios; cannot compute from P&L+BS"
                 )
+
+    # ROIC: Screener ratios → NOPAT / (equity + debt − cash). CE pillar needs this;
+    # without it capital_efficiency collapses to asset turnover alone.
+    roic_row = _row(ratios, _ROIC_ALIASES)
+    fetched_roic = latest(_series_values(roic_row)) if roic_row is not None else None
+    if fetched_roic is not None:
+        _set_metric(
+            m,
+            "roic",
+            fetched_roic,
+            source="fetched",
+            missing_reason="ROIC unavailable",
+        )
+    else:
+        invested_capital: float | None = None
+        if m.equity is not None:
+            invested_capital = m.equity + (m.debt or 0.0) - (m.cash or 0.0)
+            if invested_capital <= 0 and m.equity is not None:
+                invested_capital = m.equity + (m.debt or 0.0)
+        computed_roic = None
+        if (
+            m.operating_profit is not None
+            and invested_capital is not None
+            and invested_capital > 0
+        ):
+            tax_rate = 0.25
+            if m.net_income is not None and m.operating_profit > 0:
+                implied = (m.operating_profit - m.net_income) / m.operating_profit
+                if 0.0 <= implied <= 0.40:
+                    tax_rate = implied
+            nopat = m.operating_profit * (1.0 - tax_rate)
+            computed_roic = (nopat / invested_capital) * 100.0
+        if computed_roic is not None:
+            _set_metric(
+                m,
+                "roic",
+                computed_roic,
+                source="computed",
+                missing_reason="ROIC unavailable",
+            )
+            m.raw_notes.append(
+                "ROIC % computed from NOPAT / (Equity + Debt − Cash) = "
+                f"{computed_roic:.2f}"
+            )
+        else:
+            _mark_missing(
+                m,
+                "roic",
+                "ROIC % missing from ratios; cannot compute from P&L+BS",
+            )
 
     m.current_ratio = latest(_series_values(_row(ratios, _CURRENT_RATIO_ALIASES)))
     if m.current_ratio is not None:

@@ -172,20 +172,27 @@ def collect_red_flags(
             force_zero_penalty=True,
         )
 
-    if metrics.debt_equity is not None and metrics.debt_equity > 2.0:
-        add(
-            "major",
-            "HIGH_LEVERAGE",
-            f"D/E={metrics.debt_equity:.2f}",
-            force_zero_penalty=True,
-        )
-    elif metrics.debt_equity is not None and metrics.debt_equity > 1.0:
-        add(
-            "minor",
-            "ELEVATED_LEVERAGE",
-            f"D/E={metrics.debt_equity:.2f}",
-            force_zero_penalty=True,
-        )
+    # Bank/NBFC D/E is not industrial leverage — skip leverage flags for them.
+    from stockbot.portfolio_screener.issuer_routing import (
+        FINANCIAL_SCORECARD_ISSUERS,
+        classify_issuer,
+    )
+
+    if classify_issuer(metrics) not in FINANCIAL_SCORECARD_ISSUERS:
+        if metrics.debt_equity is not None and metrics.debt_equity > 2.0:
+            add(
+                "major",
+                "HIGH_LEVERAGE",
+                f"D/E={metrics.debt_equity:.2f}",
+                force_zero_penalty=True,
+            )
+        elif metrics.debt_equity is not None and metrics.debt_equity > 1.0:
+            add(
+                "minor",
+                "ELEVATED_LEVERAGE",
+                f"D/E={metrics.debt_equity:.2f}",
+                force_zero_penalty=True,
+            )
 
     if metrics.pe is not None and metrics.pe > 80:
         add(

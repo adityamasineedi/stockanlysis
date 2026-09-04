@@ -91,6 +91,18 @@ def weighted_mean(scores: list[tuple[float | None, float]]) -> tuple[float, floa
     return avg, avail_w / total_w
 
 
+def finalize_pillar(
+    score: float,
+    coverage: float,
+    *,
+    empty_neutral: float = 50.0,
+) -> float:
+    """Apply coverage discount; missing-all inputs → neutral, not a harsh 0."""
+    if coverage <= 0.0:
+        return clamp(empty_neutral)
+    return clamp(score * (0.6 + 0.4 * coverage))
+
+
 def growth_trend_from_cagrs(
     recent: float | None,
     longer: float | None,

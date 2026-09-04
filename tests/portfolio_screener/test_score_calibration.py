@@ -170,3 +170,43 @@ def test_ocf_pat_gap_alone_is_not_hard_exclude() -> None:
     result = apply_hard_filters(m, _validation_ok("CASHGAP"))
     assert result.status == "PASS"
     assert not any("OCF" in r for r in result.reasons)
+
+
+def test_empty_capital_efficiency_is_neutral_not_zero() -> None:
+    assert score_capital_efficiency(StockMetrics(ticker="EMPTY")) == 50.0
+
+
+def test_bank_cash_and_bs_are_neutral_scorecard() -> None:
+    from stockbot.portfolio_screener.cashflow_scorer import score_cash_flow
+    from stockbot.portfolio_screener.risk_scorer import score_balance_sheet
+
+    bank = StockMetrics(
+        ticker="HDFCBANK",
+        sector="Financial Services",
+        industry="Banks - Private Sector",
+        debt_equity=8.0,
+        ocf_to_pat=0.05,
+        net_income=1000.0,
+        ocf_series=[-100.0, 50.0, 20.0],
+    )
+    assert score_cash_flow(bank) == 65.0
+    assert score_balance_sheet(bank) == 65.0
+    flags = collect_red_flags(bank)
+    assert not any(f.code.endswith("LEVERAGE") for f in flags)
+
+
+def test_loss_maker_cash_ignores_ocf_pat_of_negatives() -> None:
+    from stockbot.portfolio_screener.cashflow_scorer import score_cash_flow
+
+    loss = StockMetrics(
+        ticker="LOSSCO",
+        sector="Technology",
+        industry="Software",
+        net_income=-50.0,
+        net_income_series=[-40.0, -45.0, -50.0],
+        ocf_to_pat=0.9,  # two negatives look "fine" if scored naively
+        operating_cash_flow=-40.0,
+        ocf_series=[-30.0, -35.0, -40.0],
+    )
+    # Consistency of negative OCF should keep score modest, not reward fake OCF/PAT.
+    assert score_cash_flow(loss) < 40.0
