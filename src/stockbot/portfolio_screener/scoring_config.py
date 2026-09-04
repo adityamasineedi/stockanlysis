@@ -7,8 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-SCREENING_VERSION = "v1.0"
-WEIGHTS_VERSION = "v1.0"
+SCREENING_VERSION = "v1.1"
+WEIGHTS_VERSION = "v1.1"
 PROMPT_VERSION = "v1.0"
 
 # Pre-screen AI ranking defaults. gpt-4o-mini is the cheapest solid option

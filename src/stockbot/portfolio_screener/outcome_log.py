@@ -247,6 +247,133 @@ def backfill_rows_qgs(
     return [backfill_row_qgs(row, persist=persist) for row in rows]
 
 
+def _row_score_stamp(row: dict[str, Any]) -> str | None:
+    raw = row.get("weights_version") or row.get("screening_version")
+    return str(raw) if raw else None
+
+
+def row_needs_score_refresh(row: dict[str, Any]) -> bool:
+    """True when stored Overall/Q/G/S predate the current scorer weights."""
+    from stockbot.portfolio_screener.scoring_config import WEIGHTS_VERSION
+
+    stamp = _row_score_stamp(row)
+    if stamp is None:
+        return True
+    return stamp != WEIGHTS_VERSION
+
+
+def rescore_prescan_row(
+    row: dict[str, Any],
+    *,
+    persist: bool = True,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Recompute Overall + Q/G/S (+ cash/hard/band) with the live scorer.
+
+    Used so /candidates reflects scoring-calibration changes for every name
+    that has ever been /prescan'd — without requiring a manual re-prescan.
+    Verdict / AI routing fields are kept from the last full /prescan.
+    """
+    row = normalize_prescan_row(row)
+    if not force and not row_needs_score_refresh(row) and _row_has_qgs(row):
+        return row
+
+    ticker = str(row.get("ticker") or "").strip().upper()
+    if not ticker:
+        return row
+
+    from stockbot.fetch.tickers import AmbiguousMatch, load_symbol_table, resolve_ticker
+    from stockbot.portfolio_screener.data_loader import fetch_universe_metrics
+    from stockbot.portfolio_screener.issuer_routing import (
+        assess_cash_conversion,
+        classify_issuer,
+    )
+    from stockbot.portfolio_screener.portfolio_selector import candidate_band
+    from stockbot.portfolio_screener.quant_engine import compute_quant_score
+    from stockbot.portfolio_screener.scoring_config import (
+        SCREENING_VERSION,
+        WEIGHTS_VERSION,
+        ScreenerRunConfig,
+    )
+
+    resolved = resolve_ticker(ticker, load_symbol_table())
+    if resolved is None or isinstance(resolved, AmbiguousMatch):
+        logger.warning("rescore_prescan_row: cannot resolve %s", ticker)
+        return row
+
+    metrics = fetch_universe_metrics([resolved])
+    if not metrics:
+        logger.warning("rescore_prescan_row: no metrics for %s", ticker)
+        return row
+
+    m = metrics[0]
+    config = ScreenerRunConfig(skip_ai=True, dry_run=True)
+    quant = compute_quant_score(m, config)
+    issuer = classify_issuer(m)
+    cash = assess_cash_conversion(m, issuer)
+    band = candidate_band(quant.final_quant_score, config.constraints)
+
+    enriched = {
+        **row,
+        "quant_score": round(quant.final_quant_score, 2),
+        "candidate_band": band,
+        "quality_score": round(quant.components.business_quality, 1),
+        "growth_score": round(quant.components.growth, 1),
+        "strength_score": round(quant.components.financial_strength, 1),
+        "hard_filter_status": quant.hard_filter.status,
+        "hard_filter_reasons": list(quant.hard_filter.reasons),
+        "cash_conversion_status": cash.status,
+        "ocf_pat_3y_cumulative": cash.ocf_pat_3y,
+        "data_completeness": quant.data_validation.data_completeness_score,
+        "data_confidence": quant.data_validation.data_confidence,
+        "price_at_scan": (
+            round(m.current_price_abs, 2) if m.current_price_abs is not None else row.get("price_at_scan")
+        ),
+        "weights_version": WEIGHTS_VERSION,
+        "screening_version": SCREENING_VERSION,
+        "score_refreshed_at": datetime.now(UTC).isoformat(),
+    }
+    if persist:
+        log_prescan_outcome(
+            {key: value for key, value in enriched.items() if key != "logged_at"}
+        )
+        logger.info(
+            "rescored prescan %s quant=%.1f Q=%.1f G=%.1f S=%.1f weights=%s",
+            ticker,
+            enriched["quant_score"],
+            enriched["quality_score"],
+            enriched["growth_score"],
+            enriched["strength_score"],
+            WEIGHTS_VERSION,
+        )
+    return enriched
+
+
+def refresh_prescan_scores(
+    rows: list[dict[str, Any]] | None = None,
+    *,
+    path: Path | None = None,
+    persist: bool = True,
+    force: bool = False,
+) -> tuple[list[dict[str, Any]], int]:
+    """Refresh stale (or all, if force) latest-per-ticker scores.
+
+    Returns (updated_rows, refresh_count).
+    """
+    from stockbot.portfolio_screener.scoring_config import WEIGHTS_VERSION
+
+    source = rows if rows is not None else load_prescan_outcomes(path)
+    updated: list[dict[str, Any]] = []
+    refreshed = 0
+    for row in source:
+        needs = force or row_needs_score_refresh(row)
+        new_row = rescore_prescan_row(row, persist=persist, force=force)
+        if needs and _row_score_stamp(new_row) == WEIGHTS_VERSION:
+            refreshed += 1
+        updated.append(new_row)
+    return updated, refreshed
+
+
 def query_prescan_outcomes(
     rows: list[dict[str, Any]],
     *,
@@ -429,6 +556,7 @@ from stockbot.portfolio_screener.prescan_display import (
 CANDIDATES_USAGE = (
     "📋 <b>Candidates — how to use</b>\n"
     "/candidates — all analyze-ready names from your /prescan history\n"
+    "/candidates refresh — re-score every prescanned name with the live scorer\n"
     "/candidates pick — soft tip list (quant ≥50 or strong Q/G/S pillar)\n"
     "/candidates strong — top tier (overall score 80+)\n"
     "/candidates candidate — good picks (score 70–79)\n"
@@ -437,6 +565,8 @@ CANDIDATES_USAGE = (
     "/candidates all — every logged prescan (latest per symbol)\n\n"
     "Names are grouped by tier, best first. Each row shows: symbol · overall "
     "score · Q/G/S pillars · status icons (explained under the list).\n"
+    "Scores refresh automatically when the scorer version changes; "
+    "<code>/candidates refresh</code> forces a full re-score.\n"
     "💡 Run <code>/prescan SYMBOL</code> first to build the list."
 )
 
@@ -464,6 +594,8 @@ class CandidatesFilter:
     analyze_ready_only: bool = True
     label: str = "Analyze-ready"
     pick_mode: bool = False
+    refresh_scores: bool = False
+    force_refresh: bool = False
 
 
 def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
@@ -472,23 +604,34 @@ def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
         return CandidatesFilter(
             analyze_ready_only=True,
             label="Analyze-ready (all bands)",
+            refresh_scores=True,
         )
 
     lowered = [a.lower() for a in args]
     if lowered[0] in {"help", "?"}:
         return CANDIDATES_USAGE
 
+    if lowered[0] == "refresh":
+        return CandidatesFilter(
+            analyze_ready_only=False,
+            label="All logged prescans (refreshed scores)",
+            refresh_scores=True,
+            force_refresh=True,
+        )
+
     if lowered[0] == "pick":
         return CandidatesFilter(
             analyze_ready_only=False,
             pick_mode=True,
             label="Soft pick (quant≥50 or pillar≥70)",
+            refresh_scores=True,
         )
 
     if lowered[0] == "all":
         return CandidatesFilter(
             analyze_ready_only=False,
             label="All logged prescans",
+            refresh_scores=True,
         )
 
     if lowered[0] == "quality":
@@ -502,6 +645,7 @@ def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
             min_quality=min_q,
             analyze_ready_only=True,
             label=f"Q≥{min_q:.0f} analyze-ready",
+            refresh_scores=True,
         )
 
     band_key = lowered[0]
@@ -518,6 +662,7 @@ def parse_candidates_filter(args: list[str]) -> CandidatesFilter | str:
         bands={band},
         analyze_ready_only=True,
         label=labels.get(band, band),
+        refresh_scores=True,
     )
 
 
@@ -782,19 +927,21 @@ def build_pick_messages(
         )
 
     rows = load_prescan_outcomes(target)
+    rows, n_refreshed = refresh_prescan_scores(rows, path=target, persist=True, force=False)
     stale = sum(1 for row in rows if not _row_has_qgs(row))
     if stale:
         logger.info("Backfilling Q/G/S for %d prescan row(s) missing pillar scores", stale)
-    rows = backfill_rows_qgs(rows, persist=True)
+        rows = backfill_rows_qgs(rows, persist=True)
     matched = query_pick_outcomes(rows)
     summary = summarize_pick_policy(rows)
     logger.info(
-        "pick_policy eligible=%d skipped=%d min_quant=%.0f min_pillar=%.0f daily=%s",
+        "pick_policy eligible=%d skipped=%d min_quant=%.0f min_pillar=%.0f daily=%s refreshed=%d",
         summary.eligible_count,
         summary.skipped_count,
         summary.min_quant,
         summary.min_pillar,
         daily,
+        n_refreshed,
     )
     if daily:
         from stockbot.portfolio_progress import (
@@ -828,13 +975,34 @@ def build_candidates_messages(
         )
 
     rows = load_prescan_outcomes(target)
+    refresh_note = ""
+    if parsed.refresh_scores:
+        from stockbot.portfolio_screener.scoring_config import WEIGHTS_VERSION
+
+        rows, n_refreshed = refresh_prescan_scores(
+            rows,
+            path=target,
+            persist=True,
+            force=parsed.force_refresh,
+        )
+        if n_refreshed:
+            refresh_note = (
+                f"♻️ Re-scored <b>{n_refreshed}</b> name(s) with the live scorer "
+                f"(weights {html_escape(WEIGHTS_VERSION)}).\n"
+            )
+        elif parsed.force_refresh:
+            refresh_note = "♻️ Scores already match the live scorer.\n"
+
     if parsed.pick_mode:
         stale = sum(1 for row in rows if not _row_has_qgs(row))
         if stale:
             logger.info("Backfilling Q/G/S for %d prescan row(s) missing pillar scores", stale)
-        rows = backfill_rows_qgs(rows, persist=True)
+            rows = backfill_rows_qgs(rows, persist=True)
         matched = query_pick_outcomes(rows)
-        return format_pick_telegram_chunks(matched), None
+        chunks = format_pick_telegram_chunks(matched)
+        if refresh_note and chunks:
+            chunks[0] = refresh_note + chunks[0]
+        return chunks, None
 
     matched = query_prescan_outcomes(
         rows,
@@ -845,5 +1013,8 @@ def build_candidates_messages(
     stale = sum(1 for row in matched if not _row_has_qgs(row))
     if stale:
         logger.info("Backfilling Q/G/S for %d prescan row(s) missing pillar scores", stale)
-    matched = backfill_rows_qgs(matched, persist=True)
-    return format_prescan_telegram_chunks(matched, title=parsed.label), None
+        matched = backfill_rows_qgs(matched, persist=True)
+    chunks = format_prescan_telegram_chunks(matched, title=parsed.label)
+    if refresh_note and chunks:
+        chunks[0] = refresh_note + chunks[0]
+    return chunks, None

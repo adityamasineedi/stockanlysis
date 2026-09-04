@@ -1243,8 +1243,34 @@ async def handle_candidates(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if await _reject_if_analysis_busy(update):
         return
     _clear_awaiting_symbol(context)
+    if update.message is None:
+        return
     args = list(context.args or [])
+    status = None
+    try:
+        from stockbot.portfolio_screener.outcome_log import (
+            load_prescan_outcomes,
+            row_needs_score_refresh,
+        )
+
+        force = bool(args) and args[0].lower() == "refresh"
+        stale = any(row_needs_score_refresh(r) for r in load_prescan_outcomes())
+        if force or stale:
+            status = await update.message.reply_text(
+                "♻️ Updating scores for every prescanned name…"
+                if force
+                else "♻️ Updating scores to the live scorer…"
+            )
+    except Exception:
+        logger.debug("candidates refresh status skipped", exc_info=True)
+        status = None
+
     chunks, err = await asyncio.to_thread(build_candidates_messages, args)
+    if status is not None:
+        try:
+            await status.delete()
+        except Exception:
+            logger.debug("candidates status delete failed", exc_info=True)
     if err:
         await update.message.reply_text(err, parse_mode=ParseMode.HTML)
         return
@@ -1355,6 +1381,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/prescan — tap from menu, then send the stock name\n"
         "/prescan <symbol> — one-step example: /prescan BEL\n"
         "/candidates — list analyze-ready names from prescan history\n"
+        "/candidates refresh — re-score every prescanned name\n"
         "/candidates pick — soft tip list (quant ≥50 or strong Q/G/S)\n"
         "/candidates strong|candidate|watchlist — filter by score tier\n"
         "/candidates quality 65 — Quality ≥65 and analyze-ready\n"
