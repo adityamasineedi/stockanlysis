@@ -171,6 +171,37 @@ def _build_tokens(
     }
 
 
+_MANGLED_BRACE_RE = re.compile(r"\{\{([^}]+)\}\}")
+
+
+def _repair_mangled_placeholders(report_md: str, tokens: dict[str, object]) -> str:
+    """Rewrite invented brace tokens the model sometimes emits after SMA prose.
+
+    Live failure (NATIONALUM batch): ``{{sma₹365.55}}`` slipped past validation
+    because the known-token check only matched ``\\w+``. Map obvious SMA
+    mangling onto the real ``sma50`` / ``sma200`` values so a paid, validated
+    report still delivers instead of ``render_failed``.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        inner = match.group(1).strip()
+        if inner in tokens and tokens[inner] is not None:
+            return _format(inner, tokens[inner])
+        compact = inner.lower().replace(" ", "")
+        if compact.startswith(("sma200", "dma200")):
+            value = tokens.get("sma200")
+            if value is not None:
+                return _format("sma200", value)
+        if compact.startswith(("sma50", "dma50", "sma₹", "sma")) and "200" not in compact:
+            value = tokens.get("sma50")
+            if value is not None:
+                return _format("sma50", value)
+        return match.group(0)
+
+    return _MANGLED_BRACE_RE.sub(_replace, report_md)
+
+
+
 def render_report(
     report_md: str,
     price: PriceData,
@@ -196,6 +227,10 @@ def render_report(
         return _format(name, value)
 
     rendered = _TOKEN_RE.sub(_substitute, report_md)
+
+    # Paid analyses must not die on model-invented SMA brace junk when we
+    # already have the canonical sma50/sma200 values in hand.
+    rendered = _repair_mangled_placeholders(rendered, tokens)
 
     leftover = _ANY_BRACE_RE.findall(rendered)
     if leftover:
