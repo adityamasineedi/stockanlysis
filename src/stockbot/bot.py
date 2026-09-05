@@ -123,6 +123,12 @@ from stockbot.report_digest import (
     build_compact_attachment_md,
     compact_delivery_note,
 )
+from stockbot.analyze_batch import (
+    format_batch_start_html,
+    format_batch_summary_html,
+    parse_analyze_all_args,
+    plan_analyze_batch,
+)
 from stockbot.storage import (
     backfill_cached_verdicts,
     delete_holding,
@@ -952,7 +958,8 @@ async def _run_and_reply(
     full_report: bool = False,
     skip_cache: bool = False,
     force_lite: bool = False,
-) -> None:
+) -> str:
+    """Run one analysis and deliver the reply. Returns a status token for batching."""
     if not await _try_begin_analysis(query):
         active = await _active_analysis_query()
         await update.message.reply_text(
@@ -960,14 +967,14 @@ async def _run_and_reply(
                 company=esc(active or query), cap_min=ANALYSIS_RUNTIME_CAP_MINUTES
             )
         )
-        return
+        return "busy"
 
     begin_operation(f"analyze {query}")
     try:
         if prescan_required_for_analyze() and not force:
             allowed = await _check_analyze_eligibility_gate(update, query)
             if not allowed:
-                return
+                return "gate_blocked"
 
         if force_lite:
             status_message = await update.message.reply_text(
@@ -1001,6 +1008,7 @@ async def _run_and_reply(
                         "Wait a minute and retry /analyze (transient errors retry automatically). "
                         f"Detail: {esc(str(exc))}"
                     )
+                    return "error"
                 elif isinstance(exc, RateLimitError):
                     await status_message.edit_text(
                         "LLM rate limit hit — nothing was saved. "
@@ -1009,7 +1017,7 @@ async def _run_and_reply(
                     )
                 else:
                     await status_message.edit_text(f"Something went wrong: {esc(exc)}")
-                return
+                return "error"
         finally:
             progress_task.cancel()
 
@@ -1020,12 +1028,87 @@ async def _run_and_reply(
                 "An API call already in flight may still bill.",
                 parse_mode=ParseMode.HTML,
             )
-            return
+            return "cancelled"
 
         await _deliver_result(update, result, status_message, full_report=full_report)
+        return result.status
     finally:
         end_operation()
         await _end_analysis()
+
+
+
+async def _run_analyze_all(update: Update, raw_args: list[str]) -> None:
+    """One-shot sequential queue over prescanned analyze-ready names."""
+    parsed = parse_analyze_all_args(raw_args)
+    if isinstance(parsed, str):
+        await update.message.reply_text(parsed, parse_mode=ParseMode.HTML)
+        return
+
+    plan = await asyncio.to_thread(plan_analyze_batch, parsed)
+    if isinstance(plan, str):
+        await update.message.reply_text(plan, parse_mode=ParseMode.HTML)
+        return
+
+    await update.message.reply_text(
+        format_batch_start_html(plan),
+        parse_mode=ParseMode.HTML,
+    )
+
+    completed: list[str] = []
+    failed: list[tuple[str, str]] = []
+    skipped_gate: list[str] = []
+    stopped = False
+    budget_stopped = False
+    total = len(plan.tickers)
+
+    for index, ticker in enumerate(plan.tickers, start=1):
+        if cancel_requested():
+            stopped = True
+            break
+
+        await update.message.reply_text(
+            f"⏳ Batch {index}/{total}: <b>{esc(ticker)}</b>…",
+            parse_mode=ParseMode.HTML,
+        )
+        status = await _run_and_reply(
+            update,
+            ticker,
+            force=plan.request.force_gate,
+            full_report=plan.request.full_report,
+            skip_cache=plan.request.skip_cache,
+            force_lite=plan.request.force_lite,
+        )
+        if status == "cancelled":
+            stopped = True
+            break
+        if status == "budget_exceeded":
+            budget_stopped = True
+            failed.append((ticker, status))
+            break
+        if status == "gate_blocked":
+            skipped_gate.append(ticker)
+            continue
+        if status == "busy":
+            failed.append((ticker, status))
+            stopped = True
+            break
+        if status == "ok":
+            completed.append(ticker)
+        else:
+            failed.append((ticker, status))
+
+    await update.message.reply_text(
+        format_batch_summary_html(
+            planned=plan.tickers,
+            completed=completed,
+            failed=failed,
+            skipped_gate=skipped_gate,
+            stopped=stopped,
+            budget_stopped=budget_stopped,
+        ),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1034,6 +1117,12 @@ async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if await _reject_if_analysis_busy(update):
         return
     if await _reject_if_operation_busy(update):
+        return
+    raw_args = list(context.args or [])
+    if any(token.lower() == "all" for token in raw_args):
+        batch_opts = [token for token in raw_args if token.lower() != "all"]
+        _clear_awaiting_symbol(context)
+        await _run_analyze_all(update, batch_opts)
         return
     query, force, full_report, fresh, lite = _parse_analyze_command_args(context.args)
     if not query:
@@ -1389,6 +1478,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "/analyze full <symbol> — attach full §1–§16 report .md\n"
         "/analyze fresh <symbol> — skip cache, run new paid analysis\n"
         "/analyze force <symbol> — bypass gate (not recommended)\n"
+        "/analyze all — one-shot queue (TOP+GOOD, lite, max 12)\n"
+        "/analyze all ready|top|N|full|fresh — batch options\n"
         "/stop — cancel running analysis or prescan\n"
         "/preflight <symbol> — free data audit before /analyze (no LLM spend)\n"
         "Trade-friendly mode ON: easier buy ranges on UNCERTAIN+evidence; "

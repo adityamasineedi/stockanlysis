@@ -164,7 +164,8 @@ def format_portfolio_workflow() -> str:
         [
             "",
             "<b>Step 4 — Deep analyze survivors</b>",
-            "<code>/analyze SYMBOL</code> on each shortlisted name.",
+            "<code>/analyze all</code> — one-shot queue (TOP+GOOD, lite, max 12), or",
+            "<code>/analyze SYMBOL</code> one name at a time.",
             "Reject for <b>new</b> capital only — not automatic sell if already held.",
             "Then <code>/rank</code> (or <code>/rank entry</code>) to order by expected base CAGR.",
             "",
