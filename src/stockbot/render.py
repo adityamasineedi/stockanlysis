@@ -188,16 +188,11 @@ def _repair_mangled_placeholders(report_md: str, tokens: dict[str, object]) -> s
         if inner in tokens and tokens[inner] is not None:
             return _format(inner, tokens[inner])
         compact = inner.lower().replace(" ", "")
-        if compact.startswith("sma200") or compact.startswith("dma200"):
+        if compact.startswith(("sma200", "dma200")):
             value = tokens.get("sma200")
             if value is not None:
                 return _format("sma200", value)
-        if (
-            compact.startswith("sma50")
-            or compact.startswith("dma50")
-            or compact.startswith("sma₹")
-            or compact.startswith("sma")
-        ) and "200" not in compact:
+        if compact.startswith(("sma50", "dma50", "sma₹", "sma")) and "200" not in compact:
             value = tokens.get("sma50")
             if value is not None:
                 return _format("sma50", value)
