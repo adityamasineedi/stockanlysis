@@ -513,12 +513,28 @@ def assess_data_readiness(
             )
         )
 
-    # Annual report
+    # Annual report — preferred for governance/audit, but not a hard stop when
+    # statements + business context already clear the research floor. Live batch
+    # runs (ITC/CAMS/MRF) were blocked solely because NSE PDFs were missing or
+    # image-scanned; Stage 1 already tolerates MISSING AR sections.
     ar = brief.annual_report
     if not ar.sections:
-        blockers.append(
+        years = fin.years_available if fin is not None else None
+        has_floor = (
+            fin is not None
+            and years is not None
+            and years >= MIN_FINANCIAL_YEARS
+            and _has_business_context(brief)
+        )
+        msg = (
             "Annual report governance text missing — NSE PDF not found or image-only/scanned."
         )
+        if has_floor:
+            warnings.append(
+                msg + " Proceeding with statements + business context; treat governance as unverified."
+            )
+        else:
+            blockers.append(msg)
         fields.append(
             FieldStatus(
                 name="annual_report",

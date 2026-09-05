@@ -192,7 +192,9 @@ VALID_BRACKET_TAGS: frozenset[str] = frozenset(
     }
 )
 _BRACKET_TAG_RE = re.compile(r"\[([A-Z][A-Z0-9_]*)\]")
-_TOKEN_NAME_RE = re.compile(r"\{\{(\w+)\}\}")
+# Interior may include non-word junk the model invents (live: {{sma₹365.55}}).
+# \w+-only missed those, so validation passed and render burned a paid run.
+_TOKEN_NAME_RE = re.compile(r"\{\{([^}]+)\}\}")
 _JSON_FENCE_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 _BEAR_DOWNSIDE_LINE_RE = re.compile(
     r"Bear\s+downside\s+check(?:\s*\(revised\))?\s*:.*",
@@ -297,7 +299,7 @@ def _check_citation_ids_valid(report_text: str) -> CheckResult:
 def _check_placeholder_tokens_known(report_text: str) -> CheckResult:
     from stockbot.render import ALLOWED_PLACEHOLDER_TOKENS
 
-    found = _TOKEN_NAME_RE.findall(report_text)
+    found = [name.strip() for name in _TOKEN_NAME_RE.findall(report_text)]
     unknown = sorted({name for name in found if name not in ALLOWED_PLACEHOLDER_TOKENS})
     if unknown:
         return CheckResult(

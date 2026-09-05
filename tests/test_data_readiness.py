@@ -106,15 +106,26 @@ def test_assess_blocks_without_financials():
     assert any("Financial statements missing" in b for b in report.blockers)
 
 
-def test_assess_blocks_without_annual_report():
+def test_assess_warns_without_annual_report_when_floor_met():
+    """NSE PDF gaps must not hard-block liquid names that already have statements."""
     report = assess_data_readiness(_brief(ar_sections={}))
+    assert report.ready_for_llm is True
+    assert not any("Annual report" in b for b in report.blockers)
+    assert any("Annual report" in w for w in report.warnings)
+
+
+def test_assess_blocks_without_annual_report_when_floor_missing():
+    report = assess_data_readiness(
+        _brief(financials=_financials(years=2, description=None), ar_sections={})
+    )
     assert report.ready_for_llm is False
     assert any("Annual report" in b for b in report.blockers)
 
 
 def test_assess_blocks_thin_history_without_business_context():
+    # Below MIN_FINANCIAL_YEARS + no business text: AR gap stays a hard block.
     report = assess_data_readiness(
-        _brief(financials=_financials(years=4, description=None), ar_sections={})
+        _brief(financials=_financials(years=2, description=None), ar_sections={})
     )
     assert report.ready_for_llm is False
 

@@ -182,13 +182,31 @@ def test_raises_on_unknown_token():
         render_report(report, _price(), _technicals(), _verdict(), _valuation(), _confirmed_shareholding())
 
 
-def test_raises_on_leftover_malformed_braces():
-    # A token pattern the substitution regex wouldn't match (spaces inside)
-    # must still be caught by the post-substitution scan, not slip through
-    # into the delivered report as literal "{{ current price }}".
+def test_repairs_spaced_known_placeholder_braces():
+    # Spaces inside braces used to fail render after a paid run. Strip-repair
+    # known tokens so "{{ current_price }}" still delivers.
     report = "Trades at {{ current_price }} today."
+    rendered = render_report(
+        report, _price(), _technicals(), _verdict(), _valuation(), _confirmed_shareholding()
+    )
+    assert "{{" not in rendered
+    assert "₹410.65" in rendered
+
+
+def test_raises_on_truly_unknown_leftover_braces():
+    report = "Trades at {{ totally made up }} today."
     with pytest.raises(PlaceholderError, match=r"Unsubstituted"):
         render_report(report, _price(), _technicals(), _verdict(), _valuation(), _confirmed_shareholding())
+
+
+def test_repairs_mangled_sma_rupee_placeholder():
+    # Live NATIONALUM batch: model invented {{sma₹365.55}} after validation.
+    report = "Price holds above {{sma₹365.55}}."
+    rendered = render_report(
+        report, _price(), _technicals(), _verdict(), _valuation(), _confirmed_shareholding()
+    )
+    assert "{{" not in rendered
+    assert "₹395.00" in rendered  # fixture sma50
 
 
 def test_money_tokens_formatted_to_two_decimals():
