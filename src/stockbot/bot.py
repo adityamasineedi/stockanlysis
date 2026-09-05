@@ -68,6 +68,12 @@ from stockbot.analysis_control import (
     end_operation,
     request_cancel,
 )
+from stockbot.analyze_batch import (
+    format_batch_start_html,
+    format_batch_summary_html,
+    parse_analyze_all_args,
+    plan_analyze_batch,
+)
 from stockbot.bot_suggestions import (
     build_inline_query_results,
     build_symbol_pick_keyboard,
@@ -122,12 +128,6 @@ from stockbot.report_digest import (
     _compact_context_flags_line,
     build_compact_attachment_md,
     compact_delivery_note,
-)
-from stockbot.analyze_batch import (
-    format_batch_start_html,
-    format_batch_summary_html,
-    parse_analyze_all_args,
-    plan_analyze_batch,
 )
 from stockbot.storage import (
     backfill_cached_verdicts,
